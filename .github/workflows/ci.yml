@@ -36,6 +36,7 @@ jobs:
   typescript:
     name: TypeScript — tsc, lint
     runs-on: ubuntu-latest
+    if: hashFiles('apps/web/package.json') != ''
     defaults:
       run:
         working-directory: apps/web
