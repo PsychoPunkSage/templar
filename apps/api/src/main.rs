@@ -24,6 +24,7 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::db::create_pool;
 use crate::generation::fit_scoring::KeywordFitScorer;
+use crate::layout::{default_page_config, FontFamily};
 use crate::llm_client::LlmClient;
 use crate::routes::build_router;
 use crate::state::AppState;
@@ -61,6 +62,13 @@ async fn main() -> Result<()> {
     // Initialize fit scorer (KeywordFitScorer by default — swap via ENABLE_LLM_FIT_SCORING)
     let fit_scorer = Arc::new(KeywordFitScorer);
 
+    // Initialize layout page config (Phase 3: Inter 11pt on US letter, 1" margins)
+    let page_config = default_page_config(FontFamily::Inter);
+    info!(
+        "Layout page config: {:?} {}pt",
+        page_config.font, page_config.font_size_pt
+    );
+
     // Build app state
     let state = AppState {
         db,
@@ -69,6 +77,7 @@ async fn main() -> Result<()> {
         llm,
         config: config.clone(),
         fit_scorer,
+        page_config,
     };
 
     // Build router

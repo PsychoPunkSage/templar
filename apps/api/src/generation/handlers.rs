@@ -10,8 +10,9 @@ use uuid::Uuid;
 use crate::context::versioning::get_current_entries;
 use crate::errors::AppError;
 use crate::generation::fit_scoring::FitReport;
-use crate::generation::generator::{generate_resume, DraftBullet, GenerateRequest};
+use crate::generation::generator::{generate_resume, GenerateRequest};
 use crate::generation::jd_parser::{parse_jd, ParsedJD};
+use crate::layout::SimulatedBullet;
 use crate::models::resume::{ResumeBulletRow, ResumeRow};
 use crate::state::AppState;
 
@@ -45,7 +46,9 @@ pub struct FitScoreResponse {
 pub struct GenerateResponse {
     pub resume_id: Uuid,
     pub fit_report: FitReport,
-    pub draft_bullets: Vec<DraftBullet>,
+    /// Phase 3: bullets are now `SimulatedBullet` with `verified_line_count`,
+    /// `was_adjusted`, and `flagged_for_review` populated by the simulation loop.
+    pub bullets: Vec<SimulatedBullet>,
     pub status: String,
 }
 
@@ -104,8 +107,8 @@ pub async fn handle_fit_score(
 
 /// POST /api/v1/resumes/generate
 ///
-/// Full generation pipeline: JD parse → fit score → content select → tone → LLM generate.
-/// Returns draft bullets tagged with source_entry_id. Bullets are NOT yet grounded or laid out.
+/// Full generation pipeline: JD parse → fit score → content select → tone → LLM generate
+/// → layout simulation → persist. Phase 3: returns `SimulatedBullet` with layout metadata.
 pub async fn handle_generate(
     State(state): State<AppState>,
     Json(request): Json<GenerateRequest>,
@@ -114,13 +117,19 @@ pub async fn handle_generate(
         return Err(AppError::Validation("jd_text cannot be empty".to_string()));
     }
 
-    let response =
-        generate_resume(&state.db, &state.llm, state.fit_scorer.as_ref(), request).await?;
+    let response = generate_resume(
+        &state.db,
+        &state.llm,
+        state.fit_scorer.as_ref(),
+        &state.page_config,
+        request,
+    )
+    .await?;
 
     Ok(Json(GenerateResponse {
         resume_id: response.resume_id,
         fit_report: response.fit_report,
-        draft_bullets: response.draft_bullets,
+        bullets: response.bullets,
         status: response.status,
     }))
 }
