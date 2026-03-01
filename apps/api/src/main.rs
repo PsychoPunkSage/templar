@@ -19,8 +19,11 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+use std::sync::Arc;
+
 use crate::config::Config;
 use crate::db::create_pool;
+use crate::generation::fit_scoring::KeywordFitScorer;
 use crate::llm_client::LlmClient;
 use crate::routes::build_router;
 use crate::state::AppState;
@@ -55,6 +58,9 @@ async fn main() -> Result<()> {
     let llm = LlmClient::new(config.anthropic_api_key.clone());
     info!("LLM client initialized (model: {})", llm_client::MODEL);
 
+    // Initialize fit scorer (KeywordFitScorer by default — swap via ENABLE_LLM_FIT_SCORING)
+    let fit_scorer = Arc::new(KeywordFitScorer);
+
     // Build app state
     let state = AppState {
         db,
@@ -62,6 +68,7 @@ async fn main() -> Result<()> {
         s3,
         llm,
         config: config.clone(),
+        fit_scorer,
     };
 
     // Build router
