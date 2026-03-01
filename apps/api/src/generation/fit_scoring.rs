@@ -39,10 +39,10 @@ pub struct Gap {
 /// Full fit report returned to callers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FitReport {
-    pub overall_score: u32,              // 0 – 100
-    pub strong_matches: Vec<FitMatch>,   // strength ≥ 0.8
-    pub partial_matches: Vec<FitMatch>,  // 0.4 – 0.79
-    pub gaps: Vec<Gap>,                  // strength < 0.4
+    pub overall_score: u32,             // 0 – 100
+    pub strong_matches: Vec<FitMatch>,  // strength ≥ 0.8
+    pub partial_matches: Vec<FitMatch>, // 0.4 – 0.79
+    pub gaps: Vec<Gap>,                 // strength < 0.4
     pub recommendation: String,
     pub scorer_backend: String, // "keyword" | "llm" — for transparency
 }
@@ -148,10 +148,7 @@ fn compute_keyword_fit(
 
         for entry in entries {
             // Tag exact match → 1.0
-            let tag_match = entry
-                .tags
-                .iter()
-                .any(|t| t.to_lowercase() == keyword_lower);
+            let tag_match = entry.tags.iter().any(|t| t.to_lowercase() == keyword_lower);
 
             // raw_text substring match → 0.6
             let text_match = entry
@@ -259,11 +256,7 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    fn make_entry(
-        entry_id: Uuid,
-        tags: Vec<String>,
-        raw_text: Option<String>,
-    ) -> ContextEntryRow {
+    fn make_entry(entry_id: Uuid, tags: Vec<String>, raw_text: Option<String>) -> ContextEntryRow {
         ContextEntryRow {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
@@ -346,11 +339,7 @@ mod tests {
 
     #[test]
     fn test_no_match_creates_gap() {
-        let entries = vec![make_entry(
-            Uuid::new_v4(),
-            vec!["python".to_string()],
-            None,
-        )];
+        let entries = vec![make_entry(Uuid::new_v4(), vec!["python".to_string()], None)];
         let parsed_jd = make_parsed_jd(vec![("rust", 5, 0.8)]);
 
         let report = compute_keyword_fit(&entries, &parsed_jd).unwrap();
@@ -372,11 +361,7 @@ mod tests {
 
     #[test]
     fn test_overall_score_bounded_0_to_100() {
-        let entries = vec![make_entry(
-            Uuid::new_v4(),
-            vec!["rust".to_string()],
-            None,
-        )];
+        let entries = vec![make_entry(Uuid::new_v4(), vec!["rust".to_string()], None)];
         let parsed_jd = make_parsed_jd(vec![("rust", 10, 1.0), ("java", 1, 0.1)]);
 
         let report = compute_keyword_fit(&entries, &parsed_jd).unwrap();
@@ -392,11 +377,7 @@ mod tests {
     #[test]
     fn test_strong_match_threshold_is_0_8() {
         // Tag match = 1.0 strength → strong_matches
-        let entries = vec![make_entry(
-            Uuid::new_v4(),
-            vec!["rust".to_string()],
-            None,
-        )];
+        let entries = vec![make_entry(Uuid::new_v4(), vec!["rust".to_string()], None)];
         let parsed_jd = make_parsed_jd(vec![("rust", 1, 0.8)]);
         let report = compute_keyword_fit(&entries, &parsed_jd).unwrap();
         assert_eq!(report.strong_matches.len(), 1);

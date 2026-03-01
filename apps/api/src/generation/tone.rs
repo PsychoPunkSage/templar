@@ -43,7 +43,12 @@ pub fn get_tone_examples(tone: &JDTone) -> ToneExamples {
                 "Facilitated",
             ],
             ownership_prefix: "as part of a team,",
-            avoid_verbs: vec!["architected", "spearheaded", "solely built", "owned end-to-end"],
+            avoid_verbs: vec![
+                "architected",
+                "spearheaded",
+                "solely built",
+                "owned end-to-end",
+            ],
         },
         JDTone::ResearchOriented => ToneExamples {
             strong_verbs: vec![
@@ -188,10 +193,7 @@ mod tests {
     fn test_reviewer_gets_review_verbs_only() {
         let verbs = vec!["Architected", "Contributed to"];
         let filtered = filter_verbs_for_contribution(&verbs, "reviewer");
-        assert!(
-            filtered.contains(&"Reviewed"),
-            "reviewer must get Reviewed"
-        );
+        assert!(filtered.contains(&"Reviewed"), "reviewer must get Reviewed");
         assert!(
             filtered.contains(&"Evaluated"),
             "reviewer must get Evaluated"
@@ -214,8 +216,7 @@ mod tests {
     #[test]
     fn test_startup_tone_team_member_never_gets_sole_owner_verbs() {
         let startup_tone = get_tone_examples(&JDTone::AggressiveStartup);
-        let filtered =
-            filter_verbs_for_contribution(&startup_tone.strong_verbs, "team_member");
+        let filtered = filter_verbs_for_contribution(&startup_tone.strong_verbs, "team_member");
         assert!(
             !filtered.contains(&"Architected"),
             "CRITICAL: team_member must never get Architected even in startup tone"

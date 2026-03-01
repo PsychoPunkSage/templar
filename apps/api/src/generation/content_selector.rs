@@ -138,9 +138,7 @@ pub fn compute_jd_relevance(entry: &ContextEntryRow, parsed_jd: &ParsedJD) -> f6
 }
 
 /// Applies per-section limits and separates selected from excluded entries.
-fn apply_section_limits(
-    ranked: Vec<RankedEntry>,
-) -> (Vec<RankedEntry>, Vec<(Uuid, String)>) {
+fn apply_section_limits(ranked: Vec<RankedEntry>) -> (Vec<RankedEntry>, Vec<(Uuid, String)>) {
     let mut experience_count = 0usize;
     let mut project_count = 0usize;
     let mut other_count = 0usize;
@@ -161,10 +159,7 @@ fn apply_section_limits(
             *count += 1;
             selected.push(ranked_entry);
         } else {
-            let reason = format!(
-                "Section limit reached ({} max for {})",
-                limit, section
-            );
+            let reason = format!("Section limit reached ({} max for {})", limit, section);
             excluded.push((ranked_entry.entry.entry_id, reason));
         }
     }
@@ -276,8 +271,7 @@ mod tests {
         let result = select_content(entries, &parsed_jd);
 
         assert!(
-            result.selected_entries[0].combined_score
-                > result.selected_entries[1].combined_score,
+            result.selected_entries[0].combined_score > result.selected_entries[1].combined_score,
             "Higher-scoring entry must be first"
         );
     }
@@ -335,7 +329,10 @@ mod tests {
             .iter()
             .filter(|e| e.entry.entry_type == "open_source")
             .count();
-        assert_eq!(selected, 4, "open_source capped at 4 (shared project limit)");
+        assert_eq!(
+            selected, 4,
+            "open_source capped at 4 (shared project limit)"
+        );
     }
 
     #[test]
@@ -352,8 +349,7 @@ mod tests {
         let base = compute_section_weights(&JDTone::CollaborativeEnterprise);
         let startup = compute_section_weights(&JDTone::AggressiveStartup);
         assert!(
-            startup.get("open_source").unwrap_or(&0.0)
-                > base.get("open_source").unwrap_or(&0.0),
+            startup.get("open_source").unwrap_or(&0.0) > base.get("open_source").unwrap_or(&0.0),
             "Startup tone must have higher open_source weight"
         );
     }
@@ -387,7 +383,10 @@ mod tests {
         // Two keywords: rust + kubernetes — only rust matches
         let parsed_jd = make_parsed_jd(&["rust", "kubernetes"], JDTone::AggressiveStartup);
         let rel = compute_jd_relevance(&entry, &parsed_jd);
-        assert!(rel > 0.0 && rel < 1.0, "Partial match should be 0 < rel < 1, got {rel}");
+        assert!(
+            rel > 0.0 && rel < 1.0,
+            "Partial match should be 0 < rel < 1, got {rel}"
+        );
     }
 
     #[test]

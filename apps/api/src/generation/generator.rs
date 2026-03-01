@@ -112,7 +112,10 @@ pub async fn generate_resume(
 
     // Step 4: Content selection
     let selection = select_content(entries, &parsed_jd);
-    info!("Selected {} entries for generation", selection.selected_entries.len());
+    info!(
+        "Selected {} entries for generation",
+        selection.selected_entries.len()
+    );
 
     if selection.selected_entries.is_empty() {
         return Err(AppError::Validation(
