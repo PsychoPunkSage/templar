@@ -114,13 +114,8 @@ pub async fn handle_generate(
         return Err(AppError::Validation("jd_text cannot be empty".to_string()));
     }
 
-    let response = generate_resume(
-        &state.db,
-        &state.llm,
-        state.fit_scorer.as_ref(),
-        request,
-    )
-    .await?;
+    let response =
+        generate_resume(&state.db, &state.llm, state.fit_scorer.as_ref(), request).await?;
 
     Ok(Json(GenerateResponse {
         resume_id: response.resume_id,
