@@ -1,10 +1,11 @@
 //! Resume Generation — orchestrates the full generation pipeline.
 //!
 //! Flow: parse_jd → get_current_entries → fit_score → select_content →
-//!       tone calibration → LLM generate → persist to DB → return response.
+//!       tone calibration → LLM generate → layout simulation → persist to DB → return response.
 //!
-//! This produces DRAFT bullets. Bullets are not shown to the user until
-//! grounding (Phase 5) and layout (Phase 3) passes complete.
+//! Phase 3 inserts a simulation loop between LLM draft generation and DB persistence.
+//! Bullets that fail the Line Coverage Contract are expanded or compressed (max 3 passes),
+//! then flagged for human review if still violating.
 
 use std::collections::HashSet;
 
@@ -20,6 +21,7 @@ use crate::generation::fit_scoring::{FitReport, FitScorer};
 use crate::generation::jd_parser::parse_jd;
 use crate::generation::prompts::{GENERATION_PROMPT_TEMPLATE, GENERATION_SYSTEM};
 use crate::generation::tone::{get_tone_examples, ToneExamples};
+use crate::layout::{run_simulation_loop, PageConfig, SimulatedBullet};
 use crate::llm_client::prompts::{GROUNDING_INSTRUCTION, SCOPE_INSTRUCTION};
 use crate::llm_client::LlmClient;
 
@@ -58,11 +60,14 @@ pub struct GenerateRequest {
 }
 
 /// Response from the generation pipeline.
+///
+/// Phase 3: `bullets` now contains `SimulatedBullet` with `verified_line_count`,
+/// `was_adjusted`, and `flagged_for_review` fields populated by the simulation loop.
 #[derive(Debug, Clone, Serialize)]
 pub struct GenerateResponse {
     pub resume_id: Uuid,
     pub fit_report: FitReport,
-    pub draft_bullets: Vec<DraftBullet>,
+    pub bullets: Vec<SimulatedBullet>,
     pub status: String,
 }
 
@@ -79,12 +84,14 @@ pub struct GenerateResponse {
 /// 4. select_content() → SelectionResult
 /// 5. tone calibration → ToneExamples
 /// 6. LLM generate → Vec<DraftBullet> (retried if any bullet lacks source_entry_id)
-/// 7. INSERT into resumes (status='draft')
-/// 8. INSERT into resume_bullets (grounding_score=0.0 placeholder — filled in Phase 5)
+/// 7. Layout simulation → Vec<SimulatedBullet> (Phase 3: enforces Line Coverage Contract)
+/// 8. INSERT into resumes (status='draft')
+/// 9. INSERT into resume_bullets (uses sim_bullet.text + verified_line_count; grounding_score=0.0 placeholder)
 pub async fn generate_resume(
     pool: &PgPool,
     llm: &LlmClient,
     fit_scorer: &dyn FitScorer,
+    page_config: &PageConfig,
     request: GenerateRequest,
 ) -> Result<GenerateResponse, AppError> {
     // Step 1: Parse JD
@@ -129,7 +136,22 @@ pub async fn generate_resume(
     // Step 6: LLM generation with retry on missing source_entry_id
     let draft_bullets = call_llm_with_retry(llm, &parsed_jd, &selection, &tone_examples).await?;
 
-    // Step 7: Persist resume row
+    // Step 7: Layout simulation — enforces Line Coverage Contract.
+    // Replaces LLM's line_estimate with simulation-verified line counts.
+    // Bullets that fail after max passes are flagged for human review (not rejected).
+    let simulation = run_simulation_loop(draft_bullets, page_config, &parsed_jd, llm).await?;
+
+    if simulation.flagged_count > 0 {
+        warn!(
+            resume_id = %"pending",
+            flagged = simulation.flagged_count,
+            passes = simulation.total_passes,
+            llm_calls = simulation.llm_calls_made,
+            "layout simulation: bullets flagged for human review after max passes"
+        );
+    }
+
+    // Step 8: Persist resume row
     let resume_id = Uuid::new_v4();
     let jd_parsed_value = serde_json::to_value(&parsed_jd)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize ParsedJD: {e}")))?;
@@ -149,8 +171,10 @@ pub async fn generate_resume(
     .execute(pool)
     .await?;
 
-    // Step 8: Persist bullets (grounding_score=0.0 — Phase 5 will fill this)
-    for bullet in &draft_bullets {
+    // Step 9: Persist simulated bullets.
+    // Uses sim_bullet.text (post-adjustment) and sim_bullet.verified_line_count.
+    // grounding_score=0.0 placeholder — Phase 5 will compute and fill this.
+    for sim_bullet in &simulation.bullets {
         sqlx::query(
             r#"
             INSERT INTO resume_bullets
@@ -159,25 +183,28 @@ pub async fn generate_resume(
             "#,
         )
         .bind(resume_id)
-        .bind(&bullet.section)
-        .bind(&bullet.text)
-        .bind(bullet.source_entry_id)
-        .bind(bullet.line_estimate as i16)
+        .bind(&sim_bullet.section)
+        .bind(&sim_bullet.text)
+        .bind(sim_bullet.source_entry_id)
+        .bind(sim_bullet.verified_line_count as i16)
         .execute(pool)
         .await?;
     }
 
     info!(
-        "Generated resume {} with {} draft bullets for user {}",
+        "Generated resume {} with {} bullets (passes={}, adjusted={}, flagged={}) for user {}",
         resume_id,
-        draft_bullets.len(),
+        simulation.bullets.len(),
+        simulation.total_passes,
+        simulation.bullets.iter().filter(|b| b.was_adjusted).count(),
+        simulation.flagged_count,
         request.user_id
     );
 
     Ok(GenerateResponse {
         resume_id,
         fit_report,
-        draft_bullets,
+        bullets: simulation.bullets,
         status: "draft".to_string(),
     })
 }

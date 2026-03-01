@@ -6,6 +6,7 @@ use sqlx::PgPool;
 
 use crate::config::Config;
 use crate::generation::fit_scoring::FitScorer;
+use crate::layout::PageConfig;
 use crate::llm_client::LlmClient;
 
 /// Shared application state injected into all route handlers via Axum extractors.
@@ -20,4 +21,7 @@ pub struct AppState {
     pub config: Config,
     /// Pluggable fit scorer. Default: KeywordFitScorer. Swap via ENABLE_LLM_FIT_SCORING env.
     pub fit_scorer: Arc<dyn FitScorer>,
+    /// Layout page config — font metrics and page dimensions for the simulation loop.
+    /// Phase 3: defaults to Inter at 11pt on US letter with 1" margins.
+    pub page_config: PageConfig,
 }
