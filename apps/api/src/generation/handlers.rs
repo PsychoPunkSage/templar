@@ -123,6 +123,7 @@ pub async fn handle_generate(
         state.fit_scorer.as_ref(),
         &state.page_config,
         Some(&state.redis),
+        true, // grounding_enabled: Phase 5 — real grounding scores
         request,
     )
     .await?;
