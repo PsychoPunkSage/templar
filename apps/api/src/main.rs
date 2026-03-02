@@ -26,6 +26,8 @@ use crate::db::create_pool;
 use crate::generation::fit_scoring::KeywordFitScorer;
 use crate::layout::{default_page_config, FontFamily};
 use crate::llm_client::LlmClient;
+use crate::render::tectonic::check_tectonic_available;
+use crate::render::worker::spawn_render_worker;
 use crate::routes::build_router;
 use crate::state::AppState;
 
@@ -79,6 +81,21 @@ async fn main() -> Result<()> {
         fit_scorer,
         page_config,
     };
+
+    // Check tectonic binary is available on PATH (fail fast at startup)
+    check_tectonic_available()
+        .await
+        .map_err(|e| anyhow::anyhow!("Tectonic not available: {e}"))?;
+    info!("Tectonic render engine: available");
+
+    // Spawn background render worker (clones before state is moved into router)
+    spawn_render_worker(
+        state.redis.clone(),
+        state.db.clone(),
+        state.s3.clone(),
+        state.config.s3_bucket.clone(),
+    );
+    info!("Render worker: spawned");
 
     // Build router
     let app = build_router(state)

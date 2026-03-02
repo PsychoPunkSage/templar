@@ -87,11 +87,13 @@ pub struct GenerateResponse {
 /// 7. Layout simulation → Vec<SimulatedBullet> (Phase 3: enforces Line Coverage Contract)
 /// 8. INSERT into resumes (status='draft')
 /// 9. INSERT into resume_bullets (uses sim_bullet.text + verified_line_count; grounding_score=0.0 placeholder)
+/// 10. Fire-and-forget render job enqueue (Phase 4; skipped when redis=None for tests)
 pub async fn generate_resume(
     pool: &PgPool,
     llm: &LlmClient,
     fit_scorer: &dyn FitScorer,
     page_config: &PageConfig,
+    redis: Option<&redis::Client>,
     request: GenerateRequest,
 ) -> Result<GenerateResponse, AppError> {
     // Step 1: Parse JD
@@ -200,6 +202,31 @@ pub async fn generate_resume(
         simulation.flagged_count,
         request.user_id
     );
+
+    // Step 10: Fire-and-forget render job enqueue (Phase 4).
+    // Skipped when redis=None (existing tests without a Redis connection continue to work).
+    if let Some(redis_client) = redis {
+        let job_id = Uuid::new_v4();
+
+        // Insert render_jobs row (queued)
+        sqlx::query("INSERT INTO render_jobs (id, resume_id, status) VALUES ($1, $2, 'queued')")
+            .bind(job_id)
+            .bind(resume_id)
+            .execute(pool)
+            .await?;
+
+        // Enqueue via spawn_blocking (enqueue_render_job_sync is a synchronous Redis call)
+        let redis_for_enqueue = redis_client.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) =
+                crate::render::worker::enqueue_render_job_sync(&redis_for_enqueue, job_id)
+            {
+                warn!("Failed to enqueue render job {job_id} for resume {resume_id}: {e}");
+            }
+        });
+
+        info!("Enqueued render job {} for resume {}", job_id, resume_id);
+    }
 
     Ok(GenerateResponse {
         resume_id,

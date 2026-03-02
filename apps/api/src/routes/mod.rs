@@ -7,6 +7,7 @@ use axum::{
 
 use crate::context::handlers as ctx;
 use crate::generation::handlers as gen;
+use crate::render::handlers as render;
 use crate::state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
@@ -33,11 +34,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/resumes/generate", post(gen::handle_generate))
         .route("/api/v1/resumes/:id", get(gen::handle_get_resume))
         // ── Render API (Phase 4) ───────────────────────────────────────────
-        .route("/api/v1/render/:job_id", get(not_implemented))
-        .route("/api/v1/render/:job_id/status", get(not_implemented))
+        .route("/api/v1/render", post(render::handle_trigger_render))
+        .route("/api/v1/render/:job_id", get(render::handle_get_pdf))
+        .route(
+            "/api/v1/render/:job_id/status",
+            get(render::handle_render_status),
+        )
         .with_state(state)
-}
-
-async fn not_implemented() -> Result<(), crate::errors::AppError> {
-    Err(crate::errors::AppError::NotImplemented)
 }
