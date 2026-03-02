@@ -13,8 +13,7 @@ use crate::llm_client::LlmClient;
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
-    /// Redis client reserved for Phase 4 async render job queue.
-    #[allow(dead_code)]
+    /// Redis client for the async render job queue (Phase 4).
     pub redis: RedisClient,
     pub s3: S3Client,
     pub llm: LlmClient,

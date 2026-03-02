@@ -122,6 +122,7 @@ pub async fn handle_generate(
         &state.llm,
         state.fit_scorer.as_ref(),
         &state.page_config,
+        Some(&state.redis),
         request,
     )
     .await?;
