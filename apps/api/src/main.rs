@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive()); // TODO: tighten CORS in production
 
-    let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
+    let addr: SocketAddr = format!("0.0.0.0:{}", config.api_port).parse()?;
     info!("Listening on {addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -128,5 +128,9 @@ async fn build_s3_client(config: &Config) -> aws_sdk_s3::Client {
         .load()
         .await;
 
-    aws_sdk_s3::Client::new(&s3_config)
+    let s3_client_config = aws_sdk_s3::config::Builder::from(&s3_config)
+        .force_path_style(true)
+        .build();
+
+    aws_sdk_s3::Client::from_conf(s3_client_config)
 }
