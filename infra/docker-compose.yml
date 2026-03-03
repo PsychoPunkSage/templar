@@ -1,6 +1,85 @@
 version: "3.9"
 
 services:
+  migrate:
+    image: postgres:16-alpine
+    env_file:
+      - ../.env
+    environment:
+      PGPASSWORD: templar
+    command: >
+      sh -c "psql -h postgres -U templar -d templar
+             -f /migrations/001_initial.sql || true"
+    volumes:
+      - ../packages/db/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  minio-init:
+    image: minio/mc:latest
+    environment:
+      MC_HOST_local: http://templar:templar123@minio:9000
+    entrypoint: >
+      sh -c "mc mb --ignore-existing local/templar-assets"
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: on-failure
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    container_name: templar-api
+    ports:
+      - "8080:8080"
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgres://templar:templar@postgres:5432/templar
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      API_PORT: "8080"
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.web
+    container_name: templar-web
+    ports:
+      - "3000:3000"
+    env_file:
+      - ../.env
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+      WEB_PORT: "3000"
+      PORT: "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     container_name: templar-postgres
@@ -24,6 +103,8 @@ services:
     ports:
       - "6379:6379"
     command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -51,3 +132,4 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  redis_data:

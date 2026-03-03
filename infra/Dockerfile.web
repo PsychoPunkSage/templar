@@ -2,10 +2,15 @@
 FROM node:20-alpine AS builder
 
 WORKDIR /app
-COPY apps/web/package*.json ./
-RUN npm ci
+COPY apps/web/package.json ./
+COPY apps/web/package-lock.json ./
+COPY packages/types /packages/types
+RUN npm i --package-lock-only || true
+# RUN npm i
 
 COPY apps/web/ ./
+ARG NEXT_PUBLIC_API_URL=http://localhost:8080
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build
 
 # Stage 2: Runtime
