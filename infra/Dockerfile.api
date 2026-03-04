@@ -36,6 +36,10 @@ RUN apt-get update && apt-get install -y \
     libgraphite2-3 \
     libharfbuzz0b \
     libfreetype6 \
+    fontconfig \
+    unzip \
+    fonts-lato \
+    fonts-ebgaramond \
     && rm -rf /var/lib/apt/lists/*
 
 # Install tectonic
@@ -43,6 +47,40 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL https://drop-sh.fullyjustified.net | s
 RUN mv tectonic /usr/local/bin/
 
 RUN tectonic --version
+
+# Install Google Fonts required by Templar templates (Inter, Lato, EB Garamond, Oswald).
+# Downloaded at build time so no network access is needed at runtime.
+RUN mkdir -p /usr/local/share/fonts/templar
+
+# Inter — https://github.com/rsms/inter/releases
+RUN curl -fsSL "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip" -o /tmp/inter.zip \
+    && unzip -j /tmp/inter.zip "*.ttf" -d /usr/local/share/fonts/templar/ \
+    && rm /tmp/inter.zip
+
+# Oswald — variable font from google/fonts (no static subdirectory in this repo)
+RUN curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/Oswald%5Bwght%5D.ttf" \
+         -o /usr/local/share/fonts/templar/Oswald-Variable.ttf
+
+# Rebuild font cache so fontspec can resolve fonts by name at XeLaTeX compile time
+RUN fc-cache -fv
+
+# Pre-warm Tectonic format cache at image build time.
+# Downloads XeLaTeX format + all Templar package files (fontspec, microtype,
+# titlesec, xcolor, tabularx, parskip, hyperref, geometry, enumitem).
+# Without this, first compilation downloads ~60 packages and exceeds the 30 s timeout.
+RUN printf '%s\n' \
+    '\documentclass[11pt]{article}' \
+    '\usepackage[left=1.00in,right=1.00in,top=0.75in,bottom=0.75in]{geometry}' \
+    '\usepackage{fontspec}' \
+    '\setmainfont{Inter}' \
+    '\usepackage{microtype,enumitem,titlesec,xcolor,tabularx,parskip}' \
+    '\usepackage[hidelinks]{hyperref}' \
+    '\begin{document}' \
+    '\pagestyle{empty}' \
+    'Hello Templar.' \
+    '\end{document}' \
+    | tectonic - --outfmt pdf \
+    && echo "Tectonic warmup complete"
 
 WORKDIR /app
 # Copy only binary
