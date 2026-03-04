@@ -57,8 +57,9 @@ data/
 *.fdb_latexmk
 *.synctex.gz
 
-# sqlx offline query cache
-.sqlx/
+# sqlx offline query cache — DO NOT ignore .sqlx/
+# apps/api/.sqlx/ MUST be committed so Docker can build with SQLX_OFFLINE=true
+# Regenerate with: make sqlx-prepare
 
 # MinIO local data
 minio_data/
