@@ -14,7 +14,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- ============================================================
 -- users
 -- ============================================================
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     external_id TEXT NOT NULL UNIQUE,          -- Clerk user ID
     email       TEXT NOT NULL UNIQUE,
@@ -26,7 +26,7 @@ CREATE TABLE users (
 -- context_entries (append-only versioned log): How context will be stored
 -- ============================================================
 -- (user_id, entry_id, version) must be unique
-CREATE TABLE context_entries (
+CREATE TABLE IF NOT EXISTS context_entries (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id           UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     entry_id          UUID        NOT NULL,   -- stable ID across versions
@@ -44,15 +44,15 @@ CREATE TABLE context_entries (
     UNIQUE (user_id, entry_id, version)
 );
 
-CREATE INDEX idx_context_entries_user_id ON context_entries(user_id);
-CREATE INDEX idx_context_entries_entry_type ON context_entries(entry_type);
-CREATE INDEX idx_context_entries_tags ON context_entries USING GIN(tags);
-CREATE INDEX idx_context_entries_data ON context_entries USING GIN(data);
+CREATE INDEX IF NOT EXISTS idx_context_entries_user_id   ON context_entries(user_id);
+CREATE INDEX IF NOT EXISTS idx_context_entries_entry_type ON context_entries(entry_type);
+CREATE INDEX IF NOT EXISTS idx_context_entries_tags       ON context_entries USING GIN(tags);
+CREATE INDEX IF NOT EXISTS idx_context_entries_data       ON context_entries USING GIN(data);
 
 -- ============================================================
 -- context_snapshots: context file,to be used by AI to generate resumes
 -- ============================================================
-CREATE TABLE context_snapshots (
+CREATE TABLE IF NOT EXISTS context_snapshots (
     id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     version    INT         NOT NULL,
@@ -62,12 +62,12 @@ CREATE TABLE context_snapshots (
     UNIQUE (user_id, version)
 );
 
-CREATE INDEX idx_context_snapshots_user_id ON context_snapshots(user_id);
+CREATE INDEX IF NOT EXISTS idx_context_snapshots_user_id ON context_snapshots(user_id);
 
 -- ============================================================
 -- resumes
 -- ============================================================
-CREATE TABLE resumes (
+CREATE TABLE IF NOT EXISTS resumes (
     id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id      UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     jd_text      TEXT        NOT NULL,
@@ -80,13 +80,13 @@ CREATE TABLE resumes (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_resumes_user_id ON resumes(user_id);
-CREATE INDEX idx_resumes_status ON resumes(status);
+CREATE INDEX IF NOT EXISTS idx_resumes_user_id ON resumes(user_id);
+CREATE INDEX IF NOT EXISTS idx_resumes_status  ON resumes(status);
 
 -- ============================================================
 -- resume_bullets (grounding audit)
 -- ============================================================
-CREATE TABLE resume_bullets (
+CREATE TABLE IF NOT EXISTS resume_bullets (
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     resume_id        UUID        NOT NULL REFERENCES resumes(id) ON DELETE CASCADE,
     section          TEXT        NOT NULL,
@@ -98,12 +98,12 @@ CREATE TABLE resume_bullets (
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_resume_bullets_resume_id ON resume_bullets(resume_id);
+CREATE INDEX IF NOT EXISTS idx_resume_bullets_resume_id ON resume_bullets(resume_id);
 
 -- ============================================================
 -- render_jobs
 -- ============================================================
-CREATE TABLE render_jobs (
+CREATE TABLE IF NOT EXISTS render_jobs (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     resume_id     UUID        NOT NULL REFERENCES resumes(id) ON DELETE CASCADE,
     status        TEXT        NOT NULL DEFAULT 'queued',  -- queued | processing | done | failed
@@ -112,13 +112,13 @@ CREATE TABLE render_jobs (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_render_jobs_resume_id ON render_jobs(resume_id);
-CREATE INDEX idx_render_jobs_status ON render_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_render_jobs_resume_id ON render_jobs(resume_id);
+CREATE INDEX IF NOT EXISTS idx_render_jobs_status    ON render_jobs(status);
 
 -- ============================================================
 -- personas
 -- ============================================================
-CREATE TABLE personas (
+CREATE TABLE IF NOT EXISTS personas (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id           UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name              TEXT        NOT NULL,
@@ -129,6 +129,4 @@ CREATE TABLE personas (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_personas_user_id ON personas(user_id);
-
-
+CREATE INDEX IF NOT EXISTS idx_personas_user_id ON personas(user_id);
