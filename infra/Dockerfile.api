@@ -20,6 +20,7 @@ RUN rm -rf apps/api/src
 
 # Build actual source
 COPY apps/api/src apps/api/src
+COPY apps/api/.sqlx apps/api/.sqlx
 ENV SQLX_OFFLINE=true
 # [Below] touch ::> changes timestamp -> build is forced
 RUN touch apps/api/src/main.rs && cargo build --release --bin api

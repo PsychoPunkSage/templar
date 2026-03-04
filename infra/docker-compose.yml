@@ -7,9 +7,8 @@ services:
       - ../.env
     environment:
       PGPASSWORD: templar
-    command: >
-      sh -c "psql -h postgres -U templar -d templar
-             -f /migrations/001_initial.sql || true"
+    command: |
+      sh -c "psql -h postgres -U templar -d templar -f /migrations/001_initial.sql && psql -h postgres -U templar -d templar -f /migrations/002_context_batch.sql && psql -h postgres -U templar -d templar -f /migrations/000_seed.sql"
     volumes:
       - ../packages/db/migrations:/migrations:ro
     depends_on:
