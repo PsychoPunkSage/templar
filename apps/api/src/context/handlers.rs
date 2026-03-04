@@ -1,16 +1,19 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::context::batch;
 use crate::context::completeness::compute_completeness_report;
+use crate::context::extractor;
 use crate::context::ingest::{
     confirm_ingest, parse_and_validate, IngestConfirmRequest, IngestConfirmResponse,
     IngestPreviewResponse, IngestRequest,
 };
+use crate::context::splitter::split_entries;
 use crate::context::versioning::{
     get_current_entries, get_entries_at_version, get_version_history,
 };
@@ -137,4 +140,164 @@ pub async fn handle_toggle_evergreen(
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Batch ingestion handlers (Phase: async batch pipeline)
+// ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct IngestBatchRequest {
+    pub user_id: Uuid,
+    pub raw_text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchStartResponse {
+    pub batch_id: Uuid,
+    pub entry_count: usize,
+    pub status: &'static str,
+}
+
+/// POST /api/v1/context/ingest/batch
+///
+/// Accepts a raw text document (may contain multiple entries separated by `\n---`),
+/// splits it into individual entries, stores them in the DB, and enqueues all
+/// item IDs to the Redis ingest queue. Returns immediately with a `batch_id`.
+///
+/// The client should poll `GET /api/v1/context/ingest/batch/:id` for progress.
+#[tracing::instrument(skip(state, req), fields(user_id = %req.user_id, text_len = req.raw_text.len()))]
+pub async fn handle_ingest_batch(
+    State(state): State<AppState>,
+    Json(req): Json<IngestBatchRequest>,
+) -> Result<Json<BatchStartResponse>, AppError> {
+    tracing::info!("batch text ingest requested");
+
+    let entries = split_entries(&req.raw_text)?;
+    let entry_count = entries.len();
+    tracing::info!(entry_count, "split entries from raw text");
+
+    let batch_id =
+        batch::create_batch(&state.db, req.user_id, "text", None, &entries)
+            .await
+            .map_err(AppError::Internal)?;
+
+    let item_ids = batch::get_item_ids(&state.db, batch_id)
+        .await
+        .map_err(AppError::Internal)?;
+
+    batch::enqueue_batch_items(&state.redis, item_ids)
+        .await
+        .map_err(AppError::Internal)?;
+
+    tracing::info!(%batch_id, entry_count, "text batch enqueued");
+
+    Ok(Json(BatchStartResponse {
+        batch_id,
+        entry_count,
+        status: "queued",
+    }))
+}
+
+/// POST /api/v1/context/ingest/upload
+///
+/// Accepts a multipart form with fields:
+/// - `user_id` (UUID string)
+/// - `file` (binary — .md, .txt, or .pdf, max 10 MB)
+///
+/// Extracts text, splits into entries, stores in DB, enqueues to Redis.
+/// Returns immediately with a `batch_id`.
+#[tracing::instrument(skip(state, multipart))]
+pub async fn handle_ingest_upload(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<serde_json::Value>, AppError> {
+    tracing::info!("file upload ingest requested");
+
+    let mut user_id: Option<Uuid> = None;
+    let mut file_data: Option<(String, Vec<u8>)> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Validation(format!("Multipart error: {e}")))?
+    {
+        match field.name() {
+            Some("user_id") => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::Validation(format!("user_id field error: {e}")))?;
+                user_id = Some(text.trim().parse::<Uuid>().map_err(|_| {
+                    AppError::Validation("Invalid user_id: must be a valid UUID".into())
+                })?);
+            }
+            Some("file") => {
+                let filename = field.file_name().unwrap_or("upload.md").to_string();
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::Validation(format!("File read error: {e}")))?;
+                file_data = Some((filename, bytes.to_vec()));
+            }
+            _ => {
+                // Ignore unknown fields
+            }
+        }
+    }
+
+    let user_id =
+        user_id.ok_or_else(|| AppError::Validation("Missing required field: user_id".into()))?;
+    let (filename, bytes) = file_data
+        .ok_or_else(|| AppError::Validation("Missing required field: file".into()))?;
+
+    tracing::info!(
+        %user_id,
+        filename = %filename,
+        file_size = bytes.len(),
+        "extracting text from uploaded file"
+    );
+
+    let raw_text = extractor::extract_text(&filename, &bytes)?;
+    let entries = split_entries(&raw_text)?;
+    let entry_count = entries.len();
+
+    let batch_id =
+        batch::create_batch(&state.db, user_id, "file", Some(&filename), &entries)
+            .await
+            .map_err(AppError::Internal)?;
+
+    let item_ids = batch::get_item_ids(&state.db, batch_id)
+        .await
+        .map_err(AppError::Internal)?;
+
+    batch::enqueue_batch_items(&state.redis, item_ids)
+        .await
+        .map_err(AppError::Internal)?;
+
+    tracing::info!(%batch_id, entry_count, filename = %filename, "file batch enqueued");
+
+    Ok(Json(serde_json::json!({
+        "batch_id": batch_id,
+        "entry_count": entry_count,
+        "filename": filename,
+        "status": "queued"
+    })))
+}
+
+/// GET /api/v1/context/ingest/batch/:id
+///
+/// Returns the current status of a batch including per-item progress.
+/// Poll this endpoint at 2-second intervals until `status == "done"`.
+#[tracing::instrument(skip(state))]
+pub async fn handle_batch_status(
+    State(state): State<AppState>,
+    Path(batch_id): Path<Uuid>,
+) -> Result<Json<batch::BatchStatusResponse>, AppError> {
+    let status = batch::get_batch_status(&state.db, batch_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or_else(|| AppError::NotFound(format!("Batch {batch_id} not found")))?;
+
+    Ok(Json(status))
 }

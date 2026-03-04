@@ -49,17 +49,22 @@ pub struct IngestConfirmResponse {
     pub completeness_delta: f64,
 }
 
+#[tracing::instrument(skip(llm, pool), fields(user_id = %user_id, text_len = raw_text.len()))]
 pub async fn parse_and_validate(
     raw_text: &str,
     llm: &LlmClient,
     pool: &sqlx::PgPool,
     user_id: Uuid,
 ) -> Result<IngestPreviewResponse, AppError> {
+    tracing::info!("starting context parse and validate");
+
+    tracing::debug!("calling LLM for context parse");
     let prompt = CONTEXT_PARSE_PROMPT.replace("{raw_text}", raw_text);
     let parsed: serde_json::Value = llm
         .call_json(&prompt, CONTEXT_PARSE_SYSTEM)
         .await
         .map_err(|e| AppError::Llm(format!("Failed to parse context entry: {e}")))?;
+    tracing::debug!("LLM parse complete, running impact validation");
 
     let bullets = extract_bullets(&parsed);
     let all_results: Vec<_> = bullets.iter().map(|b| validate_impact(b)).collect();
@@ -72,6 +77,12 @@ pub async fn parse_and_validate(
             .collect(),
     };
 
+    tracing::debug!(
+        impact_passed = impact_validation.passed,
+        missing_count = impact_validation.missing.len(),
+        "impact validation complete, checking for conflicts"
+    );
+
     let existing = get_current_entries(pool, user_id)
         .await
         .map_err(AppError::Internal)?;
@@ -82,6 +93,12 @@ pub async fn parse_and_validate(
     let data = parsed.get("data").cloned().unwrap_or_default();
     let conflict_warnings = check_for_conflicts(&existing, entry_type, &data);
 
+    tracing::info!(
+        impact_passed = impact_validation.passed,
+        conflict_count = conflict_warnings.len(),
+        "parse_and_validate complete"
+    );
+
     Ok(IngestPreviewResponse {
         entry: parsed,
         impact_validation,
@@ -89,12 +106,14 @@ pub async fn parse_and_validate(
     })
 }
 
+#[tracing::instrument(skip(pool, s3), fields(user_id = %request.user_id))]
 pub async fn confirm_ingest(
     pool: &sqlx::PgPool,
     s3: &aws_sdk_s3::Client,
     s3_bucket: &str,
     request: &IngestConfirmRequest,
 ) -> Result<IngestConfirmResponse, AppError> {
+    tracing::info!("starting context commit to DB and S3");
     let user_id = request.user_id;
     let entry = &request.entry;
 
@@ -129,6 +148,7 @@ pub async fn confirm_ingest(
         .map_err(AppError::Internal)?;
     let score_before = compute_completeness_report(&entries_before).overall_score;
 
+    tracing::debug!(%entry_id, %entry_type, "committing context entry to DB and S3");
     let version = commit_context_update(
         pool,
         s3,
@@ -155,10 +175,18 @@ pub async fn confirm_ingest(
         .map_err(AppError::Internal)?;
     let score_after = compute_completeness_report(&entries_after).overall_score;
 
+    let completeness_delta = score_after - score_before;
+    tracing::info!(
+        %entry_id,
+        version = version.version,
+        completeness_delta,
+        "context entry committed successfully"
+    );
+
     Ok(IngestConfirmResponse {
         entry_id,
         version: version.version,
-        completeness_delta: score_after - score_before,
+        completeness_delta,
     })
 }
 
