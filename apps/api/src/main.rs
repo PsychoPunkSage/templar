@@ -27,6 +27,7 @@ use crate::generation::fit_scoring::KeywordFitScorer;
 use crate::layout::{default_page_config, FontFamily};
 use crate::llm_client::LlmClient;
 use crate::render::tectonic::check_tectonic_available;
+use crate::context::worker::spawn_context_ingest_worker;
 use crate::render::worker::spawn_render_worker;
 use crate::routes::build_router;
 use crate::state::AppState;
@@ -96,6 +97,22 @@ async fn main() -> Result<()> {
         state.config.s3_bucket.clone(),
     );
     info!("Render worker: spawned");
+
+    // Spawn N background context ingest workers (configurable via INGEST_WORKER_COUNT)
+    let ingest_worker_count: usize = std::env::var("INGEST_WORKER_COUNT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
+    for _ in 0..ingest_worker_count {
+        spawn_context_ingest_worker(
+            state.redis.clone(),
+            state.db.clone(),
+            state.llm.clone(),
+            state.s3.clone(),
+            state.config.s3_bucket.clone(),
+        );
+    }
+    info!("Context ingest workers: spawned {ingest_worker_count}");
 
     // Build router
     let app = build_router(state)

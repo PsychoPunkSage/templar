@@ -64,7 +64,7 @@ impl IntoResponse for AppError {
                 "Access denied".to_string(),
             ),
             AppError::Database(e) => {
-                tracing::error!("Database error: {e}");
+                tracing::error!(db_error = %e, "Database error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "DATABASE_ERROR",
@@ -72,7 +72,7 @@ impl IntoResponse for AppError {
                 )
             }
             AppError::Llm(msg) => {
-                tracing::error!("LLM error: {msg}");
+                tracing::error!(error_msg = %msg, "LLM error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "LLM_ERROR",
@@ -80,7 +80,7 @@ impl IntoResponse for AppError {
                 )
             }
             AppError::S3(msg) => {
-                tracing::error!("S3 error: {msg}");
+                tracing::error!(error_msg = %msg, "S3 error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "S3_ERROR",
@@ -88,7 +88,7 @@ impl IntoResponse for AppError {
                 )
             }
             AppError::Internal(e) => {
-                tracing::error!("Internal error: {e:?}");
+                tracing::error!(error = %e, chain = ?e, "Internal error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "INTERNAL_ERROR",

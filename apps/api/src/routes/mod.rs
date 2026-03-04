@@ -1,6 +1,7 @@
 pub mod health;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, patch, post},
     Router,
 };
@@ -28,6 +29,20 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/context/entries/:id/evergreen",
             patch(ctx::handle_toggle_evergreen),
         )
+        // ── Batch ingestion API (async pipeline) ──────────────────────────
+        // Note: specific literal paths before the :id param route (Axum priority)
+        .route(
+            "/api/v1/context/ingest/batch",
+            post(ctx::handle_ingest_batch),
+        )
+        .route(
+            "/api/v1/context/ingest/upload",
+            post(ctx::handle_ingest_upload),
+        )
+        .route(
+            "/api/v1/context/ingest/batch/:id",
+            get(ctx::handle_batch_status),
+        )
         // ── Resume / Generation API (Phase 2) ─────────────────────────────
         // Note: specific routes before the :id param route (Axum priority)
         .route("/api/v1/resumes/parse-jd", post(gen::handle_parse_jd))
@@ -46,4 +61,7 @@ pub fn build_router(state: AppState) -> Router {
             get(render::handle_render_status),
         )
         .with_state(state)
+        // 10 MB global body size limit — protects all endpoints, covers the
+        // upload endpoint which does its own per-file check in extractor.rs
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
 }

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE context_ingest_batches\n           SET status = 'processing', updated_at = NOW()\n           WHERE id = (SELECT batch_id FROM context_ingest_items WHERE id = $1)\n             AND status = 'queued'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9d4c6b2389575e2765ca0f9a9851b050cd615b9c320e9b45cc3d84fba6f92a62"
+}
