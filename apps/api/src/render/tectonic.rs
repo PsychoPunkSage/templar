@@ -23,7 +23,7 @@ use crate::render::types::{RenderError, TectonicResult};
 ///
 /// Uses stdin mode (`tectonic -`) to avoid writing the .tex source to disk.
 /// A TempDir is still created for Tectonic's internal aux files.
-/// Times out after 30 seconds.
+/// Times out after 120 seconds (cold cache can download ~60 packages).
 pub async fn compile_latex(
     latex_source: &str,
     _job_id: Uuid,
@@ -54,11 +54,11 @@ pub async fn compile_latex(
         // Drop closes the pipe; tectonic reads EOF and begins compilation
     }
 
-    let output = timeout(Duration::from_secs(30), child.wait_with_output())
+    let output = timeout(Duration::from_secs(120), child.wait_with_output())
         .await
         .map_err(|_| RenderError::CompilationFailed {
             exit_code: -1,
-            stderr: "Tectonic compilation timed out after 30 seconds".to_string(),
+            stderr: "Tectonic compilation timed out after 120 seconds".to_string(),
         })??;
 
     let duration_ms = start.elapsed().as_millis() as u64;
