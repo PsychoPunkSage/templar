@@ -9,7 +9,7 @@
 use anyhow::Result;
 use redis::AsyncCommands;
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 /// Per-item status as returned by the polling endpoint.
@@ -20,6 +20,19 @@ pub struct BatchItemStatus {
     pub status: String,
     pub error_msg: Option<String>,
     pub entry_id: Option<Uuid>,
+    /// Phase 5.5.4: non-null when this item was merged into an existing entry.
+    pub merged_with_entry_id: Option<Uuid>,
+}
+
+/// Intermediate DB row for context_ingest_items (non-macro query, supports merged_with).
+#[derive(Debug, FromRow)]
+struct BatchItemDbRow {
+    id: Uuid,
+    entry_index: i32,
+    status: String,
+    error_msg: Option<String>,
+    entry_id: Option<Uuid>,
+    merged_with: Option<Uuid>,
 }
 
 /// Full batch status response for the polling endpoint.
@@ -134,13 +147,14 @@ pub async fn get_batch_status(
         return Ok(None);
     };
 
-    let items = sqlx::query!(
-        r#"SELECT id, entry_index, status, error_msg, entry_id
+    // Non-macro query so we can SELECT `merged_with` without touching .sqlx cache
+    let items = sqlx::query_as::<_, BatchItemDbRow>(
+        r#"SELECT id, entry_index, status, error_msg, entry_id, merged_with
            FROM context_ingest_items
            WHERE batch_id = $1
            ORDER BY entry_index"#,
-        batch_id
     )
+    .bind(batch_id)
     .fetch_all(pool)
     .await?;
 
@@ -161,6 +175,7 @@ pub async fn get_batch_status(
                 status: r.status,
                 error_msg: r.error_msg,
                 entry_id: r.entry_id,
+                merged_with_entry_id: r.merged_with,
             })
             .collect(),
     }))
@@ -202,6 +217,27 @@ pub async fn mark_item_succeeded(pool: &PgPool, item_id: Uuid, entry_id: Uuid) -
         item_id,
         entry_id,
     )
+    .execute(pool)
+    .await?;
+    update_batch_counters(pool, item_id, true).await
+}
+
+/// Mark an item as merged: status = 'succeeded', entry_id = existing, merged_with = existing.
+///
+/// Phase 5.5.4: used when new context text was merged into an existing entry.
+/// Counts as succeeded for batch counter purposes.
+pub async fn mark_item_merged(
+    pool: &PgPool,
+    item_id: Uuid,
+    existing_entry_id: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        r#"UPDATE context_ingest_items
+           SET status = 'succeeded', entry_id = $2, merged_with = $2, updated_at = NOW()
+           WHERE id = $1"#,
+    )
+    .bind(item_id)
+    .bind(existing_entry_id)
     .execute(pool)
     .await?;
     update_batch_counters(pool, item_id, true).await
@@ -327,20 +363,22 @@ mod tests {
                     status: "succeeded".to_string(),
                     error_msg: None,
                     entry_id: Some(Uuid::new_v4()),
+                    merged_with_entry_id: None,
                 },
                 BatchItemStatus {
                     id: Uuid::new_v4(),
                     entry_index: 1,
                     status: "failed".to_string(),
-                    error_msg: Some("Impact validation failed".to_string()),
+                    error_msg: Some("Parse failed".to_string()),
                     entry_id: None,
+                    merged_with_entry_id: None,
                 },
             ],
         };
 
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("processing"));
-        assert!(json.contains("Impact validation failed"));
+        assert!(json.contains("Parse failed"));
     }
 
     /// Integration test — requires live PostgreSQL.
