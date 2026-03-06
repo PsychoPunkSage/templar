@@ -6,7 +6,7 @@ use crate::context::completeness::compute_completeness_report;
 use crate::context::dedup::{check_for_conflicts, ConflictWarning};
 use crate::context::prompts::{CONTEXT_PARSE_PROMPT, CONTEXT_PARSE_SYSTEM};
 use crate::context::scoring::compute_recency_score;
-use crate::context::validation::{validate_impact, ImpactValidationResult};
+use crate::context::validation::{validate_bullets, validate_impact, ImpactQuality};
 use crate::context::versioning::{commit_context_update, get_current_entries, CommitParams};
 use crate::errors::AppError;
 use crate::llm_client::LlmClient;
@@ -20,7 +20,8 @@ pub struct IngestRequest {
 #[derive(Debug, Serialize)]
 pub struct IngestPreviewResponse {
     pub entry: serde_json::Value,
-    pub impact_validation: ImpactValidationResult,
+    /// Phase 5.5: non-blocking quality assessment (replaces pass/fail validation).
+    pub quality: ImpactQuality,
     pub conflict_warnings: Vec<ConflictWarning>,
 }
 
@@ -47,6 +48,8 @@ pub struct IngestConfirmResponse {
     pub entry_id: Uuid,
     pub version: i32,
     pub completeness_delta: f64,
+    /// Phase 5.5: quality hints to display in the UI.
+    pub improvement_hints: Vec<String>,
 }
 
 #[tracing::instrument(skip(llm, pool), fields(user_id = %user_id, text_len = raw_text.len()))]
@@ -64,23 +67,21 @@ pub async fn parse_and_validate(
         .call_json(&prompt, CONTEXT_PARSE_SYSTEM)
         .await
         .map_err(|e| AppError::Llm(format!("Failed to parse context entry: {e}")))?;
-    tracing::debug!("LLM parse complete, running impact validation");
+    tracing::debug!("LLM parse complete, computing quality");
 
+    // Phase 5.5: quality assessment is non-blocking — we always proceed
     let bullets = extract_bullets(&parsed);
-    let all_results: Vec<_> = bullets.iter().map(|b| validate_impact(b)).collect();
-    let impact_validation = ImpactValidationResult {
-        passed: all_results.iter().all(|r| r.passed),
-        missing: all_results.iter().flat_map(|r| r.missing.clone()).collect(),
-        suggestions: all_results
-            .iter()
-            .flat_map(|r| r.suggestions.clone())
-            .collect(),
+    let quality = if bullets.is_empty() {
+        validate_impact(raw_text)
+    } else {
+        let per_bullet: Vec<_> = bullets.iter().map(|b| validate_impact(b)).collect();
+        ImpactQuality::aggregate(&per_bullet)
     };
 
     tracing::debug!(
-        impact_passed = impact_validation.passed,
-        missing_count = impact_validation.missing.len(),
-        "impact validation complete, checking for conflicts"
+        quality_score = quality.quality_score,
+        flags = ?quality.flags,
+        "quality assessment complete, checking for conflicts"
     );
 
     let existing = get_current_entries(pool, user_id)
@@ -94,14 +95,14 @@ pub async fn parse_and_validate(
     let conflict_warnings = check_for_conflicts(&existing, entry_type, &data);
 
     tracing::info!(
-        impact_passed = impact_validation.passed,
+        quality_score = quality.quality_score,
         conflict_count = conflict_warnings.len(),
         "parse_and_validate complete"
     );
 
     Ok(IngestPreviewResponse {
         entry: parsed,
-        impact_validation,
+        quality,
         conflict_warnings,
     })
 }
@@ -142,6 +143,10 @@ pub async fn confirm_ingest(
     let impact_score = compute_impact_score(&bullets);
     let tags = extract_tags(&data, &entry_type);
 
+    // Phase 5.5: compute quality for storage
+    let quality = validate_bullets(&bullets);
+    let quality_flags = quality.flags.clone();
+
     // Completeness before insert
     let entries_before = get_current_entries(pool, user_id)
         .await
@@ -164,6 +169,8 @@ pub async fn confirm_ingest(
             tags: &tags,
             flagged_evergreen,
             contribution_type: &contribution_type,
+            quality_score: quality.quality_score as f64,
+            quality_flags: &quality_flags,
         },
     )
     .await
@@ -180,6 +187,7 @@ pub async fn confirm_ingest(
         %entry_id,
         version = version.version,
         completeness_delta,
+        quality_score = quality.quality_score,
         "context entry committed successfully"
     );
 
@@ -187,6 +195,7 @@ pub async fn confirm_ingest(
         entry_id,
         version: version.version,
         completeness_delta,
+        improvement_hints: quality.suggestions,
     })
 }
 
@@ -212,8 +221,8 @@ fn compute_impact_score(bullets: &[String]) -> f64 {
     if bullets.is_empty() {
         return 0.5;
     }
-    let quantified = bullets.iter().filter(|b| validate_impact(b).passed).count();
-    (quantified as f64 / bullets.len() as f64).clamp(0.0, 1.0)
+    let total_quality: f32 = bullets.iter().map(|b| validate_impact(b).quality_score).sum();
+    (total_quality as f64 / bullets.len() as f64).clamp(0.0, 1.0)
 }
 
 fn extract_tags(data: &serde_json::Value, entry_type: &str) -> Vec<String> {

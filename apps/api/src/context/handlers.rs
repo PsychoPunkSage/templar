@@ -13,7 +13,7 @@ use crate::context::ingest::{
     confirm_ingest, parse_and_validate, IngestConfirmRequest, IngestConfirmResponse,
     IngestPreviewResponse, IngestRequest,
 };
-use crate::context::splitter::split_entries;
+use crate::context::splitter::smart_split;
 use crate::context::versioning::{
     get_current_entries, get_entries_at_version, get_version_history,
 };
@@ -33,16 +33,14 @@ pub struct ContextListResponse {
 }
 
 /// POST /api/v1/context/ingest
+///
+/// Phase 5.5: non-blocking — always returns a preview with quality hints.
+/// The old 422 rejection for missing metrics has been removed.
 pub async fn handle_ingest(
     State(state): State<AppState>,
     Json(req): Json<IngestRequest>,
 ) -> Result<Json<IngestPreviewResponse>, AppError> {
     let preview = parse_and_validate(&req.raw_text, &state.llm, &state.db, req.user_id).await?;
-    if !preview.impact_validation.passed {
-        return Err(AppError::UnprocessableEntity(
-            serde_json::to_string(&preview).unwrap_or_default(),
-        ));
-    }
     Ok(Json(preview))
 }
 
@@ -173,7 +171,7 @@ pub async fn handle_ingest_batch(
 ) -> Result<Json<BatchStartResponse>, AppError> {
     tracing::info!("batch text ingest requested");
 
-    let entries = split_entries(&req.raw_text)?;
+    let entries = smart_split(&req.raw_text, &state.llm).await?;
     let entry_count = entries.len();
     tracing::info!(entry_count, "split entries from raw text");
 
@@ -259,7 +257,7 @@ pub async fn handle_ingest_upload(
     );
 
     let raw_text = extractor::extract_text(&filename, &bytes)?;
-    let entries = split_entries(&raw_text)?;
+    let entries = smart_split(&raw_text, &state.llm).await?;
     let entry_count = entries.len();
 
     let batch_id =
