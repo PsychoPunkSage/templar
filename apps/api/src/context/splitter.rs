@@ -1,12 +1,15 @@
 //! Entry splitter: splits a raw multi-entry document into individual entry strings.
 //!
-//! Documents are split on bare `---` horizontal rule lines (with optional surrounding
-//! whitespace). Each segment is trimmed and filtered for minimum length.
+//! Fast path: split on `\n---` horizontal rule lines.
+//! Slow path: LLM pre-pass to identify natural section boundaries when no `---` found.
 //!
-//! The splitter enforces a hard cap of MAX_ENTRIES_PER_BATCH (50) entries per call,
-//! returning a validation error if exceeded.
+//! The splitter enforces a hard cap of MAX_ENTRIES_PER_BATCH (50) entries per call.
 
+use serde::Deserialize;
+
+use crate::context::prompts::{SMART_SPLIT_PROMPT, SMART_SPLIT_SYSTEM};
 use crate::errors::AppError;
+use crate::llm_client::LlmClient;
 
 const MAX_ENTRIES_PER_BATCH: usize = 50;
 const MIN_ENTRY_LENGTH: usize = 20;
@@ -54,6 +57,81 @@ pub fn split_entries(raw: &str) -> Result<Vec<String>, AppError> {
     }
 
     Ok(entries)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Phase 5.5.3 — Smart split with LLM fallback
+// ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct SplitEntry {
+    #[allow(dead_code)]
+    entry_type: String,
+    text: String,
+}
+
+/// Splits a document into individual entry strings.
+///
+/// **Fast path** (no LLM): if the document contains `\n---`, use the existing
+/// `split_entries()` separator-based approach.
+///
+/// **Slow path** (LLM pre-pass): if no `---` separator is found, call the LLM
+/// to identify natural section boundaries (one entry per company/project/skill).
+/// Falls back to treating the whole document as a single entry if LLM fails.
+pub async fn smart_split(raw_text: &str, llm: &LlmClient) -> Result<Vec<String>, AppError> {
+    // Fast path: existing separator-based split
+    if raw_text.contains("\n---") {
+        return split_entries(raw_text);
+    }
+
+    // Short document (<200 chars) — treat as single entry without LLM overhead
+    if raw_text.trim().len() < 200 {
+        return split_entries(raw_text);
+    }
+
+    // Slow path: LLM identifies section boundaries
+    let prompt = SMART_SPLIT_PROMPT.replace("{raw_text}", raw_text);
+    let splits: Result<Vec<SplitEntry>, _> = llm.call_json(&prompt, SMART_SPLIT_SYSTEM).await;
+
+    match splits {
+        Ok(entries) => {
+            let texts: Vec<String> = entries
+                .into_iter()
+                .map(|e| e.text.trim().to_string())
+                .filter(|t| t.len() >= MIN_ENTRY_LENGTH)
+                .collect();
+
+            if texts.is_empty() {
+                // LLM returned nothing useful — fall back to whole document
+                return single_entry_fallback(raw_text);
+            }
+            if texts.len() > MAX_ENTRIES_PER_BATCH {
+                return Err(AppError::Validation(format!(
+                    "Document contains {} entries; maximum per batch is {}. \
+                     Please split your document into smaller uploads.",
+                    texts.len(),
+                    MAX_ENTRIES_PER_BATCH
+                )));
+            }
+            Ok(texts)
+        }
+        Err(e) => {
+            // LLM failed — fall back to treating the whole document as one entry
+            tracing::warn!(error = %e, "smart_split LLM call failed, treating as single entry");
+            single_entry_fallback(raw_text)
+        }
+    }
+}
+
+fn single_entry_fallback(raw_text: &str) -> Result<Vec<String>, AppError> {
+    let trimmed = raw_text.trim().to_string();
+    if trimmed.len() < MIN_ENTRY_LENGTH {
+        return Err(AppError::Validation(
+            "No content found to ingest. Please provide at least one entry with meaningful text."
+                .into(),
+        ));
+    }
+    Ok(vec![trimmed])
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -2,18 +2,54 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Non-blocking quality assessment for a context entry bullet.
+///
+/// Replaces the old pass/fail `ImpactValidationResult`. Ingest always proceeds;
+/// quality metadata is stored on the entry and surfaced as UI hints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImpactGap {
-    pub bullet: String,
-    pub reason: String,
-    pub suggestion: String,
+pub struct ImpactQuality {
+    /// 0.0–1.0: 1.0 = fully quantified, 0.0 = entirely vague.
+    pub quality_score: f32,
+    /// Machine-readable flags, e.g. ["missing_metric", "vague_verb:improved"]
+    pub flags: Vec<String>,
+    /// Human-readable improvement suggestions shown to the user.
+    pub suggestions: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImpactValidationResult {
-    pub passed: bool,
-    pub missing: Vec<ImpactGap>,
-    pub suggestions: Vec<String>,
+impl ImpactQuality {
+    /// Returns true if quality is considered acceptable (score ≥ 0.5).
+    pub fn is_acceptable(&self) -> bool {
+        self.quality_score >= 0.5
+    }
+
+    /// Merge quality from multiple bullets into one aggregate.
+    pub fn aggregate(qualities: &[ImpactQuality]) -> Self {
+        if qualities.is_empty() {
+            return ImpactQuality {
+                quality_score: 1.0,
+                flags: vec![],
+                suggestions: vec![],
+            };
+        }
+        let avg = qualities.iter().map(|q| q.quality_score).sum::<f32>() / qualities.len() as f32;
+        let flags: Vec<String> = qualities
+            .iter()
+            .flat_map(|q| q.flags.iter().cloned())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let suggestions: Vec<String> = qualities
+            .iter()
+            .flat_map(|q| q.suggestions.iter().cloned())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        ImpactQuality {
+            quality_score: avg,
+            flags,
+            suggestions,
+        }
+    }
 }
 
 const VAGUE_VERBS: &[&str] = &[
@@ -42,19 +78,15 @@ const VAGUE_SCALE_WORDS: &[&str] = &[
     "several",
 ];
 
-/// Validates a single bullet for impact quantification.
+/// Assesses the impact quality of a single bullet string.
 ///
-/// PASS conditions:
-/// - Contains a digit (number)
-/// - Contains `[LOW_METRICS]` marker
-/// - Contains `~N` estimate patterns
-/// - Contains `%`, `$`, `€`, `£`
-/// - Contains `Nx` multiplier patterns
+/// Always returns an `ImpactQuality` — never blocks ingest.
+/// A score of 1.0 means fully quantified; 0.3 means no metrics at all.
 ///
-/// FAIL conditions:
-/// - Vague verbs without metrics
-/// - Vague scale words without numbers
-pub fn validate_impact(text: &str) -> ImpactValidationResult {
+/// HIGH quality (score 1.0): contains digit, %, $, [LOW_METRICS], ~N, or Nx multiplier
+/// MEDIUM quality (score 0.5): no metrics but no vague language
+/// LOW quality (score 0.3–0.4): vague verbs or vague scale words
+pub fn validate_impact(text: &str) -> ImpactQuality {
     let text_lower = text.to_lowercase();
 
     let has_digit = text.chars().any(|c| c.is_ascii_digit());
@@ -72,91 +104,63 @@ pub fn validate_impact(text: &str) -> ImpactValidationResult {
         has_digit || has_low_metrics || has_tilde || has_percent || has_currency || has_multiplier;
 
     if is_quantified {
-        return ImpactValidationResult {
-            passed: true,
-            missing: vec![],
+        return ImpactQuality {
+            quality_score: 1.0,
+            flags: vec![],
             suggestions: vec![],
         };
     }
 
-    let mut missing = Vec::new();
+    let mut flags = Vec::new();
     let mut suggestions = Vec::new();
+    let mut quality_score: f32 = 0.5; // default medium quality for no-metric bullets
 
+    // Check for vague verbs
     for &vague in VAGUE_VERBS {
         if text_lower.contains(vague) {
-            missing.push(ImpactGap {
-                bullet: text.to_string(),
-                reason: format!("Contains vague verb '{}' without quantified impact", vague),
-                suggestion: format!(
-                    "Add a metric: e.g., '{}' by X%, resulting in Y reduction, or tag with [LOW_METRICS]",
-                    vague
-                ),
-            });
+            flags.push(format!("vague_verb:{}", vague.replace(' ', "_")));
             suggestions.push(format!(
-                "Quantify '{}': How much? Add a number, percentage, or time saved.",
+                "Quantify '{}': Add a number, percentage, or time metric. If data unavailable, append [LOW_METRICS].",
                 vague
             ));
+            quality_score = 0.4;
             break;
         }
     }
 
+    // Check for vague scale words
     for &vague_scale in VAGUE_SCALE_WORDS {
         if text_lower.contains(vague_scale) {
-            missing.push(ImpactGap {
-                bullet: text.to_string(),
-                reason: format!("Uses vague scale word '{}' without a number", vague_scale),
-                suggestion: format!(
-                    "Replace '{}' with a specific number: e.g., '5x', '40%', '3 weeks'",
-                    vague_scale
-                ),
-            });
+            flags.push(format!("vague_scale:{}", vague_scale));
             suggestions.push(format!(
-                "Replace '{}' with a specific number or percentage.",
+                "Replace '{}' with a specific number or percentage (e.g. '5x', '40%', '3 weeks').",
                 vague_scale
             ));
+            quality_score = quality_score.min(0.4);
             break;
         }
     }
 
-    if missing.is_empty() {
-        missing.push(ImpactGap {
-            bullet: text.to_string(),
-            reason: "No quantified outcome found".to_string(),
-            suggestion: "Add a metric (number, %, time, or use [LOW_METRICS] if unavailable)"
-                .to_string(),
-        });
+    // No metrics at all in an otherwise clean bullet
+    if flags.is_empty() {
+        flags.push("missing_metric".to_string());
         suggestions.push(
             "Add a specific number, percentage, or time metric. If data unavailable, append [LOW_METRICS].".to_string(),
         );
+        quality_score = 0.5; // medium — no vague language, just no numbers
     }
 
-    ImpactValidationResult {
-        passed: false,
-        missing,
+    ImpactQuality {
+        quality_score,
+        flags,
         suggestions,
     }
 }
 
-/// Validates a batch of bullets, collecting all failures.
-pub fn validate_bullets(bullets: &[String]) -> ImpactValidationResult {
-    let mut all_missing = Vec::new();
-    let mut all_suggestions = Vec::new();
-    let mut any_failed = false;
-
-    for bullet in bullets {
-        let result = validate_impact(bullet);
-        if !result.passed {
-            any_failed = true;
-            all_missing.extend(result.missing);
-            all_suggestions.extend(result.suggestions);
-        }
-    }
-
-    ImpactValidationResult {
-        passed: !any_failed,
-        missing: all_missing,
-        suggestions: all_suggestions,
-    }
+/// Assesses quality across a batch of bullets, returning an aggregate.
+pub fn validate_bullets(bullets: &[String]) -> ImpactQuality {
+    let qualities: Vec<_> = bullets.iter().map(|b| validate_impact(b)).collect();
+    ImpactQuality::aggregate(&qualities)
 }
 
 #[cfg(test)]
@@ -164,139 +168,144 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pass_with_percentage() {
-        assert!(validate_impact("Reduced latency by 40% through caching").passed);
+    fn test_high_quality_with_percentage() {
+        let q = validate_impact("Reduced latency by 40% through caching");
+        assert_eq!(q.quality_score, 1.0);
+        assert!(q.flags.is_empty());
     }
 
     #[test]
-    fn test_pass_with_dollar_amount() {
-        assert!(validate_impact("Saved $50,000 annually by optimizing queries").passed);
+    fn test_high_quality_with_dollar_amount() {
+        let q = validate_impact("Saved $50,000 annually by optimizing queries");
+        assert_eq!(q.quality_score, 1.0);
     }
 
     #[test]
-    fn test_pass_with_count() {
-        assert!(validate_impact("Built 3 microservices handling 10k rps").passed);
+    fn test_high_quality_with_count() {
+        let q = validate_impact("Built 3 microservices handling 10k rps");
+        assert_eq!(q.quality_score, 1.0);
     }
 
     #[test]
-    fn test_pass_with_low_metrics_marker() {
-        assert!(validate_impact("Improved system performance [LOW_METRICS]").passed);
+    fn test_high_quality_with_low_metrics_marker() {
+        let q = validate_impact("Improved system performance [LOW_METRICS]");
+        assert_eq!(q.quality_score, 1.0);
     }
 
     #[test]
-    fn test_pass_with_tilde_estimate() {
-        assert!(validate_impact("Reduced deployment time by ~2 hours").passed);
+    fn test_high_quality_with_tilde_estimate() {
+        let q = validate_impact("Reduced deployment time by ~2 hours");
+        assert_eq!(q.quality_score, 1.0);
     }
 
     #[test]
-    fn test_pass_with_euro() {
-        assert!(validate_impact("Generated €200k in new revenue").passed);
+    fn test_high_quality_with_euro() {
+        let q = validate_impact("Generated €200k in new revenue");
+        assert_eq!(q.quality_score, 1.0);
     }
 
     #[test]
-    fn test_pass_with_digit_in_tech() {
-        assert!(validate_impact("Designed REST API serving 1M requests/day").passed);
+    fn test_high_quality_with_digit() {
+        let q = validate_impact("Designed REST API serving 1M requests/day");
+        assert_eq!(q.quality_score, 1.0);
     }
 
     #[test]
-    fn test_pass_with_k_notation() {
-        assert!(validate_impact("Processed 100k+ records daily").passed);
+    fn test_high_quality_team_count() {
+        let q = validate_impact("Trained 15 engineers on new deployment process");
+        assert_eq!(q.quality_score, 1.0);
+    }
+
+    // --- Low quality but NOT blocked ---
+
+    #[test]
+    fn test_low_quality_vague_verb_improved() {
+        let q = validate_impact("Improved the user experience");
+        assert!(q.quality_score < 0.5);
+        assert!(q.flags.iter().any(|f| f.starts_with("vague_verb:")));
+        assert!(!q.suggestions.is_empty());
     }
 
     #[test]
-    fn test_pass_time_saved() {
-        assert!(validate_impact("Reduced build time from 45 minutes to 8 minutes").passed);
+    fn test_low_quality_vague_verb_enhanced() {
+        let q = validate_impact("Enhanced the database performance");
+        assert!(q.quality_score < 0.5);
+        assert!(q.flags.iter().any(|f| f.starts_with("vague_verb:")));
     }
 
     #[test]
-    fn test_pass_team_count() {
-        assert!(validate_impact("Trained 15 engineers on new deployment process").passed);
+    fn test_low_quality_helped() {
+        let q = validate_impact("Helped the team deliver projects");
+        assert!(q.quality_score < 0.5);
     }
 
     #[test]
-    fn test_fail_improved_without_metrics() {
-        let r = validate_impact("Improved the user experience");
-        assert!(!r.passed);
-        assert!(!r.missing.is_empty());
-        assert!(r.missing[0].reason.contains("vague verb"));
+    fn test_low_quality_worked_on() {
+        let q = validate_impact("Worked on backend infrastructure");
+        assert!(q.quality_score < 0.5);
     }
 
     #[test]
-    fn test_fail_enhanced_without_metrics() {
-        assert!(!validate_impact("Enhanced the database performance").passed);
+    fn test_low_quality_vague_scale_significant() {
+        let q = validate_impact("Achieved significant performance improvements");
+        assert!(q.quality_score < 0.5);
+        assert!(q.flags.iter().any(|f| f.starts_with("vague_scale:")));
     }
 
     #[test]
-    fn test_fail_helped_without_metrics() {
-        assert!(!validate_impact("Helped the team deliver projects").passed);
+    fn test_low_quality_major() {
+        let q = validate_impact("Led major improvements to the codebase");
+        assert!(q.quality_score < 0.5);
     }
 
     #[test]
-    fn test_fail_worked_on() {
-        assert!(!validate_impact("Worked on backend infrastructure").passed);
+    fn test_low_quality_various() {
+        let q = validate_impact("Led various projects across teams");
+        assert!(q.quality_score < 0.5);
     }
 
     #[test]
-    fn test_fail_significant_without_number() {
-        let r = validate_impact("Achieved significant performance improvements");
-        assert!(!r.passed);
-        assert!(r.missing[0].reason.contains("vague scale word"));
+    fn test_medium_quality_no_metrics_clean_language() {
+        // "Architected the authentication system" — no vague verbs, no numbers
+        let q = validate_impact("Architected the authentication system");
+        assert!(q.quality_score >= 0.4);
+        assert!(q.flags.contains(&"missing_metric".to_string()));
+        assert!(!q.suggestions.is_empty());
     }
 
     #[test]
-    fn test_fail_major_no_number() {
-        assert!(!validate_impact("Led major improvements to the codebase").passed);
+    fn test_medium_quality_collaborated() {
+        let q = validate_impact("Collaborated on the platform migration");
+        // "collaborated" is not in the vague verbs list → medium quality
+        assert!(q.quality_score >= 0.4);
     }
 
     #[test]
-    fn test_fail_various_projects() {
-        assert!(!validate_impact("Led various projects across teams").passed);
-    }
-
-    #[test]
-    fn test_fail_numerous() {
-        assert!(!validate_impact("Managed numerous client accounts").passed);
-    }
-
-    #[test]
-    fn test_fail_no_metrics_at_all() {
-        let r = validate_impact("Architected the authentication system");
-        assert!(!r.passed);
-        assert!(!r.suggestions.is_empty());
-    }
-
-    #[test]
-    fn test_fail_collaborated_no_metrics() {
-        assert!(!validate_impact("Collaborated on the platform migration").passed);
-    }
-
-    #[test]
-    fn test_fail_assisted_no_metrics() {
-        assert!(!validate_impact("Assisted with deployment automation").passed);
-    }
-
-    #[test]
-    fn test_validate_bullets_mixed() {
+    fn test_validate_bullets_aggregate() {
         let bullets = vec![
             "Reduced latency by 40%".to_string(),
             "Improved the user experience".to_string(),
         ];
-        let r = validate_bullets(&bullets);
-        assert!(!r.passed);
-        assert_eq!(r.missing.len(), 1);
+        let q = validate_bullets(&bullets);
+        // avg of 1.0 and 0.4 = 0.7
+        assert!(q.quality_score > 0.5 && q.quality_score < 1.0);
+        assert!(!q.flags.is_empty());
     }
 
     #[test]
-    fn test_validate_bullets_all_pass() {
+    fn test_validate_bullets_all_high() {
         let bullets = vec![
             "Reduced latency by 40%".to_string(),
             "Processed 100k records [LOW_METRICS]".to_string(),
         ];
-        assert!(validate_bullets(&bullets).passed);
+        let q = validate_bullets(&bullets);
+        assert_eq!(q.quality_score, 1.0);
+        assert!(q.flags.is_empty());
     }
 
     #[test]
     fn test_validate_bullets_empty() {
-        assert!(validate_bullets(&[]).passed);
+        let q = validate_bullets(&[]);
+        assert_eq!(q.quality_score, 1.0);
     }
 }

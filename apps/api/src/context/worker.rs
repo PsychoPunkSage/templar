@@ -143,13 +143,12 @@ async fn worker_loop(
 /// Steps:
 /// 1. Fetch item text and user_id from DB
 /// 2. Mark item as 'processing'
-/// 3. `parse_and_validate` — LLM parse + impact validation
-/// 4. Check impact_validation.passed — fail fast if not passed
-/// 5. `confirm_ingest` — commit to context_entries + S3 snapshot
-/// 6. Mark item as succeeded with the resulting entry_id
+/// 3. `parse_and_validate` — LLM parse (Phase 5.5: quality is non-blocking)
+/// 4. Check for duplicate/merge via `dedup::check_and_merge`
+/// 5a. Duplicate found → `merger::merge_and_commit` → mark merged
+/// 5b. No duplicate  → `confirm_ingest` → commit to context_entries + S3 → mark succeeded
 ///
 /// On any error: marks item as failed and returns Ok(()) — the worker continues.
-/// The caller's outer error handler provides a safety net for unexpected panics.
 async fn process_ingest_item(
     item_id: Uuid,
     db: &PgPool,
@@ -157,6 +156,10 @@ async fn process_ingest_item(
     s3: &S3Client,
     s3_bucket: &str,
 ) -> anyhow::Result<()> {
+    use crate::context::dedup::DedupResult;
+    use crate::context::merger;
+    use crate::context::versioning::get_current_entries;
+
     // Step 1: Fetch item from DB
     let Some((_batch_id, user_id, entry_text)) = batch::get_item(db, item_id).await? else {
         warn!(%item_id, "Ingest worker: item not found in DB, skipping");
@@ -166,7 +169,7 @@ async fn process_ingest_item(
     // Step 2: Mark item as processing
     batch::mark_item_processing(db, item_id).await?;
 
-    // Step 3: Parse and validate via LLM
+    // Step 3: Parse and validate via LLM (quality is non-blocking — always proceeds)
     let preview = match parse_and_validate(&entry_text, llm, db, user_id).await {
         Ok(p) => p,
         Err(e) => {
@@ -177,51 +180,108 @@ async fn process_ingest_item(
         }
     };
 
-    // Step 4: Check impact validation
-    if !preview.impact_validation.passed {
-        let missing: Vec<String> = preview
-            .impact_validation
-            .missing
-            .iter()
-            .map(|gap| gap.reason.clone())
-            .collect();
-        let missing_str = missing.join("; ");
-        let msg = format!(
-            "Impact validation failed — quantification required: {missing_str}. \
-             Please add specific metrics (e.g., percentages, dollar amounts, user counts)."
+    if preview.quality.quality_score < 1.0 {
+        info!(
+            %item_id,
+            %user_id,
+            quality_score = preview.quality.quality_score,
+            flags = ?preview.quality.flags,
+            "Ingest worker: low quality entry — storing with hints (non-blocking)"
         );
-        warn!(%item_id, %user_id, "Ingest worker: impact validation failed");
-        batch::mark_item_failed(db, item_id, &msg).await?;
-        return Ok(());
     }
 
-    // Step 5: Confirm ingest (commit to context_entries + S3)
-    let confirm_req = IngestConfirmRequest {
-        user_id,
-        entry: preview.entry,
-        acknowledged_gaps: vec![],
+    // Step 4: Check for duplicate (heuristic + LLM confirm)
+    let existing_entries = match get_current_entries(db, user_id).await {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(%item_id, %user_id, error = %e, "Ingest worker: dedup lookup failed, proceeding without dedup");
+            vec![]
+        }
     };
-    let confirm_resp = match confirm_ingest(db, s3, s3_bucket, &confirm_req).await {
-        Ok(r) => r,
+
+    let dedup_result = crate::context::dedup::check_and_merge(
+        &existing_entries,
+        &preview.entry,
+        llm,
+    )
+    .await;
+
+    match dedup_result {
+        DedupResult::Merged(existing_entry_id) => {
+            // Step 5a: Merge new text into existing entry (LLM merge + new version)
+            info!(%item_id, %user_id, %existing_entry_id, "Ingest worker: merging with existing entry");
+            match merger::merge_and_commit(
+                db,
+                s3,
+                s3_bucket,
+                llm,
+                user_id,
+                existing_entry_id,
+                &preview.entry,
+            )
+            .await
+            {
+                Ok(()) => {
+                    batch::mark_item_merged(db, item_id, existing_entry_id).await?;
+                    info!(%item_id, %user_id, %existing_entry_id, "Ingest worker: merge succeeded");
+                }
+                Err(e) => {
+                    // Merge failed — fall back to normal insert
+                    warn!(%item_id, %user_id, error = %e, "Ingest worker: merge failed, falling back to normal insert");
+                    let confirm_req = IngestConfirmRequest {
+                        user_id,
+                        entry: preview.entry,
+                        acknowledged_gaps: vec![],
+                    };
+                    commit_and_mark(db, s3, s3_bucket, item_id, user_id, confirm_req).await?;
+                }
+            }
+        }
+        DedupResult::New | DedupResult::Error(_) => {
+            // Step 5b: Normal insert
+            if let DedupResult::Error(ref e) = dedup_result {
+                warn!(%item_id, %user_id, error = %e, "Ingest worker: dedup check failed, proceeding with insert");
+            }
+            let confirm_req = IngestConfirmRequest {
+                user_id,
+                entry: preview.entry,
+                acknowledged_gaps: vec![],
+            };
+            commit_and_mark(db, s3, s3_bucket, item_id, user_id, confirm_req).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Helper: confirm_ingest + mark_item_succeeded.
+async fn commit_and_mark(
+    db: &PgPool,
+    s3: &S3Client,
+    s3_bucket: &str,
+    item_id: Uuid,
+    user_id: Uuid,
+    confirm_req: IngestConfirmRequest,
+) -> anyhow::Result<()> {
+    match confirm_ingest(db, s3, s3_bucket, &confirm_req).await {
+        Ok(r) => {
+            batch::mark_item_succeeded(db, item_id, r.entry_id).await?;
+            info!(
+                %item_id,
+                %user_id,
+                entry_id = %r.entry_id,
+                completeness_delta = r.completeness_delta,
+                "Ingest worker: item succeeded"
+            );
+            Ok(())
+        }
         Err(e) => {
             let msg = format!("Commit failed: {e}");
             error!(%item_id, %user_id, error = %e, "Ingest worker: confirm_ingest failed");
             batch::mark_item_failed(db, item_id, &msg).await?;
-            return Ok(());
+            Ok(())
         }
-    };
-
-    // Step 6: Mark item as succeeded
-    batch::mark_item_succeeded(db, item_id, confirm_resp.entry_id).await?;
-    info!(
-        %item_id,
-        %user_id,
-        entry_id = %confirm_resp.entry_id,
-        completeness_delta = confirm_resp.completeness_delta,
-        "Ingest worker: item succeeded"
-    );
-
-    Ok(())
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
