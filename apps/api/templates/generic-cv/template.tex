@@ -1,0 +1,73 @@
+% Generic CV — pdfLaTeX template for Templar
+%
+% Engine: pdfLaTeX (NOT XeLaTeX/LuaLaTeX)
+% Reason: pdfLaTeX + lmodern gives the broadest compatibility across Tectonic
+% installations without requiring system font lookups (fontspec/fontconfig).
+% XeLaTeX templates require specific system fonts; this template works anywhere.
+%
+% Placeholders (substituted by render_file_template() in templates/mod.rs):
+%   {{FULL_NAME}}    — user's full name (LaTeX-escaped)
+%   {{CONTACT_LINE}} — pre-built contact info string (email, phone, location, etc.)
+%   {{SECTIONS}}     — generated bullet sections (injected verbatim — already escaped)
+
+\documentclass[10pt]{article}
+
+% T1 font encoding: enables proper hyphenation and correct character rendering
+% for European characters. Required for lmodern.
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% lmodern: scalable version of Computer Modern — crisp at any size in pdfLaTeX.
+% fix-cm: fixes Computer Modern scaling issues at large and small sizes.
+\usepackage{lmodern}
+\usepackage{fix-cm}
+
+% Standard layout packages
+\usepackage[left=1.00in,right=1.00in,top=0.75in,bottom=0.75in]{geometry}
+\usepackage{microtype}       % subtle character spacing improvements (kerning, tracking)
+\usepackage{enumitem}        % fine-grained list control
+\usepackage{titlesec}        % custom section headers
+\usepackage{xcolor}          % color support (used for rules)
+\usepackage{parskip}         % paragraph spacing without indentation
+\usepackage{multicol}        % multi-column contact line
+
+% fontawesome5: icons for email, phone, location in the header.
+% Requires the fontawesome5 TeX package (pre-warmed in Docker image).
+\usepackage{fontawesome5}
+
+% hyperref: clickable email and URL links in the PDF output
+\usepackage[hidelinks]{hyperref}
+
+% ── Page style ───────────────────────────────────────────────────────────────
+\pagestyle{empty}          % no page numbers — standard for 1-page resumes
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+
+% ── Section headers: large + bold + horizontal rule beneath ─────────────────
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\titlespacing{\section}{0pt}{8pt}{4pt}
+
+% ── Bullet list settings ─────────────────────────────────────────────────────
+\setlist[itemize]{leftmargin=1.5em, itemsep=1pt, parsep=0pt, topsep=2pt}
+
+\begin{document}
+
+% ── Header ───────────────────────────────────────────────────────────────────
+% The name is centered and large; contact info on the line below.
+% {{CONTACT_LINE}} is pre-built in Rust — it only includes non-empty fields,
+% separated by " \quad|\quad " so blank fields don't leave orphan separators.
+{\centering
+  {\LARGE\bfseries {{FULL_NAME}}}\\[3pt]
+  \small {{CONTACT_LINE}}
+  \par
+}
+
+\vspace{6pt}
+
+% ── Content ──────────────────────────────────────────────────────────────────
+% {{SECTIONS}} is injected by build_file_template_document() in templates/mod.rs.
+% It contains \section*{...} + \begin{itemize} ... \end{itemize} blocks,
+% one per generated section, with all text already LaTeX-escaped.
+{{SECTIONS}}
+
+\end{document}

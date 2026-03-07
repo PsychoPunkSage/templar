@@ -1,0 +1,8 @@
+{
+  "id": "generic-cv",
+  "name": "Generic CV",
+  "description": "A clean, professional CV template suitable for most industries. Uses pdfLaTeX for maximum compatibility — works without system font installation.",
+  "tags": ["professional", "ats-friendly", "classic", "student"],
+  "engine": "pdflatex",
+  "thumbnail_s3_key": "thumbnails/generic-cv.png"
+}

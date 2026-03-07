@@ -1,0 +1,34 @@
+{
+  "profile": {
+    "full_name": "Alex Johnson",
+    "email": "alex.johnson@email.com",
+    "phone": "+1 (555) 867-5309",
+    "location": "San Francisco, CA",
+    "linkedin": "in/alexjohnson",
+    "website": "alexjohnson.dev"
+  },
+  "sections": [
+    {
+      "name": "Experience",
+      "bullets": [
+        "Led migration of monolithic backend to microservices, cutting deployment time by 60%",
+        "Designed distributed caching layer serving 10M requests/day with 99.9% uptime",
+        "Mentored team of 5 engineers; code review practices reduced production bugs by 35%"
+      ]
+    },
+    {
+      "name": "Education",
+      "bullets": [
+        "B.S. Computer Science, Stanford University, GPA 3.8/4.0 (Class of 2018)"
+      ]
+    },
+    {
+      "name": "Skills",
+      "bullets": [
+        "Languages: Rust, Go, Python, TypeScript, SQL",
+        "Infrastructure: Docker, Kubernetes, AWS, PostgreSQL, Redis",
+        "Practices: CI/CD, Test-Driven Development, Agile, Technical Writing"
+      ]
+    }
+  ]
+}
