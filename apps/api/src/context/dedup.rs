@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::context::prompts::{DEDUP_CONFIRM_PROMPT, DEDUP_CONFIRM_SYSTEM};
-use crate::models::context::ContextEntryRow;
 use crate::llm_client::LlmClient;
+use crate::models::context::ContextEntryRow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -185,15 +185,21 @@ fn heuristic_candidates<'a>(
     let new_data = new_entry.get("data").unwrap_or(new_entry);
 
     // Extract name-like fields from new entry
-    let new_names: Vec<String> = ["company", "project_name", "institution", "organization", "name"]
-        .iter()
-        .filter_map(|field| {
-            new_data
-                .get(field)
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_lowercase())
-        })
-        .collect();
+    let new_names: Vec<String> = [
+        "company",
+        "project_name",
+        "institution",
+        "organization",
+        "name",
+    ]
+    .iter()
+    .filter_map(|field| {
+        new_data
+            .get(field)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase())
+    })
+    .collect();
 
     if new_names.is_empty() {
         return vec![];
@@ -203,7 +209,13 @@ fn heuristic_candidates<'a>(
         .iter()
         .filter(|e| {
             // Check if any name-like field in the existing entry matches
-            for field in &["company", "project_name", "institution", "organization", "name"] {
+            for field in &[
+                "company",
+                "project_name",
+                "institution",
+                "organization",
+                "name",
+            ] {
                 if let Some(ex_name) = e.data.get(field).and_then(|v| v.as_str()) {
                     let ex_name_lower = ex_name.to_lowercase();
                     if new_names.iter().any(|n| {

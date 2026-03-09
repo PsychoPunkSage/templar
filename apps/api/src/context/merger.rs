@@ -14,8 +14,8 @@ use uuid::Uuid;
 
 use crate::context::prompts::{MERGE_ENTRIES_PROMPT, MERGE_ENTRIES_SYSTEM};
 use crate::context::scoring::compute_recency_score;
-use crate::context::versioning::{commit_context_update, get_current_entries, CommitParams};
 use crate::context::validation::validate_bullets;
+use crate::context::versioning::{commit_context_update, get_current_entries, CommitParams};
 use crate::llm_client::LlmClient;
 
 /// Merge `new_entry` into the existing entry identified by `existing_entry_id`.
@@ -123,7 +123,10 @@ fn compute_impact_score(bullets: &[String]) -> f64 {
     if bullets.is_empty() {
         return 0.5;
     }
-    let total: f32 = bullets.iter().map(|b| validate_impact(b).quality_score).sum();
+    let total: f32 = bullets
+        .iter()
+        .map(|b| validate_impact(b).quality_score)
+        .sum();
     (total as f64 / bullets.len() as f64).clamp(0.0, 1.0)
 }
 

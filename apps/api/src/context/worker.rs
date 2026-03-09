@@ -9,8 +9,8 @@
 //! Multiple worker instances can be spawned (INGEST_WORKER_COUNT env var, default 4).
 //! Each worker independently drains the same Redis queue — zero coordination needed.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use aws_sdk_s3::Client as S3Client;
@@ -71,9 +71,7 @@ async fn worker_loop(
         let mut conn = match redis.get_multiplexed_async_connection().await {
             Ok(c) => c,
             Err(e) => {
-                error!(
-                    "Ingest worker: Redis connection failed: {e} — retrying in 5s"
-                );
+                error!("Ingest worker: Redis connection failed: {e} — retrying in 5s");
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 continue;
             }
@@ -122,7 +120,10 @@ async fn worker_loop(
                         }
                     }
                     Err(e) => {
-                        error!("Ingest worker: invalid UUID in queue '{}': {e}", item_id_str);
+                        error!(
+                            "Ingest worker: invalid UUID in queue '{}': {e}",
+                            item_id_str
+                        );
                     }
                 }
             }
@@ -199,12 +200,8 @@ async fn process_ingest_item(
         }
     };
 
-    let dedup_result = crate::context::dedup::check_and_merge(
-        &existing_entries,
-        &preview.entry,
-        llm,
-    )
-    .await;
+    let dedup_result =
+        crate::context::dedup::check_and_merge(&existing_entries, &preview.entry, llm).await;
 
     match dedup_result {
         DedupResult::Merged(existing_entry_id) => {

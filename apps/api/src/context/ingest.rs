@@ -221,7 +221,10 @@ fn compute_impact_score(bullets: &[String]) -> f64 {
     if bullets.is_empty() {
         return 0.5;
     }
-    let total_quality: f32 = bullets.iter().map(|b| validate_impact(b).quality_score).sum();
+    let total_quality: f32 = bullets
+        .iter()
+        .map(|b| validate_impact(b).quality_score)
+        .sum();
     (total_quality as f64 / bullets.len() as f64).clamp(0.0, 1.0)
 }
 

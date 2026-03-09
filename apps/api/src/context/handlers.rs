@@ -175,10 +175,9 @@ pub async fn handle_ingest_batch(
     let entry_count = entries.len();
     tracing::info!(entry_count, "split entries from raw text");
 
-    let batch_id =
-        batch::create_batch(&state.db, req.user_id, "text", None, &entries)
-            .await
-            .map_err(AppError::Internal)?;
+    let batch_id = batch::create_batch(&state.db, req.user_id, "text", None, &entries)
+        .await
+        .map_err(AppError::Internal)?;
 
     let item_ids = batch::get_item_ids(&state.db, batch_id)
         .await
@@ -246,8 +245,8 @@ pub async fn handle_ingest_upload(
 
     let user_id =
         user_id.ok_or_else(|| AppError::Validation("Missing required field: user_id".into()))?;
-    let (filename, bytes) = file_data
-        .ok_or_else(|| AppError::Validation("Missing required field: file".into()))?;
+    let (filename, bytes) =
+        file_data.ok_or_else(|| AppError::Validation("Missing required field: file".into()))?;
 
     tracing::info!(
         %user_id,
@@ -260,10 +259,9 @@ pub async fn handle_ingest_upload(
     let entries = smart_split(&raw_text, &state.llm).await?;
     let entry_count = entries.len();
 
-    let batch_id =
-        batch::create_batch(&state.db, user_id, "file", Some(&filename), &entries)
-            .await
-            .map_err(AppError::Internal)?;
+    let batch_id = batch::create_batch(&state.db, user_id, "file", Some(&filename), &entries)
+        .await
+        .map_err(AppError::Internal)?;
 
     let item_ids = batch::get_item_ids(&state.db, batch_id)
         .await

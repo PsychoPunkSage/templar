@@ -114,10 +114,7 @@ pub async fn get_item_ids(pool: &PgPool, batch_id: Uuid) -> Result<Vec<Uuid>> {
 /// Fetch a single item for worker processing.
 ///
 /// Returns `(batch_id, user_id, entry_text)` or `None` if the item does not exist.
-pub async fn get_item(
-    pool: &PgPool,
-    item_id: Uuid,
-) -> Result<Option<(Uuid, Uuid, String)>> {
+pub async fn get_item(pool: &PgPool, item_id: Uuid) -> Result<Option<(Uuid, Uuid, String)>> {
     let row = sqlx::query!(
         "SELECT batch_id, user_id, entry_text FROM context_ingest_items WHERE id = $1",
         item_id
@@ -226,11 +223,7 @@ pub async fn mark_item_succeeded(pool: &PgPool, item_id: Uuid, entry_id: Uuid) -
 ///
 /// Phase 5.5.4: used when new context text was merged into an existing entry.
 /// Counts as succeeded for batch counter purposes.
-pub async fn mark_item_merged(
-    pool: &PgPool,
-    item_id: Uuid,
-    existing_entry_id: Uuid,
-) -> Result<()> {
+pub async fn mark_item_merged(pool: &PgPool, item_id: Uuid, existing_entry_id: Uuid) -> Result<()> {
     sqlx::query(
         r#"UPDATE context_ingest_items
            SET status = 'succeeded', entry_id = $2, merged_with = $2, updated_at = NOW()
