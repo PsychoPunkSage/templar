@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   migrate:
     image: postgres:16-alpine
@@ -8,7 +6,7 @@ services:
     environment:
       PGPASSWORD: templar
     command: |
-      sh -c "psql -h postgres -U templar -d templar -f /migrations/001_initial.sql && psql -h postgres -U templar -d templar -f /migrations/002_context_batch.sql && psql -h postgres -U templar -d templar -f /migrations/003_quality_fields.sql && psql -h postgres -U templar -d templar -f /migrations/000_seed.sql"
+      sh -c "psql -h postgres -U templar -d templar -f /migrations/001_initial.sql && psql -h postgres -U templar -d templar -f /migrations/002_context_batch.sql && psql -h postgres -U templar -d templar -f /migrations/003_quality_fields.sql && psql -h postgres -U templar -d templar -f /migrations/004_cv_projects.sql && psql -h postgres -U templar -d templar -f /migrations/000_seed.sql"
     volumes:
       - ../packages/db/migrations:/migrations:ro
     depends_on:
@@ -42,6 +40,8 @@ services:
       S3_ENDPOINT: http://minio:9000
       API_PORT: "8080"
       RUST_LOG: info
+      # Templates directory inside the container — matches COPY in Dockerfile.api
+      TEMPLATES_DIR: /app/templates
     depends_on:
       postgres:
         condition: service_healthy

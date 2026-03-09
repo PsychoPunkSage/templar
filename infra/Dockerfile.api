@@ -26,65 +26,31 @@ ENV SQLX_OFFLINE=true
 RUN touch apps/api/src/main.rs && cargo build --release --bin api
 
 # Stage 2: Runtime
-# Rust, Cargo pkg-confige etc. not needed after bin creation
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    curl \
-    libgraphite2-3 \
-    libharfbuzz0b \
-    libfreetype6 \
-    fontconfig \
-    unzip \
-    fonts-lato \
-    fonts-ebgaramond \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install tectonic
-RUN curl --proto '=https' --tlsv1.2 -fsSL https://drop-sh.fullyjustified.net | sh
-RUN mv tectonic /usr/local/bin/
-
-RUN tectonic --version
-
-# Install Google Fonts required by Templar templates (Inter, Lato, EB Garamond, Oswald).
-# Downloaded at build time so no network access is needed at runtime.
-RUN mkdir -p /usr/local/share/fonts/templar
-
-# Inter — https://github.com/rsms/inter/releases
-RUN curl -fsSL "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip" -o /tmp/inter.zip \
-    && unzip -j /tmp/inter.zip "*.ttf" -d /usr/local/share/fonts/templar/ \
-    && rm /tmp/inter.zip
-
-# Oswald — variable font from google/fonts (no static subdirectory in this repo)
-RUN curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/Oswald%5Bwght%5D.ttf" \
-         -o /usr/local/share/fonts/templar/Oswald-Variable.ttf
-
-# Rebuild font cache so fontspec can resolve fonts by name at XeLaTeX compile time
-RUN fc-cache -fv
-
-# Pre-warm Tectonic format cache at image build time.
-# Downloads XeLaTeX format + all Templar package files (fontspec, microtype,
-# titlesec, xcolor, tabularx, parskip, hyperref, geometry, enumitem).
-# Without this, first compilation downloads ~60 packages and exceeds the 30 s timeout.
-RUN printf '%s\n' \
-    '\documentclass[11pt]{article}' \
-    '\usepackage[left=1.00in,right=1.00in,top=0.75in,bottom=0.75in]{geometry}' \
-    '\usepackage{fontspec}' \
-    '\setmainfont{Inter}' \
-    '\usepackage{microtype,enumitem,titlesec,xcolor,tabularx,parskip}' \
-    '\usepackage[hidelinks]{hyperref}' \
-    '\begin{document}' \
-    '\pagestyle{empty}' \
-    'Hello Templar.' \
-    '\end{document}' \
-    | tectonic - --outfmt pdf \
-    && echo "Tectonic warmup complete"
+# TeX Live, fonts, and pdflatex warmup are pre-baked into the base image.
+# Rebuild the base image only when infra/Dockerfile.texlive-base changes
+# (GH Actions workflow: .github/workflows/texlive-base.yml).
+FROM ghcr.io/psychopunksage/templar-texlive-base:latest
 
 WORKDIR /app
 # Copy only binary
 COPY --from=builder /app/target/release/api /app/api
+
+# Copy template files into the runtime image.
+# Templates are data, not code — they live in apps/api/templates/ in the repo.
+# Copying here (not in builder) keeps the builder stage clean and avoids
+# re-running the expensive Rust build when only template content changes.
+COPY apps/api/templates /app/templates
+
+# Pre-compile template preview PDFs at image build time using pdflatex.
+# The API handler (handle_template_render_pdf) will serve these from disk on
+# first request, bypassing the cold-compile path.
+RUN cd /app/templates/generic-cv \
+    && pdflatex -interaction=nonstopmode -halt-on-error preview-source.tex \
+    && mv preview-source.pdf preview.pdf \
+    && rm -f preview-source.aux preview-source.log \
+    && head -c 4 preview.pdf | grep -q '%PDF' && echo "preview.pdf valid OK" \
+    || (echo "ERROR: preview.pdf is not valid PDF" && exit 1) \
+    && echo "Template preview PDF compiled: generic-cv"
 
 EXPOSE 8080
 CMD ["/app/api"]
