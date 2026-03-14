@@ -141,6 +141,95 @@ pub async fn handle_toggle_evergreen(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Patch entry handler
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Fields the caller is permitted to update via PATCH.
+const EDITABLE_FIELDS: &[&str] = &[
+    "date_start",
+    "date_end",
+    "url",
+    "location",
+    "role",
+    "company",
+    "institution",
+    "name",
+    "degree",
+    "field",
+    "team_size",
+    "description",
+];
+
+#[derive(Deserialize)]
+pub struct PatchEntryRequest {
+    pub user_id: Uuid,
+    pub patch: serde_json::Value,
+}
+
+/// PATCH /api/v1/context/entries/:id
+///
+/// Merges whitelisted fields from `patch` into the entry's data JSONB and
+/// inserts a new version (append-only — never UPDATEs existing rows).
+/// Returns 204 No Content on success.
+pub async fn handle_patch_entry(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchEntryRequest>,
+) -> Result<StatusCode, AppError> {
+    // Fetch the latest version for this entry + user.
+    let existing: Option<ContextEntryRow> = sqlx::query_as(
+        "SELECT * FROM context_entries WHERE entry_id = $1 AND user_id = $2 ORDER BY version DESC LIMIT 1",
+    )
+    .bind(id)
+    .bind(req.user_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let existing = existing.ok_or_else(|| AppError::NotFound(format!("Entry {id} not found")))?;
+
+    // Merge only whitelisted keys from the patch into a clone of existing data.
+    // If data is not an object (shouldn't happen in practice), start fresh.
+    let mut merged = if existing.data.is_object() {
+        existing.data.clone()
+    } else {
+        serde_json::json!({})
+    };
+
+    if let Some(patch_obj) = req.patch.as_object() {
+        for field in EDITABLE_FIELDS {
+            if let Some(val) = patch_obj.get(*field) {
+                merged[field] = val.clone();
+            }
+        }
+    }
+
+    // INSERT new version with merged data (append-only versioning).
+    sqlx::query(
+        r#"
+        INSERT INTO context_entries
+            (user_id, entry_id, version, entry_type, data, raw_text,
+             recency_score, impact_score, tags, flagged_evergreen, contribution_type,
+             quality_score, quality_flags)
+        SELECT user_id, entry_id, $1, entry_type, $2, raw_text,
+               recency_score, impact_score, tags, flagged_evergreen, contribution_type,
+               quality_score, quality_flags
+        FROM context_entries
+        WHERE entry_id = $3 AND user_id = $4
+        ORDER BY version DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(existing.version + 1)
+    .bind(&merged)
+    .bind(id)
+    .bind(req.user_id)
+    .execute(&state.db)
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Batch ingestion handlers (Phase: async batch pipeline)
 // ────────────────────────────────────────────────────────────────────────────
 

@@ -4,6 +4,7 @@ pub mod dedup;
 pub mod extractor;
 pub mod handlers;
 pub mod ingest;
+pub mod merger;
 pub mod models;
 pub mod prompts;
 pub mod scoring;
