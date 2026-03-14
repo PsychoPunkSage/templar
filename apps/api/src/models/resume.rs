@@ -16,6 +16,9 @@ pub struct ResumeRow {
     pub latex_source: Option<String>,
     pub s3_pdf_key: Option<String>,
     pub status: String,
+    /// Added in migration 004: which file-based template was used (None = legacy font template).
+    /// TEXT column referencing the templates directory name, not a FK.
+    pub template_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
