@@ -30,7 +30,16 @@ interface BatchStatusResponse {
   items: BatchItemStatus[]
 }
 
-// ─── Progress sub-component ────────────────────────────────────────────────
+interface UploadEntry {
+  id: string
+  file: File
+  uploadStatus: 'pending' | 'uploading' | 'done' | 'error'
+  uploadError: string | null
+  batchId: string | null
+  batchStatus: BatchStatusResponse | null
+}
+
+// ─── Progress sub-components ────────────────────────────────────────────────
 
 function BatchProgressView({ batchStatus }: { batchStatus: BatchStatusResponse }) {
   const processed = batchStatus.succeeded + batchStatus.failed
@@ -45,8 +54,7 @@ function BatchProgressView({ batchStatus }: { batchStatus: BatchStatusResponse }
       : 'text-muted-foreground'
 
   return (
-    <div className="space-y-2 mt-3">
-      {/* Summary row */}
+    <div className="space-y-2">
       <div className="flex justify-between items-center text-xs">
         <span className="text-muted-foreground">
           {processed}/{batchStatus.total} entries processed
@@ -59,7 +67,6 @@ function BatchProgressView({ batchStatus }: { batchStatus: BatchStatusResponse }
         </span>
       </div>
 
-      {/* Progress bar */}
       <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-300 ${
@@ -73,7 +80,6 @@ function BatchProgressView({ batchStatus }: { batchStatus: BatchStatusResponse }
         />
       </div>
 
-      {/* Per-item list */}
       <div className="max-h-40 overflow-y-auto space-y-1">
         {batchStatus.items.map((item) => (
           <div
@@ -98,6 +104,26 @@ function BatchProgressView({ batchStatus }: { batchStatus: BatchStatusResponse }
   )
 }
 
+function IndeterminateBar() {
+  return (
+    <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+      <div className="h-full w-1/2 bg-primary rounded-full animate-pulse" />
+    </div>
+  )
+}
+
+function StatusBadge({ status }: { status: UploadEntry['uploadStatus'] }) {
+  const cls =
+    status === 'done'
+      ? 'text-green-600 dark:text-green-400'
+      : status === 'error'
+      ? 'text-destructive'
+      : status === 'uploading'
+      ? 'text-primary'
+      : 'text-muted-foreground'
+  return <span className={`shrink-0 capitalize ${cls}`}>{status}</span>
+}
+
 // ─── Main component ────────────────────────────────────────────────────────
 
 export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => void }) {
@@ -105,65 +131,88 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
 
   // Text tab state
   const [rawText, setRawText] = useState('')
+  const [textSubmitError, setTextSubmitError] = useState<string | null>(null)
+  const [textBatchId, setTextBatchId] = useState<string | null>(null)
+  const [textBatchStatus, setTextBatchStatus] = useState<BatchStatusResponse | null>(null)
+  const textPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // File tab state
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [isDragging, setIsDragging] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [uploadEntries, setUploadEntries] = useState<UploadEntry[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Shared submission state
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  // ── Text tab polling ──────────────────────────────────────────────────────
 
-  // Batch polling state
-  const [batchId, setBatchId] = useState<string | null>(null)
-  const [batchStatus, setBatchStatus] = useState<BatchStatusResponse | null>(null)
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // ── Polling effect ──────────────────────────────────────────────────────
-
-  const stopPolling = useCallback(() => {
-    if (pollIntervalRef.current !== null) {
-      clearInterval(pollIntervalRef.current)
-      pollIntervalRef.current = null
+  const stopTextPoll = useCallback(() => {
+    if (textPollRef.current !== null) {
+      clearInterval(textPollRef.current)
+      textPollRef.current = null
     }
   }, [])
 
   useEffect(() => {
-    if (!batchId) return
+    if (!textBatchId) return
 
     const poll = async () => {
       try {
-        const res = await fetch(
-          `${API_BASE}/api/v1/context/ingest/batch/${batchId}`
-        )
+        const res = await fetch(`${API_BASE}/api/v1/context/ingest/batch/${textBatchId}`)
         if (!res.ok) return
         const data: BatchStatusResponse = await res.json()
-        setBatchStatus(data)
+        setTextBatchStatus(data)
         if (data.status === 'done') {
-          stopPolling()
+          stopTextPoll()
           onContextUpdated?.()
         }
       } catch {
-        // Polling errors are silent — the user sees the last known status
+        // silent
       }
     }
 
-    // Poll immediately then every 2 seconds
     poll()
-    pollIntervalRef.current = setInterval(poll, 2000)
+    textPollRef.current = setInterval(poll, 2000)
+    return () => stopTextPoll()
+  }, [textBatchId, stopTextPoll, onContextUpdated])
 
-    return () => stopPolling()
-  }, [batchId, stopPolling, onContextUpdated])
+  // ── File upload polling ───────────────────────────────────────────────────
 
-  // ── Text tab submission ─────────────────────────────────────────────────
+  useEffect(() => {
+    const active = uploadEntries.filter(
+      (e) => e.batchId !== null && e.batchStatus?.status !== 'done'
+    )
+    if (active.length === 0) return
+
+    const poll = async () => {
+      for (const entry of active) {
+        if (!entry.batchId) continue
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/context/ingest/batch/${entry.batchId}`)
+          if (!res.ok) continue
+          const data: BatchStatusResponse = await res.json()
+          setUploadEntries((prev) =>
+            prev.map((e) => (e.id === entry.id ? { ...e, batchStatus: data } : e))
+          )
+          if (data.status === 'done') onContextUpdated?.()
+        } catch {
+          // silent
+        }
+      }
+    }
+
+    poll()
+    const interval = setInterval(poll, 2000)
+    return () => clearInterval(interval)
+  }, [uploadEntries, onContextUpdated])
+
+  // ── Text tab submission ───────────────────────────────────────────────────
 
   const handleTextSubmit = async () => {
     if (!rawText.trim()) return
     setIsSubmitting(true)
-    setSubmitError(null)
-    setBatchId(null)
-    setBatchStatus(null)
+    setTextSubmitError(null)
+    setTextBatchId(null)
+    setTextBatchStatus(null)
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/context/ingest/batch`, {
@@ -176,62 +225,85 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
         throw new Error(errData?.error?.message ?? `HTTP ${res.status}`)
       }
       const data = await res.json()
-      setBatchId(data.batch_id)
+      setTextBatchId(data.batch_id)
       setRawText('')
     } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : 'Submission failed')
+      setTextSubmitError(e instanceof Error ? e.message : 'Submission failed')
     } finally {
       setIsSubmitting(false)
     }
   }
 
-  // ── File tab handlers ───────────────────────────────────────────────────
+  // ── File tab handlers ─────────────────────────────────────────────────────
 
-  const handleFileChange = (file: File | null) => {
-    if (!file) return
-    setSelectedFile(file)
-    setSubmitError(null)
-  }
+  const handleFilesChange = useCallback((list: FileList | null) => {
+    if (!list || list.length === 0) return
+    setSelectedFiles(Array.from(list))
+    setUploadEntries([])
+  }, [])
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-    const file = e.dataTransfer.files?.[0] ?? null
-    handleFileChange(file)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      setIsDragging(false)
+      handleFilesChange(e.dataTransfer.files)
+    },
+    [handleFilesChange]
+  )
 
   const handleFileSubmit = async () => {
-    if (!selectedFile) return
+    if (selectedFiles.length === 0) return
     setIsSubmitting(true)
-    setSubmitError(null)
-    setBatchId(null)
-    setBatchStatus(null)
 
-    try {
-      const formData = new FormData()
-      formData.append('user_id', MVP_USER_ID)
-      formData.append('file', selectedFile)
+    const entries: UploadEntry[] = selectedFiles.map((f) => ({
+      id: crypto.randomUUID(),
+      file: f,
+      uploadStatus: 'pending',
+      uploadError: null,
+      batchId: null,
+      batchStatus: null,
+    }))
+    setUploadEntries(entries)
 
-      const res = await fetch(`${API_BASE}/api/v1/context/ingest/upload`, {
-        method: 'POST',
-        body: formData,
-      })
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        throw new Error(errData?.error?.message ?? `HTTP ${res.status}`)
+    for (let i = 0; i < entries.length; i++) {
+      setUploadEntries((prev) =>
+        prev.map((e, idx) => (idx === i ? { ...e, uploadStatus: 'uploading' } : e))
+      )
+      try {
+        const fd = new FormData()
+        fd.append('user_id', MVP_USER_ID)
+        fd.append('file', entries[i].file)
+        const res = await fetch(`${API_BASE}/api/v1/context/ingest/upload`, {
+          method: 'POST',
+          body: fd,
+        })
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}))
+          throw new Error(errData?.error?.message ?? `HTTP ${res.status}`)
+        }
+        const data = await res.json()
+        setUploadEntries((prev) =>
+          prev.map((e, idx) =>
+            idx === i ? { ...e, uploadStatus: 'done', batchId: data.batch_id } : e
+          )
+        )
+      } catch (err) {
+        setUploadEntries((prev) =>
+          prev.map((e, idx) =>
+            idx === i ? { ...e, uploadStatus: 'error', uploadError: String(err) } : e
+          )
+        )
       }
-      const data = await res.json()
-      setBatchId(data.batch_id)
-      setSelectedFile(null)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-    } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : 'Upload failed')
-    } finally {
-      setIsSubmitting(false)
     }
+
+    setSelectedFiles([])
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    setIsSubmitting(false)
   }
 
-  // ── Render ──────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  const uploadingIdx = uploadEntries.findIndex((e) => e.uploadStatus === 'uploading')
 
   return (
     <div className="flex flex-col gap-2">
@@ -271,6 +343,10 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
           >
             {isSubmitting ? 'Submitting...' : 'Add to Context'}
           </Button>
+          {textSubmitError && (
+            <p className="text-xs text-destructive">{textSubmitError}</p>
+          )}
+          {textBatchStatus && <BatchProgressView batchStatus={textBatchStatus} />}
         </TabsContent>
 
         {/* ── Upload File tab ────────────────────────────────────────── */}
@@ -300,26 +376,32 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
               ref={fileInputRef}
               type="file"
               accept=".md,.txt,.pdf"
+              multiple
               className="hidden"
-              onChange={(e) => handleFileChange(e.target.files?.[0] ?? null)}
+              onChange={(e) => handleFilesChange(e.target.files)}
             />
-            {selectedFile ? (
-              <div className="space-y-1">
-                <p className="text-sm font-medium">{selectedFile.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {(selectedFile.size / 1024).toFixed(1)} KB
-                </p>
+            {selectedFiles.length > 0 ? (
+              <div className="space-y-1 text-left">
+                {selectedFiles.map((f, i) => (
+                  <div key={i} className="flex justify-between items-center text-sm">
+                    <span className="font-medium truncate">{f.name}</span>
+                    <span className="text-xs text-muted-foreground ml-2 shrink-0">
+                      {(f.size / 1024).toFixed(1)} KB
+                    </span>
+                  </div>
+                ))}
               </div>
             ) : (
               <div className="space-y-1">
                 <p className="text-sm text-muted-foreground">
-                  Drop a file here, or click to browse
+                  Drop files here, or click to browse
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  .md, .txt, .pdf — max 10 MB
+                  .md, .txt, .pdf — max 10 MB each
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Multi-entry documents split automatically on <code className="font-mono">---</code>
+                  Multi-entry documents split automatically on{' '}
+                  <code className="font-mono">---</code>
                 </p>
               </div>
             )}
@@ -329,21 +411,36 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
             size="sm"
             variant="outline"
             onClick={handleFileSubmit}
-            disabled={isSubmitting || !selectedFile}
+            disabled={isSubmitting || selectedFiles.length === 0}
             className="w-full"
           >
-            {isSubmitting ? 'Uploading...' : 'Upload & Ingest'}
+            {isSubmitting
+              ? `Uploading ${uploadingIdx >= 0 ? `${uploadingIdx + 1}/${uploadEntries.length}` : ''}...`
+              : `Upload & Ingest${selectedFiles.length > 1 ? ` (${selectedFiles.length} files)` : ''}`}
           </Button>
+
+          {/* Per-file upload cards */}
+          {uploadEntries.length > 0 && (
+            <div className="space-y-2">
+              {uploadEntries.map((entry) => (
+                <div key={entry.id} className="rounded-lg border p-2 space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium truncate">{entry.file.name}</span>
+                    <StatusBadge status={entry.uploadStatus} />
+                  </div>
+                  {entry.uploadStatus === 'uploading' && <IndeterminateBar />}
+                  {entry.batchStatus && (
+                    <BatchProgressView batchStatus={entry.batchStatus} />
+                  )}
+                  {entry.uploadError && (
+                    <p className="text-xs text-destructive">{entry.uploadError}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </TabsContent>
       </Tabs>
-
-      {/* ── Error message ─────────────────────────────────────────────── */}
-      {submitError && (
-        <p className="text-xs text-destructive">{submitError}</p>
-      )}
-
-      {/* ── Batch progress (shown after submission, for both tabs) ─────── */}
-      {batchStatus && <BatchProgressView batchStatus={batchStatus} />}
     </div>
   )
 }
