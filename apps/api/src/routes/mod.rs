@@ -9,8 +9,10 @@ use axum::{
 use crate::context::handlers as ctx;
 use crate::generation::handlers as gen;
 use crate::grounding::handlers as grounding;
+use crate::projects::handlers as projects;
 use crate::render::handlers as render;
 use crate::state::AppState;
+use crate::templates::handlers as templates;
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
@@ -28,6 +30,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/context/entries/:id/evergreen",
             patch(ctx::handle_toggle_evergreen),
+        )
+        .route(
+            "/api/v1/context/entries/:id",
+            patch(ctx::handle_patch_entry),
         )
         // ── Batch ingestion API (async pipeline) ──────────────────────────
         // Note: specific literal paths before the :id param route (Axum priority)
@@ -59,6 +65,33 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/render/:job_id/status",
             get(render::handle_render_status),
+        )
+        // ── Templates API (Phase 8) ────────────────────────────────────────
+        // Note: literal path suffixes (/preview, /render-pdf) must come BEFORE any
+        // single-param route /templates/:id — Axum matches literal segments first.
+        .route("/api/v1/templates", get(templates::handle_list_templates))
+        .route(
+            "/api/v1/templates/:id/preview",
+            get(templates::handle_template_preview),
+        )
+        .route(
+            "/api/v1/templates/:id/render-pdf",
+            get(templates::handle_template_render_pdf),
+        )
+        .route(
+            "/api/v1/templates/:id/thumbnail-pdf",
+            get(templates::handle_template_thumbnail_pdf),
+        )
+        // ── Projects API (Phase 8) ─────────────────────────────────────────
+        .route(
+            "/api/v1/projects",
+            get(projects::handle_list_projects).post(projects::handle_create_project),
+        )
+        .route(
+            "/api/v1/projects/:id",
+            get(projects::handle_get_project)
+                .patch(projects::handle_update_project)
+                .delete(projects::handle_delete_project),
         )
         .with_state(state)
         // 10 MB global body size limit — protects all endpoints, covers the
