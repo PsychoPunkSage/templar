@@ -25,6 +25,7 @@ export function PdfPreview() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const renderPdf = useCallback(async (jobId: string) => {
+    console.log("[PdfPreview] renderPdf() called", { jobId });
     if (!canvasRef.current) return;
 
     setIsLoading(true);
@@ -39,8 +40,10 @@ export function PdfPreview() {
       }
 
       const pdfUrl = api.getPdfUrl(jobId);
+      console.log("[PdfPreview] PDF.js ready, fetching:", pdfUrl);
       const loadingTask = pdfjsLib.getDocument(pdfUrl);
       const pdf = await loadingTask.promise;
+      console.log("[PdfPreview] Document loaded, numPages:", pdf.numPages);
       const page = await pdf.getPage(1);
 
       const canvas = canvasRef.current;
@@ -50,19 +53,22 @@ export function PdfPreview() {
 
       // PDF.js v5+: `canvas` parameter is required (replaces `canvasContext`)
       await page.render({ canvas, viewport }).promise;
+      console.log("[PdfPreview] Page 1 rendered to canvas");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Unknown render error";
       setRenderError(msg);
-      console.error("PDF render error:", e);
+      console.error("[PdfPreview] PDF render error:", e);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    console.log("[PdfPreview] useEffect triggered", { renderStatus, renderJobId });
     if (renderStatus !== "done" || !renderJobId) return;
 
     // Debounce: enforce 300ms minimum between re-renders
+    console.log("[PdfPreview] Scheduling renderPdf in 300ms for job:", renderJobId);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => renderPdf(renderJobId), 300);
 
@@ -72,6 +78,8 @@ export function PdfPreview() {
   }, [renderJobId, renderStatus, renderPdf]);
 
   // ─── Render states ─────────────────────────────────────────────────────────
+
+  console.log("[PdfPreview] render state:", renderStatus, { renderJobId, isLoading, renderError });
 
   if (renderStatus === "idle") {
     return (
