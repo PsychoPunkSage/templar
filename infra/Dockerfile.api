@@ -29,9 +29,13 @@ RUN touch apps/api/src/main.rs && cargo build --release --bin api
 # TeX Live, fonts, and pdflatex warmup are pre-baked into the base image.
 # Rebuild the base image only when infra/Dockerfile.texlive-base changes
 # (GH Actions workflow: .github/workflows/texlive-base.yml).
-FROM ghcr.io/psychopunksage/templar-texlive-base:latest
+FROM localhost/templar-texlive-base:local
 
 WORKDIR /app
+
+ENV RUST_LOG=debug
+ENV RUST_BACKTRACE=full
+
 # Copy only binary
 COPY --from=builder /app/target/release/api /app/api
 
@@ -51,6 +55,13 @@ RUN cd /app/templates/generic-cv \
     && head -c 4 preview.pdf | grep -q '%PDF' && echo "preview.pdf valid OK" \
     || (echo "ERROR: preview.pdf is not valid PDF" && exit 1) \
     && echo "Template preview PDF compiled: generic-cv"
+
+RUN cd /app/templates/generic-cv \
+    && pdflatex -interaction=nonstopmode -halt-on-error thumbnail.tex \
+    && rm -f thumbnail.aux thumbnail.log \
+    && head -c 4 thumbnail.pdf | grep -q '%PDF' && echo "thumbnail.pdf valid OK" \
+    || (echo "ERROR: thumbnail.pdf is not valid PDF" && exit 1) \
+    && echo "Template thumbnail PDF compiled: generic-cv"
 
 EXPOSE 8080
 CMD ["/app/api"]
