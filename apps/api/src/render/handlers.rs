@@ -73,10 +73,14 @@ pub async fn handle_trigger_render(
         )));
     }
 
-    // Idempotency: return existing active job if one exists
+    // Idempotency: return existing active job if one exists.
+    // The `updated_at > NOW() - INTERVAL '5 minutes'` guard prevents stale
+    // 'processing' jobs (e.g. a worker that crashed mid-job and never transitioned
+    // to 'failed') from blocking new render requests indefinitely.
     let existing = sqlx::query_as::<_, RenderJobRow>(
         "SELECT * FROM render_jobs \
          WHERE resume_id = $1 AND status IN ('queued', 'processing') \
+         AND updated_at > NOW() - INTERVAL '5 minutes' \
          ORDER BY created_at DESC LIMIT 1",
     )
     .bind(req.resume_id)
