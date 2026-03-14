@@ -94,20 +94,128 @@ impl FitScorer for KeywordFitScorer {
 // LlmFitScorer — semantic scorer stub (Phase 7)
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Semantic fit scorer via Claude. Compile but not default in Phase 2.
+/// Semantic fit scorer via Claude (Phase 7.0 implementation).
 pub struct LlmFitScorer(pub LlmClient);
+
+/// Intermediate response type matching the LLM output schema.
+#[derive(Debug, Deserialize)]
+struct LlmFitScoreResponse {
+    overall_score: u32,
+    strong_matches: Vec<FitMatch>,
+    partial_matches: Vec<FitMatch>,
+    gaps: Vec<Gap>,
+    recommendation: String,
+}
 
 #[async_trait]
 impl FitScorer for LlmFitScorer {
     async fn score(
         &self,
-        _entries: &[ContextEntryRow],
-        _parsed_jd: &ParsedJD,
+        entries: &[ContextEntryRow],
+        parsed_jd: &ParsedJD,
     ) -> Result<FitReport, AppError> {
-        // TODO Phase 7 Intelligence Layer: semantic scoring via LLM.
-        // Call llm.call_json::<FitReport>() with entries + JD as context.
-        todo!("LLM fit scorer — Phase 7 Intelligence Layer")
+        use crate::generation::prompts::{LLM_FIT_SCORE_PROMPT_TEMPLATE, LLM_FIT_SCORE_SYSTEM};
+
+        // Build entries summary (compact representation for the LLM)
+        let entries_summary = build_entries_summary(entries);
+
+        // Build JD keywords string
+        let jd_keywords = parsed_jd
+            .keyword_inventory
+            .iter()
+            .map(|k| {
+                format!(
+                    "{} (freq={}, weight={:.1})",
+                    k.keyword, k.frequency, k.position_weight
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Build JD requirements string
+        let jd_requirements = parsed_jd
+            .hard_requirements
+            .iter()
+            .map(|r| {
+                format!(
+                    "- [{}] {}",
+                    if r.is_required {
+                        "REQUIRED"
+                    } else {
+                        "preferred"
+                    },
+                    r.text
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = LLM_FIT_SCORE_PROMPT_TEMPLATE
+            .replace("{entries_summary}", &entries_summary)
+            .replace("{jd_keywords}", &jd_keywords)
+            .replace("{jd_requirements}", &jd_requirements)
+            .replace(
+                "{jd_text}",
+                &format!("Tone: {:?}\n{}", parsed_jd.detected_tone, jd_requirements),
+            );
+
+        match self
+            .0
+            .call_json::<LlmFitScoreResponse>(&prompt, LLM_FIT_SCORE_SYSTEM)
+            .await
+        {
+            Ok(resp) => Ok(FitReport {
+                overall_score: resp.overall_score.clamp(0, 100),
+                strong_matches: resp.strong_matches,
+                partial_matches: resp.partial_matches,
+                gaps: resp.gaps,
+                recommendation: resp.recommendation,
+                scorer_backend: "llm".to_string(),
+            }),
+            Err(e) => {
+                // Fall back to keyword scorer on LLM error
+                tracing::warn!(error = %e, "LlmFitScorer: LLM call failed, falling back to keyword scorer");
+                let mut report = compute_keyword_fit(entries, parsed_jd)?;
+                report.scorer_backend = "keyword_fallback".to_string();
+                Ok(report)
+            }
+        }
     }
+}
+
+fn build_entries_summary(entries: &[ContextEntryRow]) -> String {
+    entries
+        .iter()
+        .map(|e| {
+            let company_or_name = e
+                .data
+                .get("company")
+                .or_else(|| e.data.get("name"))
+                .or_else(|| e.data.get("project_name"))
+                .or_else(|| e.data.get("institution"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown");
+            let role = e
+                .data
+                .get("role")
+                .or_else(|| e.data.get("degree"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let tech = e
+                .tags
+                .iter()
+                .filter(|t| *t != &e.entry_type)
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "[{}] {} — {} (tech: {})",
+                e.entry_type, company_or_name, role, tech
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -270,6 +378,8 @@ mod tests {
             tags,
             flagged_evergreen: false,
             contribution_type: "primary_contributor".to_string(),
+            quality_score: 1.0,
+            quality_flags: vec![],
             created_at: Utc::now(),
         }
     }
