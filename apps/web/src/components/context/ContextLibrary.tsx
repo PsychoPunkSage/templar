@@ -59,6 +59,20 @@ function sectionLabel(type: string): string {
   return type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+function dedupEntries(entries: ContextEntryRow[]): ContextEntryRow[] {
+  const seen = new Map<string, ContextEntryRow>()
+  for (const e of entries) {
+    const title = ((e.data?.company ?? e.data?.institution ?? e.data?.name ?? '') as string).toLowerCase()
+    const start = ((e.data?.date_start ?? e.data?.start_date ?? '') as string)
+    const key = `${e.entry_type}::${title}::${start}`
+    const existing = seen.get(key)
+    if (!existing || e.version > existing.version) {
+      seen.set(key, e)
+    }
+  }
+  return Array.from(seen.values())
+}
+
 function uniqueTypes(entries: ContextEntryRow[]): string[] {
   const seen = new Set<string>()
   const ordered: string[] = []
@@ -119,7 +133,7 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
     setError(null)
     try {
       const resp = await api.getContextEntries(MVP_USER_ID)
-      setEntries(resp.entries)
+      setEntries(dedupEntries(resp.entries))
       setCompleteness(resp.completeness)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load context entries')
@@ -242,6 +256,7 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
                     onToggle={() =>
                       setExpandedId((prev) => (prev === entry.id ? null : entry.id))
                     }
+                    onRefresh={fetchEntries}
                   />
                 ))}
               </div>

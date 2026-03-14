@@ -29,6 +29,9 @@ const MVP_USER_ID = '00000000-0000-0000-0000-000000000001'
 /** Max tags shown in collapsed view before truncating. */
 const MAX_COLLAPSED_TAGS = 4
 
+/** Array-typed fields rendered as tag pills in the expanded view. */
+const TAG_ARRAY_KEYS = new Set(['tech_stack', 'items', 'honors', 'relevant_courses', 'authors'])
+
 // ─── Type badge colors ───────────────────────────────────────────────────────
 
 const TYPE_BADGE_CLASSES: Record<string, string> = {
@@ -84,20 +87,208 @@ function getSubtitle(entry: ContextEntryRow): string | null {
 
 function getDateRange(entry: ContextEntryRow): string | null {
   const d = entry.data ?? {}
-  const start = (d.start_date as string) || (d.year as string) || null
-  const end = (d.end_date as string) || null
+  const start = (d.date_start ?? d.start_date ?? d.year) as string | undefined
+  const end   = (d.date_end   ?? d.end_date)             as string | null | undefined
+
   if (!start) return null
-  return end ? `${start} – ${end}` : start
+
+  // end === null means explicitly cleared → "Present"
+  // end === undefined means never set → also show "Present" for ongoing-type entries
+  const endLabel = end ? end : 'Present'
+  return `${start} – ${endLabel}`
 }
 
 function formatLabel(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+// ─── Inline editable field ────────────────────────────────────────────────────
+
+interface EditableFieldProps {
+  label: string
+  value: string | null | undefined
+  fieldKey: string
+  entryId: string
+  userId: string
+  onSave: () => void
+}
+
+function EditableField({
+  label,
+  value,
+  fieldKey,
+  entryId,
+  userId,
+  onSave,
+}: EditableFieldProps) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value ?? '')
+
+  const handleSave = async () => {
+    if (draft !== (value ?? '')) {
+      try {
+        await api.patchEntry(entryId, userId, { [fieldKey]: draft || null })
+        onSave()
+      } catch {
+        // silently revert — field will show old value on next render
+      }
+    }
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={handleSave}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') handleSave()
+          if (e.key === 'Escape') setEditing(false)
+        }}
+        className="text-xs border rounded px-1 py-0.5 bg-background w-full"
+        autoFocus
+      />
+    )
+  }
+
+  return (
+    <div className="group flex items-center gap-1">
+      <span className="text-xs">
+        {value || <em className="text-muted-foreground">not set</em>}
+      </span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          setEditing(true)
+        }}
+        className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+        title={`Edit ${label}`}
+      >
+        &#x270E;
+      </button>
+    </div>
+  )
+}
+
+// ─── Inline date field with "Present" toggle ──────────────────────────────────
+
+interface EditableDateFieldProps {
+  label: string
+  value: string | null | undefined
+  fieldKey: string
+  entryId: string
+  userId: string
+  /** true for date_end only — shows "Currently ongoing" checkbox */
+  allowPresent: boolean
+  onSave: () => void
+}
+
+function EditableDateField({
+  label,
+  value,
+  fieldKey,
+  entryId,
+  userId,
+  allowPresent,
+  onSave,
+}: EditableDateFieldProps) {
+  const [editing, setEditing] = useState(false)
+  const [isPresent, setIsPresent] = useState(!value)
+  const [draft, setDraft] = useState(value ?? '')
+
+  const handleSave = async () => {
+    const patchVal = isPresent ? null : (draft || null)
+    try {
+      await api.patchEntry(entryId, userId, { [fieldKey]: patchVal })
+      onSave()
+    } catch {
+      // silently revert
+    }
+    setEditing(false)
+  }
+
+  if (!editing) {
+    return (
+      <div className="group flex items-center gap-1">
+        <span className="text-xs">
+          {value
+            ? value
+            : allowPresent
+            ? 'Present'
+            : <em className="text-muted-foreground">not set</em>}
+        </span>
+        <button
+          onClick={(e) => { e.stopPropagation(); setEditing(true) }}
+          className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+          title={`Edit ${label}`}
+        >
+          &#x270E;
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      {allowPresent && (
+        <label className="flex items-center gap-1 text-xs cursor-pointer">
+          <input
+            type="checkbox"
+            checked={isPresent}
+            onChange={(e) => setIsPresent(e.target.checked)}
+          />
+          Currently ongoing (Present)
+        </label>
+      )}
+      {!isPresent && (
+        <input
+          type="date"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleSave()
+            if (e.key === 'Escape') setEditing(false)
+          }}
+          className="text-xs border rounded px-1 py-0.5 bg-background w-36"
+          autoFocus={!allowPresent}
+        />
+      )}
+      <div className="flex gap-1">
+        <button
+          onClick={handleSave}
+          className="text-xs px-2 py-0.5 bg-primary text-primary-foreground rounded"
+        >
+          Save
+        </button>
+        <button
+          onClick={() => setEditing(false)}
+          className="text-xs px-2 py-0.5 border rounded"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Expanded data section ────────────────────────────────────────────────────
 
 function DataFields({ data }: { data: Record<string, unknown> }) {
-  const skip = new Set(['bullets', 'company', 'institution', 'name', 'role', 'degree', 'category', 'start_date', 'end_date', 'year'])
+  const skip = new Set([
+    // shown in header
+    'company', 'institution', 'name', 'role', 'degree', 'category',
+    // legacy date field names
+    'start_date', 'end_date', 'year',
+    // actual schema date field names
+    'date_start', 'date_end',
+    // shown separately (EditableField) or via bullets section
+    'bullets', 'contribution_type', 'entry_type',
+    // shown via EditableField below
+    'url', 'location',
+  ])
+
   const entries = Object.entries(data).filter(
     ([k, v]) => !skip.has(k) && v !== null && v !== undefined && v !== ''
   )
@@ -109,12 +300,82 @@ function DataFields({ data }: { data: Record<string, unknown> }) {
         <div key={k} className="flex gap-2 text-xs">
           <span className="text-muted-foreground shrink-0 w-28 truncate">{formatLabel(k)}</span>
           <span className="text-foreground break-all">
-            {Array.isArray(v) ? v.join(', ') : String(v)}
+            {TAG_ARRAY_KEYS.has(k) && Array.isArray(v) ? (
+              <span className="flex flex-wrap gap-1">
+                {(v as unknown[]).map((item, i) => (
+                  <span
+                    key={i}
+                    className="inline-flex items-center px-1.5 py-0 rounded bg-muted text-muted-foreground"
+                  >
+                    {String(item)}
+                  </span>
+                ))}
+              </span>
+            ) : Array.isArray(v) ? (
+              (v as unknown[]).map(String).join(', ')
+            ) : k === 'url' && typeof v === 'string' ? (
+              <a
+                href={v}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 text-primary hover:text-primary/80"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {v}
+              </a>
+            ) : (
+              String(v)
+            )}
           </span>
         </div>
       ))}
     </div>
   )
+}
+
+// ─── Editable fields per entry_type ───────────────────────────────────────────
+
+/** Returns the list of inline-editable field specs for a given entry_type. */
+function editableFieldsFor(
+  entryType: string
+): Array<{ key: string; label: string }> {
+  const dateFields = [
+    { key: 'date_start', label: 'Start Date' },
+    { key: 'date_end', label: 'End Date' },
+  ]
+
+  switch (entryType) {
+    case 'experience':
+      return [
+        ...dateFields,
+        { key: 'location', label: 'Location' },
+        { key: 'role', label: 'Role' },
+        { key: 'company', label: 'Company' },
+      ]
+    case 'project':
+      return [
+        ...dateFields,
+        { key: 'url', label: 'URL' },
+      ]
+    case 'education':
+      return [...dateFields]
+    case 'open_source':
+      return [
+        ...dateFields,
+        { key: 'url', label: 'URL' },
+      ]
+    case 'extracurricular':
+      return [
+        ...dateFields,
+        { key: 'role', label: 'Role' },
+      ]
+    case 'publication':
+      return [{ key: 'url', label: 'URL' }]
+    case 'certification':
+      return [{ key: 'url', label: 'URL' }]
+    default:
+      return []
+  }
 }
 
 // ─── Main component ──────────────────────────────────────────────────────────
@@ -123,12 +384,15 @@ interface ContextEntryCardProps {
   entry: ContextEntryRow
   isExpanded: boolean
   onToggle: () => void
+  /** Called after a successful inline edit so the parent can re-fetch. */
+  onRefresh?: () => void
 }
 
 export default function ContextEntryCard({
   entry,
   isExpanded,
   onToggle,
+  onRefresh,
 }: ContextEntryCardProps) {
   const [evergreen, setEvergreen] = useState(entry.flagged_evergreen)
   const [evergreenLoading, setEvergreenLoading] = useState(false)
@@ -149,6 +413,8 @@ export default function ContextEntryCard({
   const visibleTags = entry.tags.slice(0, MAX_COLLAPSED_TAGS)
   const hiddenTagCount = Math.max(0, entry.tags.length - MAX_COLLAPSED_TAGS)
 
+  const editableFields = editableFieldsFor(entry.entry_type)
+
   async function handleEvergreenToggle(e: React.MouseEvent) {
     e.stopPropagation()
     if (evergreenLoading) return
@@ -161,6 +427,12 @@ export default function ContextEntryCard({
       setEvergreen(!newValue) // rollback
     } finally {
       setEvergreenLoading(false)
+    }
+  }
+
+  function handleFieldSave() {
+    if (onRefresh) {
+      onRefresh()
     }
   }
 
@@ -298,9 +570,56 @@ export default function ContextEntryCard({
             </div>
           )}
 
-          {/* Bullets */}
+          {/* Inline editable fields (per entry_type) */}
+          {editableFields.length > 0 && (
+            <div className="space-y-1.5">
+              {editableFields.map(({ key, label }) => {
+                const isDateField = key === 'date_start' || key === 'date_end'
+                const fieldValue =
+                  ((entry.data ?? {})[key] as string | null | undefined) ??
+                  (key === 'date_start'
+                    ? ((entry.data ?? {})['start_date'] as string | null | undefined)
+                    : key === 'date_end'
+                    ? ((entry.data ?? {})['end_date'] as string | null | undefined)
+                    : undefined)
+
+                return (
+                  <div key={key} className="flex gap-2 text-xs items-center">
+                    <span className="text-muted-foreground shrink-0 w-28 truncate">
+                      {label}
+                    </span>
+                    {isDateField ? (
+                      <EditableDateField
+                        label={label}
+                        value={fieldValue}
+                        fieldKey={key}
+                        entryId={entry.entry_id}
+                        userId={MVP_USER_ID}
+                        allowPresent={key === 'date_end'}
+                        onSave={handleFieldSave}
+                      />
+                    ) : (
+                      <EditableField
+                        label={label}
+                        value={fieldValue}
+                        fieldKey={key}
+                        entryId={entry.entry_id}
+                        userId={MVP_USER_ID}
+                        onSave={handleFieldSave}
+                      />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Bullets — copy-protected */}
           {bullets.length > 0 && (
-            <ul className="space-y-1 list-disc list-inside">
+            <ul
+              className="space-y-1 list-disc list-inside select-none"
+              onCopy={(e) => e.preventDefault()}
+            >
               {bullets.map((b, i) => (
                 <li key={i} className="text-xs text-foreground leading-snug">
                   {b.text}
@@ -330,7 +649,7 @@ export default function ContextEntryCard({
             </div>
           )}
 
-          {/* Structured data fields */}
+          {/* Structured data fields (remaining, not already shown inline) */}
           <DataFields data={entry.data ?? {}} />
         </div>
       )}

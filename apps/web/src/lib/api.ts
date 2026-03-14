@@ -185,4 +185,15 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ flagged_evergreen: value, user_id: userId }),
     }),
+
+  /**
+   * PATCH /api/v1/context/entries/:entryId
+   * Partial update of whitelisted data fields (append-only — creates new version).
+   * Only fields in the server-side EDITABLE_FIELDS whitelist are applied.
+   */
+  patchEntry: (entryId: string, userId: string, patch: Record<string, unknown>) =>
+    apiFetch<void>(`/api/v1/context/entries/${entryId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ user_id: userId, patch }),
+    }),
 };
