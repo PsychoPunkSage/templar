@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE context_ingest_batches\n               SET succeeded  = succeeded + 1,\n                   pending    = GREATEST(pending - 1, 0),\n                   status     = CASE WHEN pending - 1 <= 0 THEN 'done' ELSE status END,\n                   expires_at = CASE WHEN pending - 1 <= 0\n                                     THEN NOW() + INTERVAL '7 days'\n                                     ELSE expires_at END,\n                   updated_at = NOW()\n               WHERE id = (SELECT batch_id FROM context_ingest_items WHERE id = $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1ef9a52c68201127f7968995dd038186ee6d54adfc3dce13eea94c3e063c7c14"
+}

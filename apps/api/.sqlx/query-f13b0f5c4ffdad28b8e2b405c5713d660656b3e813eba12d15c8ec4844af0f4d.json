@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE context_ingest_items\n           SET status = 'succeeded', entry_id = $2, updated_at = NOW()\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f13b0f5c4ffdad28b8e2b405c5713d660656b3e813eba12d15c8ec4844af0f4d"
+}

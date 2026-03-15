@@ -18,6 +18,10 @@ pub struct ContextEntryRow {
     pub tags: Vec<String>,
     pub flagged_evergreen: bool,
     pub contribution_type: String,
+    /// Phase 5.5: non-blocking quality score (0.0–1.0). 1.0 = fully quantified.
+    pub quality_score: f64,
+    /// Phase 5.5: machine-readable quality flags (e.g. ["missing_metric"]).
+    pub quality_flags: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 

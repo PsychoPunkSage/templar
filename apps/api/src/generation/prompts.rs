@@ -112,6 +112,56 @@ HARD RULES:
 6. Incorporate JD keywords naturally where they appear in the context — never force-fit
 7. Do NOT include bullets for entries with no relevant content for this role"#;
 
+// ────────────────────────────────────────────────────────────────────────────
+// Phase 7.0 — LLM-based fit scoring
+// ────────────────────────────────────────────────────────────────────────────
+
+/// System prompt for LLM fit scoring.
+pub const LLM_FIT_SCORE_SYSTEM: &str =
+    "You are scoring a candidate's fit for a job description. \
+    Analyze alignment across technical skills, experience level, domain knowledge, and soft skills. \
+    You MUST respond with valid JSON only — no markdown fences, no explanations. \
+    Be honest: only mark something as a strong match if the evidence is clear and direct.";
+
+/// LLM fit score prompt template.
+/// Replace: {entries_summary}, {jd_keywords}, {jd_requirements}, {jd_text}
+pub const LLM_FIT_SCORE_PROMPT_TEMPLATE: &str = r#"Score this candidate's fit for the job description below.
+
+CANDIDATE CONTEXT SUMMARY:
+{entries_summary}
+
+JD KEYWORDS TO CHECK:
+{jd_keywords}
+
+JD HARD REQUIREMENTS:
+{jd_requirements}
+
+JOB DESCRIPTION:
+{jd_text}
+
+Return a JSON object with this EXACT schema:
+{
+  "overall_score": 72,
+  "strong_matches": [
+    {"dimension": "Rust", "context_evidence": "5 years Rust at Acme", "jd_requirement": "5+ years Rust", "strength": 0.95}
+  ],
+  "partial_matches": [
+    {"dimension": "Kubernetes", "context_evidence": "basic k8s usage mentioned", "jd_requirement": "Production Kubernetes experience", "strength": 0.55}
+  ],
+  "gaps": [
+    {"keyword": "GraphQL", "jd_frequency": 3, "suggestion": null}
+  ],
+  "recommendation": "Strong fit for the infrastructure role. Missing GraphQL experience but core Rust/distributed systems background is excellent."
+}
+
+Rules:
+- overall_score: integer 0–100 (weighted average of all keyword alignments)
+- strong_matches: strength ≥ 0.8 — direct, clear evidence in candidate context
+- partial_matches: strength 0.4–0.79 — indirect, partial, or adjacent evidence
+- gaps: all JD keywords with strength < 0.4 — nothing relevant in candidate context
+- Keep recommendation to 2 sentences maximum
+- Do NOT include any text outside the JSON object"#;
+
 /// Reframe hint prompt template.
 /// Replace: {entry_json}, {tone}, {jd_summary}
 pub const REFRAME_PROMPT_TEMPLATE: &str = r#"Given this context entry and the detected JD tone, suggest a concise alternative framing that better highlights the most relevant aspect of this entry for the target role.

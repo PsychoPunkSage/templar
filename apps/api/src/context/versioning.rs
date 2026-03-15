@@ -26,6 +26,10 @@ pub struct CommitParams<'a> {
     pub tags: &'a [String],
     pub flagged_evergreen: bool,
     pub contribution_type: &'a str,
+    /// Phase 5.5: non-blocking quality score (0.0–1.0).
+    pub quality_score: f64,
+    /// Phase 5.5: machine-readable quality flags.
+    pub quality_flags: &'a [String],
 }
 
 /// Commits a new context entry as a versioned INSERT.
@@ -47,6 +51,8 @@ pub async fn commit_context_update(
         tags,
         flagged_evergreen,
         contribution_type,
+        quality_score,
+        quality_flags,
     } = params;
     // 1. Determine next version
     let current_max: Option<i32> =
@@ -61,8 +67,9 @@ pub async fn commit_context_update(
         r#"
         INSERT INTO context_entries
             (user_id, entry_id, version, entry_type, data, raw_text,
-             recency_score, impact_score, tags, flagged_evergreen, contribution_type)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             recency_score, impact_score, tags, flagged_evergreen, contribution_type,
+             quality_score, quality_flags)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         "#,
     )
     .bind(user_id)
@@ -76,6 +83,8 @@ pub async fn commit_context_update(
     .bind(tags)
     .bind(flagged_evergreen)
     .bind(contribution_type)
+    .bind(quality_score)
+    .bind(quality_flags)
     .execute(pool)
     .await?;
 

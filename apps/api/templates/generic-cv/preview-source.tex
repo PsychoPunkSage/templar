@@ -1,0 +1,249 @@
+\documentclass[11pt,a4paper]{article}
+
+% ============================================
+% PACKAGES
+% ============================================
+\usepackage[margin=0.5in]{geometry}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{multicol}
+\usepackage[T1]{fontenc}
+\usepackage[hidelinks]{hyperref}
+
+% ============================================
+% COLORS
+% ============================================
+\definecolor{headercolor}{RGB}{0,51,102}
+\definecolor{sectioncolor}{RGB}{0,51,102}
+\definecolor{linkcolor}{RGB}{0,102,204}
+
+% ============================================
+% SPACING KNOBS
+% ============================================
+\newcommand{\sectionspacing}{1pt}
+\newcommand{\itemspacing}{-2pt}
+\newcommand{\beforeheaderskip}{-15pt}
+\newcommand{\normalfontsize}{\small}
+\newcommand{\sectionfontsize}{\large}
+
+% ============================================
+% SECTION FORMAT
+% ============================================
+\titleformat{\section}
+  {\color{sectioncolor}\sectionfontsize\bfseries\uppercase}
+  {}{0em}{}[\titlerule]
+\titlespacing*{\section}{0pt}{\sectionspacing}{4pt}
+
+\pagestyle{empty}
+
+\hypersetup{
+    colorlinks=true,
+    urlcolor=linkcolor,
+    pdftitle={YOUR NAME - CV},
+    pdfauthor={YOUR NAME}
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\setlist[itemize]{leftmargin=*, nosep, itemsep=\itemspacing, topsep=2pt}
+
+% ============================================
+% CUSTOM COMMANDS
+% ============================================
+% \education{Year}{Degree}{Institution}{GPA}
+\newcommand{\education}[4]{\textbf{#1} & \textbf{#2} & #3 & #4 \\}
+
+% \job{Company}{Role}{Date Range}
+\newcommand{\job}[3]{\textbf{#1 | #2} \hfill \textbf{#3}}
+
+% \project{Title}{\href{URL}{Label}}{Date Range}
+\newcommand{\project}[3]{\textbf{#1 | #2} \hfill \textbf{#3}}
+
+% \skillcat{Category}{items}
+\newcommand{\skillcat}[2]{\textbf{#1:} #2}
+
+% \extracirc{Role}{Organization}{Date Range}
+\newcommand{\extracirc}[3]{\textbf{#1 | #2} \hfill \textbf{#3}}
+
+% \award{Award Name}{Issuer}{Date}
+\newcommand{\award}[3]{\textbf{#1} --- #2 \hfill \textbf{#3}}
+
+% ============================================
+% DOCUMENT
+% ============================================
+\begin{document}
+\vspace*{\beforeheaderskip}
+
+% ============================================
+% HEADER
+% ============================================
+\begin{center}
+    {\normalfontsize\textbf{\color{headercolor}YOUR FULL NAME}} \\[1pt]
+    {\footnotesize DEGREE \& Major | Minor: MINOR | University Name (GPA/10)} \\[1pt]
+    {\footnotesize
+    \href{mailto:you@email.com}{you@email.com} \ | \
+    +XX-XXXXXXXXXX \ | \
+    LinkedIn: \href{https://linkedin.com/in/handle}{handle} \ | \
+    GitHub: \href{https://github.com/Handle}{Handle}
+    }
+\end{center}
+
+
+% ============================================
+% SECTION: EDUCATION
+% Columns: Year | Degree | Institution | GPA
+% Add one \education{} line per degree.
+% ============================================
+\section*{Education}
+\begin{tabularx}{\textwidth}{p{1cm}p{5.5cm}Xr}
+\education{YEAR}{DEGREE NAME}{INSTITUTION NAME}{GPA / 10}
+\end{tabularx}
+
+
+% ============================================
+% SECTION: COURSEWORK
+% List relevant courses in a multi-column layout.
+% Change the number in {multicols}{N} to adjust columns.
+% ============================================
+\section*{Relevant Coursework}
+{\footnotesize
+\begin{multicols}{3}
+\begin{itemize}
+    \item COURSE NAME 1
+    \item COURSE NAME 2
+    \item COURSE NAME 3
+    \item COURSE NAME 4
+    \item COURSE NAME 5
+    \item COURSE NAME 6
+\end{itemize}
+\end{multicols}
+}
+
+
+% ============================================
+% SECTION: PUBLICATIONS
+% Repeat from \textbf{Paper Title} down to the
+% closing brace for each additional paper.
+% ============================================
+\section*{Publications}
+\textbf{PAPER TITLE | VENUE / CONFERENCE NAME}
+
+\textit{AUTHOR 1, AUTHOR 2, AUTHOR 3 --- submitted/published CONF'YY}
+{\footnotesize
+\begin{itemize}
+    \item Contribution 1 --- what you built and \textbf{why it is novel}.
+    \item Contribution 2 --- \textbf{quantified impact} (e.g., X\% overhead, N services tested).
+    \item Contribution 3 --- methodology, reproducibility, or scale highlight.
+\end{itemize}
+}
+
+
+% ============================================
+% SECTION: INTERNSHIPS / WORK EXPERIENCE
+% Repeat the \job block + itemize for each role.
+% ============================================
+\section*{Internships}
+
+\job{COMPANY NAME}{ROLE TITLE}{Mon 'YY -- Mon 'YY}
+{\footnotesize
+\begin{itemize}
+    \item Bullet 1 --- what you built/designed, \textbf{key technologies}, and \textbf{quantified outcome}.
+    \item Bullet 2 --- system or feature you engineered; include \textbf{scale} (e.g., X req/sec, Xms latency).
+    \item Bullet 3 --- architecture, security, or infrastructure contribution and its \textbf{business impact}.
+\end{itemize}
+}
+
+
+% ============================================
+% SECTION: PROJECTS
+% Repeat the \project block + itemize for each project.
+% ============================================
+\section*{Projects}
+
+\project{PROJECT TITLE --- TAGLINE}{\href{https://github.com/Handle/repo}{GitHub}}{Mon 'YY -- Present}
+{\footnotesize
+\begin{itemize}
+    \item Bullet 1 --- core component built, \textbf{novel technical approach}, and problem it solves.
+    \item Bullet 2 --- subsystem or feature; include \textbf{design decisions} and tradeoffs.
+    \item Bullet 3 --- performance, scalability, or security property with \textbf{concrete numbers}.
+\end{itemize}
+}
+
+
+% ============================================
+% SECTION: RESEARCH EXPERIENCE
+% Same format as Internships but for lab/academic work.
+% ============================================
+\section*{Research Experience}
+
+\job{LAB / GROUP NAME}{Research Intern / RA}{Mon 'YY -- Mon 'YY}
+{\footnotesize
+\begin{itemize}
+    \item Bullet 1 --- research problem you worked on and your specific contribution.
+    \item Bullet 2 --- methodology, dataset, or experimental setup with \textbf{quantified results}.
+    \item Bullet 3 --- publication, preprint, or outcome of the work.
+\end{itemize}
+}
+
+
+% ============================================
+% SECTION: EXTRACURRICULARS / LEADERSHIP
+% Repeat \extracirc block + itemize for each role.
+% ============================================
+\section*{Extracurriculars}
+
+\extracirc{ROLE / POSITION}{CLUB OR ORGANIZATION NAME}{Mon 'YY -- Mon 'YY}
+{\footnotesize
+\begin{itemize}
+    \item Bullet 1 --- what you led, organized, or built within this role.
+    \item Bullet 2 --- team size, event scale, or measurable outcome.
+\end{itemize}
+}
+
+
+% ============================================
+% SECTION: AWARDS & ACHIEVEMENTS
+% Repeat \award for each entry.
+% For a rank: \award{Rank X of N --- Competition Name}{Organizer}{Mon 'YY}
+% ============================================
+\section*{Awards \& Achievements}
+
+\award{AWARD / FELLOWSHIP / SCHOLARSHIP NAME}{ISSUING ORGANIZATION}{Mon 'YY}
+
+
+% ============================================
+% SECTION: OPEN-SOURCE CONTRIBUTIONS
+% One bullet per project. Adjust count freely.
+% ============================================
+\section*{Open-Source Contributions}
+{\footnotesize
+\begin{itemize}
+    \item \textbf{PROJECT NAME} (\href{https://github.com/org/repo}{link}) --- brief description of contribution and merged PR count or impact.
+\end{itemize}
+}
+
+
+% ============================================
+% SECTION: TECHNICAL SKILLS
+% One \skillcat per category. Add/remove freely.
+% ============================================
+\section*{Technical Skills}
+
+\skillcat{Languages}{LANG1, LANG2, LANG3}
+
+\skillcat{Frameworks \& Libraries}{FRAMEWORK1, FRAMEWORK2, FRAMEWORK3}
+
+\skillcat{Datastores}{DB1, DB2, DB3}
+
+\skillcat{Infra.\ \& DevOps}{TOOL1, TOOL2, CLOUD1, CLOUD2}
+
+\skillcat{Observability}{TOOL1, TOOL2, TOOL3}
+
+\skillcat{Security}{CONCEPT1, CONCEPT2, TOOL1}
+
+% \skillcat{Systems \& Linux}{OS, subsystems --- uncomment if needed}
+
+
+\end{document}

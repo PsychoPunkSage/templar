@@ -34,8 +34,34 @@ pub fn fontspec_name(font: &FontFamily) -> &'static str {
         FontFamily::Inter => "Inter",
         FontFamily::EbGaramond => "EB Garamond",
         FontFamily::Lato => "Lato",
+        // NOTE: Oswald is a variable-weight TTF distributed as a single file
+        // (Oswald-Variable.ttf). xdvipdfmx cannot resolve "Bold" style from a
+        // variable TTF by fc-name alone — it tries to locate a separate file for
+        // the bold variant and fails with "Invalid TTC index (not TTC font)".
+        // We use an explicit Path= declaration in the document preamble instead;
+        // this value is used only for non-Oswald fonts in build_latex_document().
+        // For Oswald the preamble injects the correct \setmainfont[Path=...] call.
         FontFamily::Oswald => "Oswald",
         FontFamily::ComputerModern => "Latin Modern Roman",
+    }
+}
+
+/// Returns the `\setmainfont{...}` declaration for XeLaTeX.
+///
+/// Most fonts can be loaded by fc-name (e.g., `\setmainfont{Inter}`).
+/// Oswald is a single variable-weight TTF file and requires an explicit
+/// Path= declaration so xdvipdfmx can embed it correctly without attempting
+/// to find a separate "Oswald Bold" file (which does not exist).
+pub fn setmainfont_declaration(font: &FontFamily) -> String {
+    match font {
+        FontFamily::Oswald => {
+            // Explicit path prevents xdvipdfmx "Invalid TTC index" error on variable TTFs.
+            // UprightFont and BoldFont both point to the same variable TTF file —
+            // the weight axis handles boldness at the OpenType level.
+            r"[Path=/usr/local/share/fonts/templar/,Extension=.ttf,UprightFont=Oswald-Variable,BoldFont=Oswald-Variable]"
+                .to_string()
+        }
+        other => format!("{{{}}}", fontspec_name(other)),
     }
 }
 
@@ -83,9 +109,17 @@ pub fn order_sections(sections: &[ResumeSection]) -> Vec<&ResumeSection> {
 fn template_preamble(font: &FontFamily) -> &'static str {
     match font {
         FontFamily::Inter => {
-            // Hacker — minimal, dense, clean sans-serif headers
+            // Hacker — minimal, dense, clean sans-serif headers.
+            //
+            // IMPORTANT: \sffamily in XeLaTeX+fontspec triggers a fallback to
+            // Latin Modern Sans (lmss) TFM files when no \setsansfont is declared.
+            // lmss is NOT in the Tectonic pre-warmed cache, causing a "font not
+            // loadable" error. Fix: declare \setsansfont{Inter} so \sffamily stays
+            // within the Inter font family (Inter is already sans-serif; this is a
+            // no-op visually but prevents the lmsans fallback at the XeLaTeX level).
             r#"% Hacker template — clean, dense, minimal
 \setlength{\parskip}{2pt}
+\setsansfont{Inter}
 \titleformat{\section}{\large\bfseries\sffamily}{}{0em}{}[\titlerule]
 \titlespacing{\section}{0pt}{6pt}{4pt}"#
         }
@@ -105,10 +139,16 @@ fn template_preamble(font: &FontFamily) -> &'static str {
 \titlespacing{\section}{0pt}{8pt}{5pt}"#
         }
         FontFamily::Oswald => {
-            // Founder — bold condensed headers, startup-facing
+            // Founder — bold condensed headers, startup-facing.
+            //
+            // IMPORTANT: \sffamily is removed here. Adding \sffamily with Oswald as
+            // the main font (a variable TTF) causes XeLaTeX to fall back to lmss for
+            // the sans-serif family, which is not cached. Since Oswald is already a
+            // condensed sans-serif face, \sffamily is redundant and visually identical.
+            // The Path= font declaration in build_latex_document() handles bold loading.
             r#"% Founder template — bold headers, startup-facing
 \setlength{\parskip}{3pt}
-\titleformat{\section}{\Large\bfseries\sffamily}{}{0em}{}
+\titleformat{\section}{\Large\bfseries}{}{0em}{}
 \titlespacing{\section}{0pt}{6pt}{3pt}"#
         }
         FontFamily::ComputerModern => {
@@ -184,7 +224,7 @@ pub fn escape_latex(text: &str) -> String {
 /// \end{document}
 /// ```
 pub fn build_latex_document(params: &RenderParams) -> String {
-    let fspec = fontspec_name(&params.font);
+    let font_decl = setmainfont_declaration(&params.font);
     let preamble = template_preamble(&params.font);
     let item_opts = itemize_settings(&params.font);
     let ordered = order_sections(&params.sections);
@@ -206,7 +246,7 @@ pub fn build_latex_document(params: &RenderParams) -> String {
         r#"\documentclass[{font_size_pt}pt]{{article}}
 \usepackage[left={margin_left:.2}in, right={margin_right:.2}in, top=0.75in, bottom=0.75in]{{geometry}}
 \usepackage{{fontspec}}
-\setmainfont{{{fspec}}}
+\setmainfont{font_decl}
 \usepackage{{microtype,enumitem,titlesec,xcolor,tabularx,parskip}}
 \usepackage[hidelinks]{{hyperref}}
 {preamble}
@@ -218,7 +258,7 @@ pub fn build_latex_document(params: &RenderParams) -> String {
         font_size_pt = params.font_size_pt,
         margin_left = params.margin_left_in,
         margin_right = params.margin_right_in,
-        fspec = fspec,
+        font_decl = font_decl,
         preamble = preamble,
         body = body,
     )
@@ -414,5 +454,65 @@ mod tests {
                 "template_name and fontspec_name should differ for {font:?}"
             );
         }
+    }
+
+    // ── setmainfont_declaration ───────────────────────────────────────────
+
+    #[test]
+    fn test_oswald_uses_path_declaration() {
+        // Oswald is a variable TTF — xdvipdfmx needs explicit Path= to avoid
+        // "Invalid TTC index" error. Verify the declaration contains Path=.
+        let decl = setmainfont_declaration(&FontFamily::Oswald);
+        assert!(
+            decl.contains("Path="),
+            "Oswald font declaration must use Path= to resolve the variable TTF"
+        );
+        assert!(
+            decl.contains("Oswald-Variable"),
+            "Oswald declaration must reference Oswald-Variable.ttf"
+        );
+    }
+
+    #[test]
+    fn test_inter_uses_simple_name_declaration() {
+        let decl = setmainfont_declaration(&FontFamily::Inter);
+        assert_eq!(
+            decl, "{Inter}",
+            "Inter should use simple brace-wrapped name"
+        );
+    }
+
+    #[test]
+    fn test_hacker_preamble_contains_setsansfont() {
+        // The Hacker template must declare \setsansfont{Inter} to prevent
+        // \sffamily in \titleformat from falling back to lmsans (not cached).
+        let params = make_params(FontFamily::Inter);
+        let doc = build_latex_document(&params);
+        assert!(
+            doc.contains(r"\setsansfont{Inter}"),
+            "Hacker (Inter) document must contain \\setsansfont{{Inter}} to prevent lmss fallback"
+        );
+    }
+
+    #[test]
+    fn test_founder_preamble_no_sffamily() {
+        // The Founder template must NOT use \sffamily — Oswald is already sans-serif
+        // and \sffamily with a variable TTF main font triggers lmss fallback.
+        let params = make_params(FontFamily::Oswald);
+        let doc = build_latex_document(&params);
+        assert!(
+            !doc.contains(r"\sffamily"),
+            "Founder (Oswald) document must not contain \\sffamily to avoid lmss fallback"
+        );
+    }
+
+    #[test]
+    fn test_oswald_document_contains_path_declaration() {
+        let params = make_params(FontFamily::Oswald);
+        let doc = build_latex_document(&params);
+        assert!(
+            doc.contains("Path=/usr/local/share/fonts/templar/"),
+            "Oswald document must use explicit font path for xdvipdfmx compatibility"
+        );
     }
 }

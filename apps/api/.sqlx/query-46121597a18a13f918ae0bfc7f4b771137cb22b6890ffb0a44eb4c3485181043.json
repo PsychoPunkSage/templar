@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, entry_index, status, error_msg, entry_id\n           FROM context_ingest_items\n           WHERE batch_id = $1\n           ORDER BY entry_index",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "entry_index",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "error_msg",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "entry_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "46121597a18a13f918ae0bfc7f4b771137cb22b6890ffb0a44eb4c3485181043"
+}

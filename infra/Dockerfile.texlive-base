@@ -1,0 +1,54 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    curl \
+    libgraphite2-3 \
+    libharfbuzz0b \
+    libfreetype6 \
+    fontconfig \
+    fonts-lato \
+    fonts-ebgaramond \
+    # TeX Live — packages are installed files on disk, no cache hash, no network at runtime.
+    # This replaces Tectonic which suffered from format-cache hash mismatches at runtime.
+    # Package breakdown:
+    #   texlive-latex-base   — pdflatex binary, core packages (article, tabularx, multicol)
+    #   texlive-latex-extra  — geometry, titlesec, enumitem, xcolor, hyperref, microtype, parskip
+    #   texlive-fonts-recommended — Latin Modern fonts (lmodern), standard font metrics
+    #   texlive-fonts-extra  — fontawesome5 (used in contact line icons in generic-cv template)
+    texlive-latex-base \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
+    texlive-fonts-extra \
+    # poppler-utils provides pdftoppm, used to convert PDF output to
+    # PNG thumbnails for the template picker. Required by precompute_thumbnails().
+    poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Verify pdflatex is available
+RUN pdflatex --version
+
+# Pre-warm pdflatex format file into OS page cache.
+# This compiles a minimal document so the .fmt file and core font metrics
+# are loaded into the OS page cache. Subsequent compiles hit the cache and
+# are significantly faster (1-3s instead of 3-8s on cold start).
+RUN printf '%s\n' \
+    '\documentclass[10pt]{article}' \
+    '\usepackage[T1]{fontenc}' \
+    '\usepackage[utf8]{inputenc}' \
+    '\usepackage{lmodern}' \
+    '\usepackage[left=1.00in,right=1.00in,top=0.75in,bottom=0.75in]{geometry}' \
+    '\usepackage{microtype,enumitem,titlesec,parskip,multicol}' \
+    '\usepackage{tabularx}' \
+    '\usepackage[dvipsnames]{xcolor}' \
+    '\usepackage{fontawesome5}' \
+    '\usepackage[hidelinks]{hyperref}' \
+    '\begin{document}' \
+    '\pagestyle{empty}' \
+    'Hello pdfLaTeX Templar warmup.' \
+    '\end{document}' \
+    > /tmp/warmup.tex \
+    && pdflatex -interaction=nonstopmode -halt-on-error -output-directory /tmp /tmp/warmup.tex \
+    && rm -f /tmp/warmup.* \
+    && echo "pdflatex warmup complete"

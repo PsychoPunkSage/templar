@@ -1,0 +1,260 @@
+\documentclass[11pt,a4paper]{article}
+
+% ============================================
+% PACKAGES
+% ============================================
+\usepackage[margin=0.5in]{geometry}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{fontawesome5}
+\usepackage{tabularx}
+\usepackage{multicol}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{fix-cm}
+\usepackage[hidelinks]{hyperref}
+
+% ============================================
+% CONFIGURATION - EDIT THESE TO CUSTOMIZE
+% ============================================
+
+% Color scheme
+\definecolor{headercolor}{RGB}{0,51,102}
+\definecolor{sectioncolor}{RGB}{0,51,102}
+\definecolor{linkcolor}{RGB}{0,102,204}
+
+% Spacing configuration
+\newcommand{\sectionspacing}{1pt}
+\newcommand{\itemspacing}{-2pt}
+\newcommand{\beforeheaderskip}{-15pt}
+
+% Font sizes
+\newcommand{\namefontsize}{\LARGE}
+\newcommand{\sectionfontsize}{\large}
+\newcommand{\normalfontsize}{\small}
+
+% Section title formatting
+\titleformat{\section}
+  {\color{sectioncolor}\sectionfontsize\bfseries\uppercase}
+  {}{0em}{}[\titlerule]
+\titlespacing*{\section}{0pt}{\sectionspacing}{4pt}
+
+% Remove page numbers
+\pagestyle{empty}
+
+% Hyperlink setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=linkcolor,
+    urlcolor=linkcolor,
+    pdftitle={Abhinav Prakash - CV},
+    pdfauthor={Abhinav Prakash}
+}
+
+% Custom commands
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+
+% Item spacing
+\setlist[itemize]{leftmargin=*, nosep, itemsep=\itemspacing, topsep=2pt}
+
+% ============================================
+% CUSTOM COMMANDS - FOR EASY CONTENT ENTRY
+% ============================================
+
+% Education entry: \education{Year}{Degree}{Institute}{CGPA}
+\newcommand{\education}[4]{
+  \textbf{#1} & \textbf{#2} & #3 & #4 \\
+}
+
+% Job entry: \job{Company}{Position}{Duration}
+\newcommand{\job}[3]{
+  \textbf{#1 | #2} \hfill \textbf{#3}
+}
+
+% Project entry: \project{Title}{Subtitle}{Duration}
+\newcommand{\project}[3]{
+  \textbf{#1 | #2} \hfill \textbf{#3}
+}
+
+% Competition entry: \competition{Name}{Achievement}
+\newcommand{\competition}[2]{
+  \textbf{#1 | #2}
+}
+
+% Skill category: \skillcat{Category}{Skills}
+\newcommand{\skillcat}[2]{
+  \textbf{#1:} #2
+}
+
+% ============================================
+% DOCUMENT BEGINS
+% ============================================
+
+\begin{document}
+
+\vspace*{\beforeheaderskip}
+
+% ============================================
+% HEADER
+% ============================================
+\begin{center}
+    {\normalfontsize\textbf{\color{headercolor}ABHINAV PRAKASH}} \\[1pt]
+    {\footnotesize B.Tech.(Hons.) + M.Tech. Chemical Engineering | Minor: Computer Science \& Engg. | IIT Kharagpur (8.6/10)} \\[1pt]
+    {\footnotesize 
+    \faEnvelope\ \href{mailto:abhinav.prakash319dm@gmail.com}{abhinav.prakash319dm@gmail.com} \ | \ 
+    \faPhone\ +91-8252215118 \ | \ 
+    \faLinkedin\ \href{https://linkedin.com/in/psychopunksage}{psychopunksage} \ | \ 
+    \faGithub\ \href{https://github.com/PsychoPunkSage}{PsychoPunkSage}
+    }
+\end{center}
+
+% % ============================================
+% % EDUCATION
+% % ============================================
+% \section*{Education}
+% \begin{tabularx}{\textwidth}{p{1cm}p{5.5cm}Xr}
+% \education{2026}{M.TECH Dual Degree 5Y}{IIT Kharagpur}{8.6 / 10}
+% % \education{2021}{CBSE Boards}{Chinmaya Vidyalaya}{91.6\%}
+% % \education{2019}{CBSE Boards}{Chinmaya Vidyalaya}{96.8\%}
+% \end{tabularx}
+
+% ============================================
+% PUBLICATIONS
+% ============================================
+\section*{Publications}
+\textbf{Security-Aware Multi-Cloud Benchmarking for Distributed Microservices | Chronark}
+
+\textit{Abhinav Prakash, Utkalika Satapathy, Subhrendu Chattopadhyay and Sandip Chakraborty - submitted ICDCN'26}
+{\footnotesize
+\begin{itemize}
+    \item Proposed and developed the first reproducible benchmarking framework unifying performance and security-resilience evaluation in microservices, enabling systematic adversarial assessment and bridging a critical gap in benchmarking research.
+
+    \item Introduced a real-world CVE injection methodology using Redis (CVE-2022-24834), MongoDB (CVE-2020-7921), and Node.js (CVE-2024-27983) exploits, quantifying impacts of \textbf{340\% memory surge}, \textbf{>85\% CPU spikes}, and \textbf{78\% timeout rates}.
+
+    \item Demonstrated cross-cloud reproducibility with \textbf{<2\% monitoring overhead} across AWS, Azure, GCP, and local clusters; deployable on any OCI-compliant runtime (containerd, runc), achieving consistent deployment times.
+
+    \item Instrumented services using Prometheus exporters and OpenTelemetry, exposing custom metrics (latency, CPU, memory, timeout rate) and building Grafana dashboards for exploit impact visualization and resilience analysis.
+    %, enabling actionable resilience insights.
+
+\end{itemize}
+}
+% ============================================
+% INTERNSHIPS
+% ============================================
+\section*{Internships}
+
+\job{SupraOracles}{Associate Rust Developer}{Jan '25 - Present}
+{\footnotesize
+\begin{itemize}
+    \item Re-architected high-throughput relay pipeline using \textbf{Tokio task pools and semaphore-bounded concurrency}, replacing serial batch dispatch; reduced median latency from \textbf{~432s → ~55s} and sustained \textbf{220-txn burst processing within <500s}.
+
+    \item Replaced MDBX with a custom \textbf{RocksDB-backed Merkle Patricia Trie} for RETH; benchmarked 10K–500K account workloads, achieving \textbf{up to 2.8× faster state updates} and root computation.
+
+    \item Architected trustless Supra–ETH and BSC–Supra cross-chain bridges using \textbf{light-client verification, MPT proofs, and BLS multi-sig validation}, forming the core security path for cross-chain assets and messages.
+
+    \item Built OpenTelemetry-based consensus monitor processing \textbf{10K+ events/sec} with \textbf{µs precision} using lock-free collectors and real-time aggregation, delivering production dashboards for latency and proposal metrics.
+
+\end{itemize}
+}
+
+\job{Chiral Inc.}{Rust Engineer (intern)}{Nov '25 - Jan '25}
+{\footnotesize
+\begin{itemize}
+    % \item Designed and implemented a GPU compute backend in Rust, achieving \textbf{6.62×} perf. improvement over optimized CPU baseline
+
+    % \item Built deterministic benchmarking and correctness validation pipelines ensuring 100\% output parity across CPU/GPU backends.
+
+    \item Designed and implemented a GPU compute backend in Rust using wgpu and WGSL shaders, accelerating batched workloads by \textbf{6.62×} over optimized CPU code (\textbf{CPU: 69.99 ms → GPU: 10.57 ms}) with \textbf{100\% bit-exact output parity}
+
+    \item Engineered custom WGSL compute pipelines using atomic bit-vector operations, workgroup-local memory tiling, and coalesced memory access, achieving a \textbf{7.81× speedup} for large-batch similarity computation validated across all test inputs
+
+    \item Built a hybrid CPU-GPU execution layer with deterministic benchmarking and correctness cross-validation (\textbf{100/100 fingerprint matches, 99/99 similarity matches}), enabling reproducible performance measurement and backend selection
+
+\end{itemize}
+}
+
+% \job{LFX'25}{Mentee - LFDT}{Jun '25 - Nov '25}
+% {\footnotesize
+% \begin{itemize}
+%     \item Designed a \textbf{confidential digital asset exchange} by integrating \textbf{Intel SGX enclaves} with \textbf{Fabric Private Chaincode (FPC)} and \textbf{cc-tools}; enabled \textbf{secure execution in TEEs} while maintaining \textbf{ledger transparency} and \textbf{tamper evidence}
+
+%     \item Implemented \textbf{multi-modal escrow logic} (hash commitments, \textbf{ECDSA signature validation}) inside \textbf{SGX enclaves}, leveraging \textbf{sealed storage} and \textbf{encrypted state management}; ensured \textbf{confidential verifiable execution} across Fabric peers
+
+%     \item Prototyped a \textbf{CBDC framework} with \textbf{programmable monetary policy} and confidential capabilities using \textbf{enclave-generated ZK proofs}; demonstrated \textbf{cross-border interoperability} while preserving \textbf{privacy} and \textbf{regulatory compliance}
+
+
+% \end{itemize}
+% }
+
+\job{Nethermind}{Software Developer (intern)}{May '24 - Jul '24}
+{\footnotesize
+\begin{itemize}
+     \item Refactored \textbf{Starknet.go transaction architecture} by introducing \textit{interface-driven abstractions} for \textit{broadcasting}, \textit{unified receipt handling}, and \textit{polymorphic account signing}; reduced code duplication by \textbf{~35\%}, improving maintainability and compatibility
+   
+    \item Implemented \textbf{cryptographic signer abstraction} with \textbf{secure private key management}, \textit{public key derivation}, and \textit{keystore integration}; added \textit{context-aware signing} and \textit{error handling} to support \textbf{multiple transaction types} in a \textbf{scalable manner}
+
+    \item Optimized Verkle tree ops with Rust FFI zero-copy serialization and SIMD batch operations, reducing latency by \textbf{84\%} %(280ms -> 45ms)
+\end{itemize}
+}
+
+\job{Vivenns Global Pvt. Ltd.}{Systems and Blockchain Engineer (intern)}{Dec '23 - Mar '24}
+{\footnotesize
+\begin{itemize}
+    \item Migrated \textbf{Hyperledger Fabric networks (v1.4→v2.4)}; re-architecting \textbf{channel configurations}, \textit{consortium governance policies}, and \textit{private data collections (PDCs)}; improved \textit{data privacy}, \textit{endorsement flexibility}, and certificate verification
+    
+    \item \textbf{Developed Golang chaincode} implementing \textbf{RBAC}, \textbf{certificate revocation workflows}, and \textit{Fabric event listeners}; enforced \textit{multi-institutional endorsement policies} and \textit{real-time notifications} for secure \textbf{certificate lifecycle management}
+
+    \item \textbf{Automated Fabric deployment pipelines} with \textbf{Terraform}, \textbf{Docker}, and \textbf{Kubernetes (GKE on GCP)}; enabled \textbf{reproducible provisioning of peers/orderers}, \textit{high availability}, and \textit{CI/CD-driven chaincode upgrades} with \textit{minimal downtime}
+
+    % \item \textbf{Built RESTful APIs in Node.js} integrated with \textit{Fabric SDKs} to expose \textit{tamper-proof audit trails} for \textit{employers and regulators}
+
+\end{itemize}
+}
+
+% ============================================
+% SKILLS - CONFIGURE CATEGORIES AS NEEDED
+% ============================================
+\section*{Technical Skills}
+
+\skillcat{Languages}{Rust, Go, Python, Bash, WGSL, C++}
+
+\skillcat{DevOps} {k8s, Docker, Docker Compose/Swarm, GitHub Actions, Terraform, Vagrant}
+
+\skillcat{Tools \& Services} {PostgreSQL, MongoDB, RocksDB, RabbitMQ (AMQP), Prometheus, Grafana}
+
+\skillcat{Open-Source Contributions}{120+ merged PRs across Ockam, TiDB, Unikraft, LND, BDK, Fedimint, GNOME, IPFS, Hyperledger Indy/Plenum, Starknet.go, Fabric private-chaincode, cc-tools, lazychain}
+
+% ============================================
+% PROJECTS - ADD/REMOVE AS NEEDED
+% ============================================
+\section*{Projects}
+
+\project{Enterprise Application Firewall}{\href{https://github.com/Seizeum/Netra-Linux}{Seizeum}}{Jan '25 - Nov '25}
+{\footnotesize
+\begin{itemize}
+    \item Engineered a \textbf{kernel-level packet interception engine} via \textit{Linux Netfilter + iptables + cgroup}, hooking into the \textbf{networking stack} to enforce \textbf{per-process policies}; remains effective under \textit{VPN tunneling} and \textit{non-standard routing}
+
+    \item Designed a \textbf{4-tier distributed PostgreSQL arch.} enabling \textit{real-time decisioning} + \textit{long-term trend analysis} via \textbf{ML model}
+
+    % \item Developed a \textbf{multi-method discovery and control engine} ensuring \textbf{360° endpoint visibility} as a \textit{last line of defense}; preventing \textbf{malware/spyware exfiltration}, since only \textit{authenticated Apps} can communicate externally
+
+    \item Currently extending enforcement with \textbf{eBPF integration}, overcoming \textit{~60\% accuracy limits} of IP-based blocking by enabling \textbf{context-aware filtering at the socket and process level}; enables high-performance, fine-grained control within the kernel
+
+\end{itemize}
+}
+
+\project{Distributed File Storage System}{\href{https://github.com/PsychoPunkSage/NexNet}{Nexnet}}{Aug '24 - Oct '24}
+{\footnotesize
+\begin{itemize}
+    \item Designed a \textbf{\textit{custom P2P transport layer}} in Go with concurrent goroutines, \textbf{\textit{custom RPC protocol}}, and \textbf{zero-copy streaming primitives} (\textit{TeeReader, MultiWriter}), enabling \textit{simultaneous control messaging} and \textit{multi-peer file distribution} over TCP
+
+    \item Integrated \textbf{\textit{AES-256-CTR streaming encryption}} with per-session random \textbf{Initialization Vectors (IVs)} and \textbf{32KB chunked I/O}, enabling \textbf{constant-memory transfers} while supporting \textbf{random access decryption} and \textbf{parallelized recovery}
+
+    \item Implemented \textbf{\textit{SHA-1 content-addressable storage}} with \textbf{hierarchical path transforms}, \textbf{collision-resistant addressing}, and \textbf{deduplication}, ensuring \textbf{scalable organization of files} and \textbf{deterministic retrieval} across distributed peer networks
+
+\end{itemize}
+}
+
+\end{document}

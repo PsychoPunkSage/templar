@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM rust:1.82-slim AS builder
+FROM rust:1.91-bookworm AS builder
 
 WORKDIR /app
 
@@ -7,6 +7,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache dependencies
@@ -19,21 +20,48 @@ RUN rm -rf apps/api/src
 
 # Build actual source
 COPY apps/api/src apps/api/src
+COPY apps/api/.sqlx apps/api/.sqlx
+ENV SQLX_OFFLINE=true
 # [Below] touch ::> changes timestamp -> build is forced
 RUN touch apps/api/src/main.rs && cargo build --release --bin api
 
 # Stage 2: Runtime
-# Rust, Cargo pkg-confige etc. not needed after bin creation
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+# TeX Live, fonts, and pdflatex warmup are pre-baked into the base image.
+# Rebuild the base image only when infra/Dockerfile.texlive-base changes
+# (GH Actions workflow: .github/workflows/texlive-base.yml).
+FROM localhost/templar-texlive-base:local
 
 WORKDIR /app
+
+ENV RUST_LOG=debug
+ENV RUST_BACKTRACE=full
+
 # Copy only binary
 COPY --from=builder /app/target/release/api /app/api
+
+# Copy template files into the runtime image.
+# Templates are data, not code — they live in apps/api/templates/ in the repo.
+# Copying here (not in builder) keeps the builder stage clean and avoids
+# re-running the expensive Rust build when only template content changes.
+COPY apps/api/templates /app/templates
+
+# Pre-compile template preview PDFs at image build time using pdflatex.
+# The API handler (handle_template_render_pdf) will serve these from disk on
+# first request, bypassing the cold-compile path.
+RUN cd /app/templates/generic-cv \
+    && pdflatex -interaction=nonstopmode -halt-on-error preview-source.tex \
+    && mv preview-source.pdf preview.pdf \
+    && rm -f preview-source.aux preview-source.log \
+    && head -c 4 preview.pdf | grep -q '%PDF' && echo "preview.pdf valid OK" \
+    || (echo "ERROR: preview.pdf is not valid PDF" && exit 1) \
+    && echo "Template preview PDF compiled: generic-cv"
+
+RUN cd /app/templates/generic-cv \
+    && pdflatex -interaction=nonstopmode -halt-on-error thumbnail.tex \
+    && rm -f thumbnail.aux thumbnail.log \
+    && head -c 4 thumbnail.pdf | grep -q '%PDF' && echo "thumbnail.pdf valid OK" \
+    || (echo "ERROR: thumbnail.pdf is not valid PDF" && exit 1) \
+    && echo "Template thumbnail PDF compiled: generic-cv"
 
 EXPOSE 8080
 CMD ["/app/api"]

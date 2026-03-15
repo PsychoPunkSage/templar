@@ -208,7 +208,14 @@ impl LlmClient {
         // Strip markdown code fences if the model wraps JSON in them
         let text = strip_json_fences(text);
 
-        serde_json::from_str(text).map_err(LlmError::Parse)
+        serde_json::from_str(text).map_err(|e| {
+            tracing::error!(
+                parse_error = %e,
+                raw_response = %&text[..text.len().min(500)],
+                "LLM response JSON parse failed"
+            );
+            LlmError::Parse(e)
+        })
     }
 }
 

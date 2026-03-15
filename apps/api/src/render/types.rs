@@ -4,7 +4,7 @@
 //! RenderStatus — job lifecycle states.
 //! RenderJobPayload — Redis queue message.
 //! RenderParams — full parameters for LaTeX document generation.
-//! TectonicResult — output from a successful Tectonic compilation.
+//! PdflatexResult — output from a successful pdflatex (TeX Live) compilation.
 //! RenderError — all failure modes for the pipeline.
 
 use serde::{Deserialize, Serialize};
@@ -80,13 +80,13 @@ pub struct ResumeSection {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Tectonic output
+// pdflatex output
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Output from a successful Tectonic LaTeX → PDF compilation.
+/// Output from a successful pdflatex (TeX Live) LaTeX → PDF compilation.
 #[derive(Debug)]
-pub struct TectonicResult {
-    /// Raw PDF bytes (stdout from tectonic -).
+pub struct PdflatexResult {
+    /// Raw PDF bytes produced by pdflatex.
     pub pdf_bytes: Vec<u8>,
     /// Captured stderr (warnings, font loading messages, etc.).
     pub stderr: String,
@@ -101,13 +101,13 @@ pub struct TectonicResult {
 /// All failure modes for the render pipeline.
 #[derive(Debug, Error)]
 pub enum RenderError {
-    #[error("Tectonic not found on PATH — install tectonic before starting the server")]
-    TectonicNotFound,
+    #[error("pdflatex binary not found on PATH — install TeX Live")]
+    PdflatexNotFound,
 
-    #[error("Tectonic compilation failed (exit={exit_code}): {stderr}")]
+    #[error("pdflatex compilation failed (exit={exit_code}): {stderr}")]
     CompilationFailed { exit_code: i32, stderr: String },
 
-    #[error("Tectonic returned empty PDF output")]
+    #[error("pdflatex returned empty PDF output")]
     EmptyPdf,
 
     #[error("S3 upload failed: {0}")]
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn test_render_error_display_non_empty() {
         let errors: Vec<String> = vec![
-            RenderError::TectonicNotFound.to_string(),
+            RenderError::PdflatexNotFound.to_string(),
             RenderError::CompilationFailed {
                 exit_code: 1,
                 stderr: "bad latex".to_string(),

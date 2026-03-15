@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE context_ingest_items\n           SET status = 'failed', error_msg = $2, updated_at = NOW()\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1335dc32bbbcfe58b8834308b42158e21b97ff900b29c6e555e9292012da980e"
+}

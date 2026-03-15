@@ -234,6 +234,8 @@ mod tests {
             tags,
             flagged_evergreen: false,
             contribution_type: "primary_contributor".to_string(),
+            quality_score: 1.0,
+            quality_flags: vec![],
             created_at: Utc::now(),
         }
     }
