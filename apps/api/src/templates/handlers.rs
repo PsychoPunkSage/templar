@@ -208,7 +208,10 @@ pub async fn handle_template_render_pdf(
 
     // Slow path: compile via pdflatex — prefer preview-source.tex (contains sample data)
     // over template.tex (which has {{PLACEHOLDER}} tokens that show as literal text in the preview).
-    let preview_source_path = state.templates_dir.join(&template_id).join("preview-source.tex");
+    let preview_source_path = state
+        .templates_dir
+        .join(&template_id)
+        .join("preview-source.tex");
     let source_to_compile = if preview_source_path.exists() {
         match tokio::fs::read_to_string(&preview_source_path).await {
             Ok(src) => {
