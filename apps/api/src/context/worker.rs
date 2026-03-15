@@ -107,7 +107,7 @@ async fn worker_loop(
 
                         // Periodic cleanup of expired batches
                         let count = jobs_completed.fetch_add(1, Ordering::Relaxed) + 1;
-                        if count % CLEANUP_EVERY_N_JOBS == 0 {
+                        if count.is_multiple_of(CLEANUP_EVERY_N_JOBS) {
                             match batch::cleanup_expired_batches(&db).await {
                                 Ok(n) if n > 0 => {
                                     info!("Ingest worker: cleaned up {n} expired batches")
@@ -146,8 +146,8 @@ async fn worker_loop(
 /// 2. Mark item as 'processing'
 /// 3. `parse_and_validate` — LLM parse (Phase 5.5: quality is non-blocking)
 /// 4. Check for duplicate/merge via `dedup::check_and_merge`
-/// 5a. Duplicate found → `merger::merge_and_commit` → mark merged
-/// 5b. No duplicate  → `confirm_ingest` → commit to context_entries + S3 → mark succeeded
+///    5a. Duplicate found → `merger::merge_and_commit` → mark merged
+///    5b. No duplicate  → `confirm_ingest` → commit to context_entries + S3 → mark succeeded
 ///
 /// On any error: marks item as failed and returns Ok(()) — the worker continues.
 async fn process_ingest_item(

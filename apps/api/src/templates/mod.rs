@@ -214,7 +214,7 @@ fn load_single_template(dir: &Path) -> Result<LoadedTemplate> {
 ///   2. `escape_latex()` is called on VALUES before substitution — not on the template
 ///   3. Placeholders don't overlap (no placeholder is a prefix of another)
 ///   4. The template author (us) controls the .tex files — not arbitrary users
-/// A regex approach would be slower for no benefit given these constraints.
+///      A regex approach would be slower for no benefit given these constraints.
 pub fn render_file_template(
     template: &LoadedTemplate,
     profile: &ProfileData,
