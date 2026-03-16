@@ -66,13 +66,13 @@ services:
       dockerfile: infra/Dockerfile.web
     container_name: templar-web
     ports:
-      - "3000:3000"
+      - "3001:3001"
     env_file:
       - ../.env
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8080
-      WEB_PORT: "3000"
-      PORT: "3000"
+      WEB_PORT: "3001"
+      PORT: "3001"
     depends_on:
       api:
         condition: service_healthy
