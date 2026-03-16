@@ -1,6 +1,6 @@
-FROM rust:1.82-slim-bookworm AS builder
+FROM rust:1.88-slim-bookworm AS builder
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-RUN cargo install sqlx-cli --version 0.7.4 --no-default-features --features postgres,native-tls
+RUN cargo install sqlx-cli --version 0.8.3 --no-default-features --features postgres,native-tls
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
