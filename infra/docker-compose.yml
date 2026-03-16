@@ -1,12 +1,11 @@
 services:
   migrate:
-    image: postgres:16-alpine
-    env_file:
-      - ../.env
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.migrate
     environment:
-      PGPASSWORD: templar
-    command: |
-      sh -c "psql -h postgres -U templar -d templar -f /migrations/001_initial.sql && psql -h postgres -U templar -d templar -f /migrations/002_context_batch.sql && psql -h postgres -U templar -d templar -f /migrations/003_quality_fields.sql && psql -h postgres -U templar -d templar -f /migrations/004_cv_projects.sql && psql -h postgres -U templar -d templar -f /migrations/000_seed.sql"
+      DATABASE_URL: postgres://templar:templar@postgres:5432/templar
+    command: migrate run --source /migrations
     volumes:
       - ../packages/db/migrations:/migrations:ro
     depends_on:
