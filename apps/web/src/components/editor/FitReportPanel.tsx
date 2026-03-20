@@ -2,6 +2,7 @@
 
 import { useResumeStore } from "@/store/resumeStore";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { FitMatch, Gap } from "@templar/types";
 
 /**
@@ -10,9 +11,18 @@ import type { FitMatch, Gap } from "@templar/types";
  *
  * Uses the actual FitReport shape from the Rust backend:
  * { overall_score, strong_matches, partial_matches, gaps, recommendation, scorer_backend }
+ *
+ * Shows a cache badge (cached / live) next to the score header.
+ * When the score is from cache, offers a "Recalculate" button to force a fresh LLM score.
  */
 export function FitReportPanel() {
-  const { fitReport } = useResumeStore();
+  const {
+    fitReport,
+    fitScoreCacheHit,
+    fitScoreLoading,
+    analyzeFit,
+    contextChangedSinceAnalysis,
+  } = useResumeStore();
   if (!fitReport) return null;
 
   const scoreColor =
@@ -24,6 +34,22 @@ export function FitReportPanel() {
 
   return (
     <div className="border rounded-lg p-3 flex flex-col gap-3">
+      {/* Stale score banner — shown when context has been updated since last analysis */}
+      {contextChangedSinceAnalysis && fitReport && (
+        <div className="flex items-center justify-between text-xs text-yellow-600 bg-yellow-50 dark:bg-yellow-950/20 rounded px-2 py-1">
+          <span>Context updated — score may be stale.</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            onClick={() => analyzeFit(false)}
+            disabled={fitScoreLoading}
+          >
+            Re-analyze
+          </Button>
+        </div>
+      )}
+
       {/* Score header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -31,6 +57,16 @@ export function FitReportPanel() {
           <span className="text-xs text-muted-foreground">
             via {fitReport.scorer_backend}
           </span>
+          {fitScoreCacheHit === true && (
+            <Badge variant="outline" className="text-xs">
+              cached
+            </Badge>
+          )}
+          {fitScoreCacheHit === false && (
+            <Badge variant="outline" className="text-xs">
+              live
+            </Badge>
+          )}
         </div>
         <span className={`text-2xl font-bold ${scoreColor}`}>
           {fitReport.overall_score}
@@ -106,6 +142,24 @@ export function FitReportPanel() {
               </Badge>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Cache footer — shown when score is from cache */}
+      {fitScoreCacheHit === true && (
+        <div className="flex items-center justify-between pt-1 border-t border-border/50">
+          <span className="text-xs text-muted-foreground">
+            Score unchanged since last analysis.
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs h-7"
+            onClick={() => analyzeFit(true)}
+            disabled={fitScoreLoading}
+          >
+            {fitScoreLoading ? "Analyzing..." : "Recalculate"}
+          </Button>
         </div>
       )}
     </div>
