@@ -3,18 +3,26 @@
 // Project-scoped editor page.
 //
 // Layout:
-//   [Action bar: project name | template badge | Generate button]
+//   [Action bar: project name | template badge | Analyze Fit | Generate Resume]
 //   ┌──────────────────────┬─────────────────────────────────────┐
 //   │ Left pane (50%)      │ Right pane (50%)                    │
-//   │ - JdInput            │ IF bullets.length === 0:            │
-//   │ - FitReportPanel     │   <TemplateThumbnailPreview>        │
-//   │ - BulletList         │ ELSE:                               │
+//   │ Tabs:                │ IF bullets.length === 0:            │
+//   │  [Job & Fit]         │   <TemplateThumbnailPreview>        │
+//   │  [Bullets (N)]       │ ELSE:                               │
 //   │                      │   <PdfPreview> (PDF.js)             │
 //   └──────────────────────┴─────────────────────────────────────┘
 //
-// Context tab removed from this editor — context management lives at /context.
+// Two-step JD workflow:
+//   1. "Analyze Fit" → runs LlmFitScorer (with hash-based server cache)
+//   2. "Generate Resume" → full pipeline (generate + render)
+//
+// Auto-behaviours:
+//   - Navigating to a new projectId resets all project-scoped store state immediately
+//   - JD text is re-populated from project.last_jd_text after project data loads
+//   - After generation, left tab auto-switches to "Bullets"
+//   - "Analyze Fit" button label changes to "Re-analyze Fit" when context has changed
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { JdInput } from "@/components/editor/JdInput";
 import { BulletList } from "@/components/editor/BulletList";
@@ -23,6 +31,12 @@ import { PdfPreview } from "@/components/pdf/PdfPreview";
 import { StaticPdfPreview } from "@/components/pdf/StaticPdfPreview";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TabsContent,
+} from "@/components/ui/tabs";
 import { useResumeStore } from "@/store/resumeStore";
 import { useProjectStore } from "@/store/projectStore";
 import { api } from "@/lib/api";
@@ -34,23 +48,60 @@ export default function ProjectEditorPage() {
   const router = useRouter();
   const projectId = params.projectId as string;
 
-  const { generate, isGenerating, error, clearError, bullets, jdText } = useResumeStore();
+  const {
+    generate,
+    analyzeFit,
+    autoLoadCachedFitScore,
+    isGenerating,
+    fitScoreLoading,
+    fitScoreCacheHit,
+    contextChangedSinceAnalysis,
+    fitReport,
+    error,
+    clearError,
+    bullets,
+    jdText,
+    setJdText,
+    resetForProject,
+  } = useResumeStore();
   const { currentProject, loadProject, loadTemplates } = useProjectStore();
 
-  // Load project data + templates on mount
+  const [leftTab, setLeftTab] = useState<"jd" | "bullets">("jd");
+
+  // Effect 1: Reset all project-scoped state immediately on project navigation.
+  // This prevents state bleed-through when switching between projects.
+  useEffect(() => {
+    resetForProject(projectId);
+  // resetForProject is a stable Zustand action — safe to omit from deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // Load project data + templates on mount / projectId change
   useEffect(() => {
     loadProject(projectId);
     loadTemplates();
   }, [projectId, loadProject, loadTemplates]);
 
+  // Effect 2: Populate JD after project data loads, then attempt a silent
+  // cache restore for the fit score — no LLM call, no loading spinner.
+  // Only runs when the loaded project matches this page's projectId.
+  useEffect(() => {
+    if (currentProject?.id === projectId && currentProject.last_jd_text) {
+      setJdText(currentProject.last_jd_text);
+      autoLoadCachedFitScore(currentProject.last_jd_text);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProject?.id, currentProject?.last_jd_text, projectId]);
+
+  // Effect 3: Auto-switch to bullets tab after generation completes.
+  useEffect(() => {
+    if (bullets.length > 0) setLeftTab("bullets");
+  }, [bullets.length]);
+
   // We only need the template id slug to build the render-pdf URL.
-  // currentProject.template_id IS the slug (e.g. "generic-cv") — we do not
-  // need to look it up in the templates array, which avoids a race where
-  // loadTemplates resolves after loadProject and StaticPdfPreview never mounts.
   const templateId = currentProject?.template_id ?? null;
 
-  // Debug: log which right-pane scenario is active whenever the discriminating
-  // variables change. Diagnostic only — remove once root cause is found.
+  // Debug: log which right-pane scenario is active.
   useEffect(() => {
     if (bullets.length > 0) {
       console.log("[Editor] Right pane → Scenario A: PdfPreview (live render)", {
@@ -70,14 +121,16 @@ export default function ProjectEditorPage() {
     }
   }, [bullets.length, templateId, currentProject]);
 
-  const handleGenerate = () => {
-    // Pass projectId so the store knows which project to link the resume to
-    generate(projectId);
-  };
+  // Derive "Analyze Fit" button label based on current state
+  const analyzeFitLabel = fitScoreLoading
+    ? "Analyzing..."
+    : contextChangedSinceAnalysis && fitReport
+    ? "Re-analyze Fit"
+    : "Analyze Fit";
 
   return (
     <div className="flex flex-col h-[calc(100vh-53px)] bg-background">
-      {/* Action bar — project context + generate button */}
+      {/* Action bar — project context + two-button workflow */}
       <div className="flex items-center justify-between px-6 py-2.5 border-b bg-background shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           {/* Back to projects */}
@@ -99,6 +152,7 @@ export default function ProjectEditorPage() {
           )}
         </div>
 
+        {/* Two-step action bar */}
         <div className="flex items-center gap-2">
           {bullets.length > 0 && (
             <span className="text-xs text-muted-foreground shrink-0">
@@ -106,9 +160,17 @@ export default function ProjectEditorPage() {
             </span>
           )}
           <Button
-            onClick={handleGenerate}
-            disabled={isGenerating || !jdText.trim()}
+            variant="outline"
             size="sm"
+            onClick={() => analyzeFit(false)}
+            disabled={fitScoreLoading || isGenerating || !jdText.trim()}
+          >
+            {analyzeFitLabel}
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => generate(projectId)}
+            disabled={isGenerating || fitScoreLoading || !jdText.trim()}
           >
             {isGenerating ? "Generating..." : "Generate Resume"}
           </Button>
@@ -131,15 +193,46 @@ export default function ProjectEditorPage() {
 
       {/* Split pane */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left: JD input + fit report + bullets */}
+        {/* Left: tabbed pane — Job & Fit / Bullets */}
         <div className="w-1/2 border-r flex flex-col overflow-hidden">
-          <ScrollArea className="flex-1">
-            <div className="p-4 flex flex-col gap-4">
-              <JdInput />
-              <FitReportPanel />
-              <BulletList />
+          <Tabs
+            value={leftTab}
+            onValueChange={(v) => setLeftTab(v as "jd" | "bullets")}
+            className="flex flex-col flex-1 overflow-hidden"
+          >
+            <div className="px-4 pt-3 shrink-0 border-b">
+              <TabsList className="w-full">
+                <TabsTrigger value="jd" className="flex-1">
+                  Job &amp; Fit
+                </TabsTrigger>
+                <TabsTrigger value="bullets" className="flex-1">
+                  Bullets
+                  {bullets.length > 0 && (
+                    <span className="ml-1.5 text-xs text-muted-foreground">
+                      ({bullets.length})
+                    </span>
+                  )}
+                </TabsTrigger>
+              </TabsList>
             </div>
-          </ScrollArea>
+
+            <TabsContent value="jd" className="flex-1 overflow-hidden m-0">
+              <ScrollArea className="h-full">
+                <div className="p-4 flex flex-col gap-4">
+                  <JdInput projectId={projectId} />
+                  <FitReportPanel />
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="bullets" className="flex-1 overflow-hidden m-0">
+              <ScrollArea className="h-full">
+                <div className="p-4">
+                  <BulletList />
+                </div>
+              </ScrollArea>
+            </TabsContent>
+          </Tabs>
         </div>
 
         {/* Right: template PDF preview (pre-generation) or PDF.js live preview (post-generation) */}
@@ -149,10 +242,6 @@ export default function ProjectEditorPage() {
             <PdfPreview />
           ) : templateId ? (
             // Pre-generation: compiled PDF preview of the selected template.
-            // Uses GET /api/v1/templates/:id/render-pdf — Tectonic compiles the
-            // template once; subsequent loads are served from the in-process cache.
-            // We use templateId (= currentProject.template_id) directly — no need
-            // to wait for the templates list to resolve before mounting.
             <StaticPdfPreview
               pdfUrl={api.getTemplateRenderPdfUrl(templateId)}
             />
