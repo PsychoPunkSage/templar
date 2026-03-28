@@ -1,7 +1,7 @@
+use crate::generation::fit_scoring::FitReport;
 use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
-use crate::generation::fit_scoring::FitReport;
 
 /// Look up a cached FitReport for the given (user_id, jd_hash, context_hash) triple.
 ///

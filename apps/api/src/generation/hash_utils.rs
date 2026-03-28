@@ -1,5 +1,5 @@
-use sha2::{Digest, Sha256};
 use crate::models::context::ContextEntryRow;
+use sha2::{Digest, Sha256};
 
 /// Compute a stable SHA-256 hash for a job description string.
 ///
@@ -34,9 +34,9 @@ pub fn compute_context_hash(entries: &[ContextEntryRow]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
-    use serde_json::Value;
     use crate::models::context::ContextEntryRow;
+    use serde_json::Value;
+    use uuid::Uuid;
 
     fn make_entry(entry_id: Uuid, raw_text: &str) -> ContextEntryRow {
         ContextEntryRow {
@@ -78,7 +78,10 @@ mod tests {
         let id2 = Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
         let entries_a = vec![make_entry(id1, "entry one"), make_entry(id2, "entry two")];
         let entries_b = vec![make_entry(id2, "entry two"), make_entry(id1, "entry one")];
-        assert_eq!(compute_context_hash(&entries_a), compute_context_hash(&entries_b));
+        assert_eq!(
+            compute_context_hash(&entries_a),
+            compute_context_hash(&entries_b)
+        );
     }
 
     #[test]
