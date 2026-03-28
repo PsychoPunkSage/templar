@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::context::versioning::get_current_entries;
 use crate::errors::AppError;
 use crate::generation::fit_cache;
-use crate::generation::fit_scoring::{FitReport, FitScorer, LlmFitScorer};
+use crate::generation::fit_scoring::{FitReport, /* FitScorer,*/ LlmFitScorer};
 use crate::generation::generator::{generate_resume, GenerateRequest};
 use crate::generation::hash_utils;
 use crate::generation::jd_parser::{parse_jd, ParsedJD};
