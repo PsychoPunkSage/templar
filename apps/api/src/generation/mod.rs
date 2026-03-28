@@ -3,9 +3,11 @@
 // All LLM calls go through llm_client — no direct Anthropic SDK calls here.
 
 pub mod content_selector;
+pub mod fit_cache;
 pub mod fit_scoring;
 pub mod generator;
 pub mod handlers;
+pub mod hash_utils;
 pub mod jd_parser;
 pub mod prompts;
 pub mod tone;

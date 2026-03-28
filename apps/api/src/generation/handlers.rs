@@ -9,8 +9,10 @@ use uuid::Uuid;
 
 use crate::context::versioning::get_current_entries;
 use crate::errors::AppError;
-use crate::generation::fit_scoring::FitReport;
+use crate::generation::fit_cache;
+use crate::generation::fit_scoring::{FitReport, FitScorer, LlmFitScorer};
 use crate::generation::generator::{generate_resume, GenerateRequest};
+use crate::generation::hash_utils;
 use crate::generation::jd_parser::{parse_jd, ParsedJD};
 use crate::layout::SimulatedBullet;
 use crate::models::resume::{ResumeBulletRow, ResumeRow};
@@ -34,12 +36,17 @@ pub struct ParseJdResponse {
 pub struct FitScoreRequest {
     pub user_id: Uuid,
     pub jd_text: String,
+    #[serde(default)]
+    pub force_refresh: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct FitScoreResponse {
     pub fit_report: FitReport,
     pub parsed_jd: ParsedJD,
+    pub cache_hit: bool,
+    pub jd_hash: String,
+    pub context_hash: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,8 +88,13 @@ pub async fn handle_parse_jd(
 
 /// POST /api/v1/resumes/fit-score
 ///
-/// Returns a fit report for the user's current context against a JD.
-/// Surfaces gaps before generation so the user can decide to add context.
+/// Two-step JD workflow with hash-based caching:
+/// 1. Parse JD → `parsed_jd`
+/// 2. Compute (jd_hash, context_hash) pair
+/// 3. Cache hit (and not force_refresh) → return cached FitReport immediately
+/// 4. Cache miss (or force_refresh) → run LlmFitScorer, upsert cache, return fresh score
+///
+/// `force_refresh = true` bypasses the cache and always re-scores via LLM.
 pub async fn handle_fit_score(
     State(state): State<AppState>,
     Json(request): Json<FitScoreRequest>,
@@ -91,17 +103,68 @@ pub async fn handle_fit_score(
         return Err(AppError::Validation("jd_text cannot be empty".to_string()));
     }
 
+    // Step 1: Parse JD
     let parsed_jd = parse_jd(&request.jd_text, &state.llm).await?;
 
+    // Step 2: Fetch context entries and compute hashes
     let entries = get_current_entries(&state.db, request.user_id)
         .await
         .map_err(AppError::Internal)?;
 
-    let fit_report = state.fit_scorer.score(&entries, &parsed_jd).await?;
+    let jd_hash = hash_utils::compute_jd_hash(&request.jd_text);
+    let context_hash = hash_utils::compute_context_hash(&entries);
+
+    // Step 3: Cache lookup (skip if force_refresh requested)
+    if !request.force_refresh {
+        match fit_cache::lookup_cache(&state.db, request.user_id, &jd_hash, &context_hash).await {
+            Ok(Some(cached_report)) => {
+                tracing::debug!(
+                    user_id = %request.user_id,
+                    jd_hash = %jd_hash,
+                    context_hash = %context_hash,
+                    "fit-score cache hit"
+                );
+                return Ok(Json(FitScoreResponse {
+                    fit_report: cached_report,
+                    parsed_jd,
+                    cache_hit: true,
+                    jd_hash,
+                    context_hash,
+                }));
+            }
+            Ok(None) => {} // cache miss — fall through to LLM scoring
+            Err(e) => {
+                // Cache lookup failure is non-fatal — log and fall through to LLM
+                tracing::warn!(error = %e, "fit-score cache lookup failed, falling through to LLM scorer");
+            }
+        }
+    }
+
+    // Step 4: Cache miss or force_refresh — run LlmFitScorer directly
+    // We bypass `state.fit_scorer` (which may be KeywordFitScorer for generation)
+    // and always use the LLM scorer for the explicit fit-analysis step.
+    let scorer = LlmFitScorer(state.llm.clone());
+    let fit_report = scorer.score(&entries, &parsed_jd).await?;
+
+    // Step 5: Upsert cache (non-fatal on failure)
+    if let Err(e) = fit_cache::upsert_cache(
+        &state.db,
+        request.user_id,
+        &jd_hash,
+        &context_hash,
+        &fit_report,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "fit-score cache upsert failed (non-fatal)");
+    }
 
     Ok(Json(FitScoreResponse {
         fit_report,
         parsed_jd,
+        cache_hit: false,
+        jd_hash,
+        context_hash,
     }))
 }
 
@@ -134,6 +197,69 @@ pub async fn handle_generate(
         bullets: response.bullets,
         status: response.status,
     }))
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Cached fit score lookup types + handler
+// ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CachedFitScoreRequest {
+    pub user_id: Uuid,
+    pub jd_text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CachedFitScoreResponse {
+    pub fit_report: FitReport,
+    /// Always `true` — this endpoint is a cache-only lookup.
+    pub cache_hit: bool,
+    pub jd_hash: String,
+    pub context_hash: String,
+}
+
+/// POST /api/v1/resumes/fit-score/cached
+///
+/// Cache-only fit score lookup — never calls the LLM.
+/// Returns `404` if no cached score exists for the given (user, jd, context) triple.
+/// Used by the editor on page load to restore a previous fit score without incurring LLM cost.
+pub async fn handle_get_cached_fit_score(
+    State(state): State<AppState>,
+    Json(request): Json<CachedFitScoreRequest>,
+) -> Result<Json<CachedFitScoreResponse>, AppError> {
+    if request.jd_text.trim().is_empty() {
+        return Err(AppError::Validation("jd_text cannot be empty".to_string()));
+    }
+
+    let entries = get_current_entries(&state.db, request.user_id)
+        .await
+        .map_err(AppError::Internal)?;
+
+    let jd_hash = hash_utils::compute_jd_hash(&request.jd_text);
+    let context_hash = hash_utils::compute_context_hash(&entries);
+
+    match fit_cache::lookup_cache(&state.db, request.user_id, &jd_hash, &context_hash).await {
+        Ok(Some(fit_report)) => {
+            tracing::debug!(
+                user_id = %request.user_id,
+                jd_hash = %jd_hash,
+                context_hash = %context_hash,
+                "fit-score/cached hit"
+            );
+            Ok(Json(CachedFitScoreResponse {
+                fit_report,
+                cache_hit: true,
+                jd_hash,
+                context_hash,
+            }))
+        }
+        Ok(None) => Err(AppError::NotFound("no cached fit score".to_string())),
+        Err(e) => {
+            tracing::warn!(error = %e, "fit-score/cached lookup failed");
+            // Treat any DB error as a cache miss (404) — caller will silently skip.
+            Err(AppError::NotFound("no cached fit score".to_string()))
+        }
+    }
 }
 
 /// GET /api/v1/resumes/:id
