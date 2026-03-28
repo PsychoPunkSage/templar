@@ -25,10 +25,34 @@ interface ResumeStore {
   error: string | null;
   /** The project this generation belongs to. Used to link resume after generation. */
   currentProjectId: string | null;
+  /** True while analyzeFit() is in flight. */
+  fitScoreLoading: boolean;
+  /** null = no fit score loaded yet; true = came from cache; false = freshly scored via LLM. */
+  fitScoreCacheHit: boolean | null;
+  /** SHA-256 hash of the last JD text analysed. */
+  lastJdHash: string | null;
+  /** SHA-256 hash of the context snapshot used for the last fit score. */
+  lastContextHash: string | null;
+  /** The JD text that was in use the last time analyzeFit() completed successfully. */
+  lastAnalyzedJdText: string | null;
+  /** True when context has been updated since the last successful fit analysis. */
+  contextChangedSinceAnalysis: boolean;
 
   // ─── Actions ───────────────────────────────────────────────────────────────
   setJdText: (text: string) => void;
   setCurrentProjectId: (id: string | null) => void;
+  /** Reset all project-scoped state when navigating to a different project. */
+  resetForProject: (projectId: string) => void;
+  /** Mark fit score as stale (e.g., after a context entry is updated). */
+  invalidateFitScore: () => void;
+  /**
+   * Silent background cache restore on page load.
+   * Calls POST /api/v1/resumes/fit-score/cached with the restored JD text.
+   * On a cache hit, populates fitReport without setting fitScoreLoading —
+   * so there is no loading spinner; it just appears.
+   * On a miss (404) or any error, silently no-ops — the user sees an empty fit panel.
+   */
+  autoLoadCachedFitScore: (jdText: string) => Promise<void>;
   /**
    * Full generation pipeline:
    * 1. POST /api/v1/resumes/generate
@@ -38,6 +62,12 @@ interface ResumeStore {
    * 5. Link resume to project (fire-and-forget)
    */
   generate: (projectId?: string) => Promise<void>;
+  /**
+   * Standalone fit analysis (two-step JD workflow).
+   * Calls POST /api/v1/resumes/fit-score and updates fitReport, fitScoreCacheHit, hashes.
+   * pass forceRefresh=true to bypass server-side cache.
+   */
+  analyzeFit: (forceRefresh?: boolean) => Promise<void>;
   /** Polls the render job status every 2 seconds until done or failed. */
   pollRenderStatus: () => void;
   clearError: () => void;
@@ -54,10 +84,82 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
   isGenerating: false,
   error: null,
   currentProjectId: null,
+  fitScoreLoading: false,
+  fitScoreCacheHit: null,
+  lastJdHash: null,
+  lastContextHash: null,
+  lastAnalyzedJdText: null,
+  contextChangedSinceAnalysis: false,
 
   setJdText: (text) => set({ jdText: text }),
   setCurrentProjectId: (id) => set({ currentProjectId: id }),
   clearError: () => set({ error: null }),
+
+  resetForProject: (projectId) => set({
+    currentProjectId: projectId,
+    jdText: "",
+    fitReport: null,
+    fitScoreCacheHit: null,
+    lastJdHash: null,
+    lastContextHash: null,
+    lastAnalyzedJdText: null,
+    contextChangedSinceAnalysis: false,
+    bullets: [],
+    resumeId: null,
+    auditManifest: null,
+    renderJobId: null,
+    renderStatus: "idle",
+    isGenerating: false,
+    error: null,
+  }),
+
+  invalidateFitScore: () => set({ contextChangedSinceAnalysis: true }),
+
+  autoLoadCachedFitScore: async (jdText) => {
+    if (!jdText.trim()) return;
+    try {
+      const resp = await api.getCachedFitScore(MVP_USER_ID, jdText);
+      if (!resp) return; // cache miss — silent no-op
+      set({
+        fitReport: resp.fit_report,
+        fitScoreCacheHit: true,
+        lastJdHash: resp.jd_hash,
+        lastContextHash: resp.context_hash,
+        lastAnalyzedJdText: jdText,
+        contextChangedSinceAnalysis: false,
+      });
+    } catch {
+      // Network error — treat as miss, don't surface error to user
+    }
+  },
+
+  analyzeFit: async (forceRefresh = false) => {
+    const { jdText, lastAnalyzedJdText, fitReport, contextChangedSinceAnalysis } = get();
+    if (!jdText.trim()) return;
+
+    // Skip if: not forced, report exists, JD unchanged, context unchanged
+    if (!forceRefresh && fitReport !== null
+        && jdText === lastAnalyzedJdText && !contextChangedSinceAnalysis) {
+      return;
+    }
+
+    set({ fitScoreLoading: true, error: null });
+    try {
+      const resp = await api.analyzeFit(MVP_USER_ID, jdText, forceRefresh);
+      set({
+        fitReport: resp.fit_report,
+        fitScoreCacheHit: resp.cache_hit,
+        lastJdHash: resp.jd_hash,
+        lastContextHash: resp.context_hash,
+        lastAnalyzedJdText: jdText,
+        contextChangedSinceAnalysis: false,
+      });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : "Fit analysis failed" });
+    } finally {
+      set({ fitScoreLoading: false });
+    }
+  },
 
   generate: async (projectId?: string) => {
     const { jdText } = get();
@@ -86,6 +188,9 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
         resumeId: generated.resume_id,
         bullets: generated.bullets,
         fitReport: generated.fit_report,
+        fitScoreCacheHit: false,
+        lastJdHash: null,
+        lastContextHash: null,
       });
 
       // Step 2: Fetch audit manifest (non-blocking — failure should not abort flow)

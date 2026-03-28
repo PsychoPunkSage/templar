@@ -11,11 +11,13 @@
 import { useState } from 'react'
 import { ContextPanel } from '@/components/editor/ContextPanel'
 import ContextLibrary from '@/components/context/ContextLibrary'
+import { useResumeStore } from '@/store/resumeStore'
 
 export default function ContextPage() {
   // Incrementing this key triggers ContextLibrary to re-fetch entries after
   // a successful ingestion batch completes.
   const [refreshKey, setRefreshKey] = useState(0)
+  const invalidateFitScore = useResumeStore((s) => s.invalidateFitScore)
 
   return (
     // lg+: locked to viewport height (53px = global nav, matches layout.tsx)
@@ -38,7 +40,10 @@ export default function ContextPage() {
 
         {/* Left: ingestion panel — fixed width, stays in place on desktop */}
         <div className="w-full lg:w-80 shrink-0">
-          <ContextPanel onContextUpdated={() => setRefreshKey((k) => k + 1)} />
+          <ContextPanel onContextUpdated={() => {
+            setRefreshKey((k) => k + 1);
+            invalidateFitScore();
+          }} />
         </div>
 
         {/* Right: library — scrolls independently on desktop */}

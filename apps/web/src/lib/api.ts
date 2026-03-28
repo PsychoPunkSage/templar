@@ -8,7 +8,20 @@ import type {
   CreateProjectRequest,
   UpdateProjectRequest,
   ContextEntriesResponse,
+  FitScoreResponse,
+  FitReport,
 } from "@templar/types";
+
+/**
+ * Response from POST /api/v1/resumes/fit-score/cached.
+ * cache_hit is always true — the endpoint only returns data on a cache hit.
+ */
+interface CachedFitScoreResponse {
+  fit_report: FitReport;
+  cache_hit: boolean;
+  jd_hash: string;
+  context_hash: string;
+}
 
 export type {
   ContextEntryRow,
@@ -36,6 +49,34 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  /**
+   * POST /api/v1/resumes/fit-score
+   * Analyses fit between user context and a job description.
+   * Returns a FitReport with cache metadata (cache_hit, jd_hash, context_hash).
+   * Pass forceRefresh=true to bypass the cache and always re-score via LLM.
+   */
+  analyzeFit: (userId: string, jdText: string, forceRefresh = false) =>
+    apiFetch<FitScoreResponse>("/api/v1/resumes/fit-score", {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId, jd_text: jdText, force_refresh: forceRefresh }),
+    }),
+
+  /**
+   * POST /api/v1/resumes/fit-score/cached
+   * Cache-only fit score lookup — never calls the LLM.
+   * Returns the cached FitReport on a hit, or null on a miss (404) or any network error.
+   * Callers should treat null as a silent no-op (no error surfaced to the user).
+   */
+  getCachedFitScore: async (userId: string, jdText: string): Promise<CachedFitScoreResponse | null> => {
+    const res = await fetch(`${API_BASE}/api/v1/resumes/fit-score/cached`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, jd_text: jdText }),
+    });
+    if (!res.ok) return null; // 404 = cache miss; any other error = silently treated as miss
+    return res.json() as Promise<CachedFitScoreResponse>;
+  },
+
   /**
    * POST /api/v1/resumes/generate
    * Generates a resume from context entries + job description.

@@ -53,6 +53,11 @@ pub fn build_router(state: AppState) -> Router {
         // Note: specific routes before the :id param route (Axum priority)
         .route("/api/v1/resumes/parse-jd", post(gen::handle_parse_jd))
         .route("/api/v1/resumes/fit-score", post(gen::handle_fit_score))
+        // Note: /fit-score/cached is a literal suffix — must come BEFORE /resumes/:id
+        .route(
+            "/api/v1/resumes/fit-score/cached",
+            post(gen::handle_get_cached_fit_score),
+        )
         .route("/api/v1/resumes/generate", post(gen::handle_generate))
         .route("/api/v1/resumes/:id", get(gen::handle_get_resume))
         .route(

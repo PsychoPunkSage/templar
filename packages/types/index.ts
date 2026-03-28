@@ -169,6 +169,18 @@ export interface GenerateResponse {
 }
 
 /**
+ * Response from POST /api/v1/resumes/fit-score.
+ * Mirrors: apps/api/src/generation/handlers.rs — FitScoreResponse
+ */
+export interface FitScoreResponse {
+  fit_report: FitReport
+  parsed_jd: unknown
+  cache_hit: boolean
+  jd_hash: string
+  context_hash: string
+}
+
+/**
  * Response from GET /api/v1/resumes/:id.
  * Mirrors: apps/api/src/generation/handlers.rs — ResumeDetailResponse
  */
@@ -213,6 +225,8 @@ export interface CvProject {
   template_id: string
   /** null until first generation; SET NULL if resume is deleted */
   current_resume_id: string | null
+  /** Last job description text entered for this project. Null until first JD is typed. */
+  last_jd_text: string | null
   created_at: string
   updated_at: string
 }
@@ -231,6 +245,7 @@ export interface UpdateProjectRequest {
   name?: string
   template_id?: string
   current_resume_id?: string
+  last_jd_text?: string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
