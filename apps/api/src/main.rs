@@ -67,10 +67,9 @@ async fn main() -> Result<()> {
     info!("LLM client initialized (model: {})", llm_client::MODEL);
 
     // Initialize fit scorer.
-    // Set FIT_SCORER_BACKEND=llm to use semantic Claude-based scoring (Phase 7.0).
-    // Default: KeywordFitScorer (fast, deterministic, no LLM call).
+    // Default: LlmFitScorer (semantic, Claude-backed). Set FIT_SCORER_BACKEND=keyword to opt out.
     let fit_scorer_backend =
-        std::env::var("FIT_SCORER_BACKEND").unwrap_or_else(|_| "keyword".to_string());
+        std::env::var("FIT_SCORER_BACKEND").unwrap_or_else(|_| "llm".to_string());
     let fit_scorer: Arc<dyn crate::generation::fit_scoring::FitScorer> =
         if fit_scorer_backend == "llm" {
             info!("Fit scorer: LlmFitScorer (semantic, Claude-backed)");

@@ -132,7 +132,7 @@ pub async fn handle_update_project(
         }
     }
 
-    // COALESCE($2, name): if $2 IS NULL (not provided), keep existing value.
+    // COALESCE($N, col): if $N IS NULL (not provided), keep existing value.
     // This is simpler than building a dynamic SET clause and avoids multiple
     // DB round-trips for a partial update.
     let project = sqlx::query_as::<_, CvProjectRow>(
@@ -140,6 +140,7 @@ pub async fn handle_update_project(
            SET name              = COALESCE($2, name),
                template_id       = COALESCE($3, template_id),
                current_resume_id = COALESCE($4, current_resume_id),
+               last_jd_text      = COALESCE($5, last_jd_text),
                updated_at        = NOW()
            WHERE id = $1
            RETURNING *"#,
@@ -148,6 +149,7 @@ pub async fn handle_update_project(
     .bind(body.name.as_deref())
     .bind(body.template_id.as_deref())
     .bind(body.current_resume_id)
+    .bind(body.last_jd_text.as_deref())
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound(format!("Project {} not found", id)))?;

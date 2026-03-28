@@ -30,6 +30,7 @@ pub struct CvProjectRow {
     pub name: String,
     pub template_id: String,
     pub current_resume_id: Option<Uuid>,
+    pub last_jd_text: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -53,4 +54,5 @@ pub struct UpdateProjectRequest {
     pub name: Option<String>,
     pub template_id: Option<String>,
     pub current_resume_id: Option<Uuid>,
+    pub last_jd_text: Option<String>,
 }
