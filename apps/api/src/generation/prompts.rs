@@ -123,8 +123,12 @@ pub const LLM_FIT_SCORE_SYSTEM: &str =
     You MUST respond with valid JSON only — no markdown fences, no explanations. \
     Be honest: only mark something as a strong match if the evidence is clear and direct.";
 
-/// LLM fit score prompt template.
-/// Replace: {entries_summary}, {jd_keywords}, {jd_requirements}, {jd_text}
+/// Fit score prompt template. Placeholder legend:
+///   {entries_summary}  — structured per-entry block: metadata + raw_text snippet (≤500 chars/entry)
+///   {jd_keywords}      — keyword inventory from ParsedJD (keyword, frequency, weight)
+///   {jd_requirements}  — hard requirements list from ParsedJD ([REQUIRED] / [preferred])
+///   {jd_text}          — role context from ParsedJD (seniority, culture, nice-to-haves).
+///                        NOT raw JD prose. Built by build_jd_role_context() in fit_scoring.rs.
 pub const LLM_FIT_SCORE_PROMPT_TEMPLATE: &str = r#"Score this candidate's fit for the job description below.
 
 CANDIDATE CONTEXT SUMMARY:
@@ -136,7 +140,7 @@ JD KEYWORDS TO CHECK:
 JD HARD REQUIREMENTS:
 {jd_requirements}
 
-JOB DESCRIPTION:
+ROLE CONTEXT (seniority, culture signals, nice-to-haves):
 {jd_text}
 
 Return a JSON object with this EXACT schema:

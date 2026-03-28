@@ -144,7 +144,11 @@ pub async fn handle_fit_score(
     // We bypass `state.fit_scorer` (which may be KeywordFitScorer for generation)
     // and always use the LLM scorer for the explicit fit-analysis step.
     let scorer = LlmFitScorer(state.llm.clone());
-    let fit_report = scorer.score(&entries, &parsed_jd).await?;
+    // DIAGNOSTIC: using score_full() — passes complete raw_text + raw JD to Claude.
+    // Switch back to scorer.score() once score variation is confirmed working.
+    let fit_report = scorer
+        .score_full(&entries, &parsed_jd, &request.jd_text)
+        .await?;
 
     // Step 5: Upsert cache (non-fatal on failure)
     if let Err(e) = fit_cache::upsert_cache(
