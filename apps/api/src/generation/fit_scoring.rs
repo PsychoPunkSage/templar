@@ -1,11 +1,17 @@
 #![allow(dead_code)]
 
-//! Fit Scoring — pluggable, trait-based scorer that measures user context vs a parsed JD.
+//! Fit Scoring — pluggable, trait-based scorer measuring candidate context vs a parsed JD.
 //!
-//! Default: `KeywordFitScorer` (pure-Rust, fast, deterministic, fully testable).
-//! Future: `LlmFitScorer` (semantic via Claude — stubbed for Phase 7).
+//! Two implementations:
+//! - [`KeywordFitScorer`]: pure-Rust keyword matching. Fast, deterministic, used in generation.
+//! - [`LlmFitScorer`]: semantic scoring via Claude. Used by the explicit fit-score endpoint.
 //!
-//! `AppState` holds an `Arc<dyn FitScorer>`, swapped at startup via config.
+//! Prompt construction helpers (private):
+//! - `build_entries_summary()`: per-entry metadata + raw_text snippet (≤500 chars). Gives
+//!   Claude real evidence of what the candidate did — not just a label.
+//! - `build_jd_role_context()`: role shape signals from ParsedJD (seniority, culture, tone,
+//!   soft signals). Fills {jd_text} without duplicating {jd_requirements}.
+//! - `extract_raw_text_snippet()`: extracts top N non-trivial lines, hard-capped at 500 chars.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -154,10 +160,7 @@ impl FitScorer for LlmFitScorer {
             .replace("{entries_summary}", &entries_summary)
             .replace("{jd_keywords}", &jd_keywords)
             .replace("{jd_requirements}", &jd_requirements)
-            .replace(
-                "{jd_text}",
-                &format!("Tone: {:?}\n{}", parsed_jd.detected_tone, jd_requirements),
-            );
+            .replace("{jd_text}", &build_jd_role_context(parsed_jd));
 
         match self
             .0
@@ -183,6 +186,183 @@ impl FitScorer for LlmFitScorer {
     }
 }
 
+impl LlmFitScorer {
+    /// Diagnostic variant: passes the full untruncated raw_text per entry and the complete
+    /// original JD text as-is to Claude. Use this to verify score variation is working.
+    /// Once confirmed, switch back to score() which uses the token-optimized path.
+    pub async fn score_full(
+        &self,
+        entries: &[ContextEntryRow],
+        parsed_jd: &ParsedJD,
+        raw_jd_text: &str,
+    ) -> Result<FitReport, AppError> {
+        use crate::generation::prompts::{LLM_FIT_SCORE_PROMPT_TEMPLATE, LLM_FIT_SCORE_SYSTEM};
+
+        let entries_summary = build_entries_summary_full(entries);
+
+        let jd_keywords = parsed_jd
+            .keyword_inventory
+            .iter()
+            .map(|k| {
+                format!(
+                    "{} (freq={}, weight={:.1})",
+                    k.keyword, k.frequency, k.position_weight
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let jd_requirements = parsed_jd
+            .hard_requirements
+            .iter()
+            .map(|r| {
+                format!(
+                    "- [{}] {}",
+                    if r.is_required {
+                        "REQUIRED"
+                    } else {
+                        "preferred"
+                    },
+                    r.text
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = LLM_FIT_SCORE_PROMPT_TEMPLATE
+            .replace("{entries_summary}", &entries_summary)
+            .replace("{jd_keywords}", &jd_keywords)
+            .replace("{jd_requirements}", &jd_requirements)
+            .replace("{jd_text}", raw_jd_text);
+
+        match self
+            .0
+            .call_json::<LlmFitScoreResponse>(&prompt, LLM_FIT_SCORE_SYSTEM)
+            .await
+        {
+            Ok(resp) => Ok(FitReport {
+                overall_score: resp.overall_score.clamp(0, 100),
+                strong_matches: resp.strong_matches,
+                partial_matches: resp.partial_matches,
+                gaps: resp.gaps,
+                recommendation: resp.recommendation,
+                scorer_backend: "llm_full".to_string(),
+            }),
+            Err(e) => {
+                tracing::warn!(error = %e, "LlmFitScorer::score_full: LLM call failed, falling back to keyword scorer");
+                let mut report = compute_keyword_fit(entries, parsed_jd)?;
+                report.scorer_backend = "keyword_fallback".to_string();
+                Ok(report)
+            }
+        }
+    }
+}
+
+/// Extracts up to `max_lines` meaningful lines from a raw context entry for LLM prompts.
+/// Lines shorter than 10 chars (headers, dividers) are skipped.
+/// Falls back to first 500 chars if no line structure is found.
+/// Keeps token cost bounded regardless of entry length.
+fn extract_raw_text_snippet(raw_text: &str, max_lines: usize) -> String {
+    const MAX_CHARS: usize = 500;
+
+    let lines: Vec<&str> = raw_text
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.len() > 10)
+        .take(max_lines)
+        .collect();
+
+    let result = if lines.is_empty() {
+        let truncated = &raw_text[..raw_text.len().min(MAX_CHARS)];
+        match truncated.rfind(' ') {
+            Some(pos) if pos > 0 => truncated[..pos].to_string(),
+            _ => truncated.to_string(),
+        }
+    } else {
+        lines.join("\n  ")
+    };
+
+    if result.len() > MAX_CHARS {
+        result[..MAX_CHARS].to_string()
+    } else {
+        result
+    }
+}
+
+/// Builds a compact role context block from ParsedJD structured fields.
+/// Fills the {jd_text} slot in the fit score prompt with role shape, seniority,
+/// culture signals, and nice-to-haves — NOT raw JD prose, NOT a copy of requirements.
+fn build_jd_role_context(parsed_jd: &ParsedJD) -> String {
+    let rs = &parsed_jd.role_signals;
+    let role_shape = format!(
+        "Seniority: {} | Startup: {} | IC-focused: {} | Research: {}",
+        rs.seniority,
+        if rs.is_startup { "yes" } else { "no" },
+        if rs.is_ic_focused { "yes" } else { "no" },
+        if rs.is_research { "yes" } else { "no" },
+    );
+    let soft = if parsed_jd.soft_signals.is_empty() {
+        "None".to_string()
+    } else {
+        parsed_jd.soft_signals.join("; ")
+    };
+    format!(
+        "{}\nTone: {:?}\nNice-to-haves: {}",
+        role_shape, parsed_jd.detected_tone, soft
+    )
+}
+
+/// Builds a full (untruncated) summary of the candidate's context entries for diagnostic use.
+/// Dumps the complete raw_text per entry with no character cap — use only when verifying
+/// that score variation is working. For production, use build_entries_summary() instead.
+fn build_entries_summary_full(entries: &[ContextEntryRow]) -> String {
+    entries
+        .iter()
+        .map(|e| {
+            let company_or_name = e
+                .data
+                .get("company")
+                .or_else(|| e.data.get("name"))
+                .or_else(|| e.data.get("project_name"))
+                .or_else(|| e.data.get("institution"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown");
+
+            let role = e
+                .data
+                .get("role")
+                .or_else(|| e.data.get("degree"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let skills = e
+                .tags
+                .iter()
+                .filter(|t| *t != &e.entry_type)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let header = format!("[{}] {} — {}", e.entry_type, company_or_name, role);
+            let meta = format!(
+                "  Skills: {}\n  Contribution: {} | Impact: {:.2} | Recency: {:.2}",
+                skills, e.contribution_type, e.impact_score, e.recency_score
+            );
+
+            match e.raw_text.as_deref().filter(|t| !t.trim().is_empty()) {
+                Some(raw) => format!("{}\n{}\n  Context:\n    {}", header, meta, raw),
+                None => format!("{}\n{}", header, meta),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Builds a compact multi-field summary of the candidate's context entries for LLM prompts.
+/// Each entry includes structural metadata (type, company, role, skills, contribution level,
+/// impact/recency scores) plus up to 5 lines from raw_text — capped at 500 chars per entry
+/// to keep token cost bounded. The raw_text snippet gives Claude actual evidence of what
+/// the candidate did, which is critical for accurate fit scoring.
 fn build_entries_summary(entries: &[ContextEntryRow]) -> String {
     entries
         .iter()
@@ -195,13 +375,15 @@ fn build_entries_summary(entries: &[ContextEntryRow]) -> String {
                 .or_else(|| e.data.get("institution"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown");
+
             let role = e
                 .data
                 .get("role")
                 .or_else(|| e.data.get("degree"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let tech = e
+
+            let skills = e
                 .tags
                 .iter()
                 .filter(|t| *t != &e.entry_type)
@@ -209,13 +391,23 @@ fn build_entries_summary(entries: &[ContextEntryRow]) -> String {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!(
-                "[{}] {} — {} (tech: {})",
-                e.entry_type, company_or_name, role, tech
-            )
+
+            let header = format!("[{}] {} — {}", e.entry_type, company_or_name, role);
+            let meta = format!(
+                "  Skills: {}\n  Contribution: {} | Impact: {:.2} | Recency: {:.2}",
+                skills, e.contribution_type, e.impact_score, e.recency_score
+            );
+
+            match e.raw_text.as_deref().filter(|t| !t.trim().is_empty()) {
+                Some(raw) => {
+                    let snippet = extract_raw_text_snippet(raw, 5);
+                    format!("{}\n{}\n  Context:\n    {}", header, meta, snippet)
+                }
+                None => format!("{}\n{}", header, meta),
+            }
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n\n")
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -522,5 +714,180 @@ mod tests {
         let rec = build_recommendation(30, &gaps);
         assert!(rec.contains("30"));
         assert!(rec.contains("Rust"));
+    }
+
+    // ── extract_raw_text_snippet tests ────────────────────────────────────────
+
+    #[test]
+    fn extract_returns_up_to_n_lines() {
+        let raw = (1..=10)
+            .map(|i| format!("Line number {i} with enough content"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = extract_raw_text_snippet(&raw, 3);
+        assert!(result.lines().count() <= 3);
+    }
+
+    #[test]
+    fn extract_skips_short_lines() {
+        let raw = "---\n\nok\nThis is a real bullet point with substance\nAnother real line here";
+        let result = extract_raw_text_snippet(raw, 5);
+        assert!(!result.contains("---"));
+        assert!(!result.contains("\nok\n"));
+    }
+
+    #[test]
+    fn extract_fallback_truncates_at_500() {
+        let raw = "a".repeat(1000);
+        let result = extract_raw_text_snippet(&raw, 5);
+        assert!(result.len() <= 500);
+    }
+
+    #[test]
+    fn extract_caps_at_500_with_line_structure() {
+        let line = "a".repeat(120);
+        let raw = (0..6).map(|_| line.clone()).collect::<Vec<_>>().join("\n");
+        let result = extract_raw_text_snippet(&raw, 6);
+        assert!(result.len() <= 500);
+    }
+
+    #[test]
+    fn extract_empty_returns_empty() {
+        assert_eq!(extract_raw_text_snippet("", 5), "");
+    }
+
+    // ── build_jd_role_context tests ───────────────────────────────────────────
+
+    #[test]
+    fn role_context_contains_seniority() {
+        let jd = make_parsed_jd(vec![]);
+        let result = build_jd_role_context(&jd);
+        assert!(result.contains(&jd.role_signals.seniority));
+    }
+
+    #[test]
+    fn role_context_contains_tone() {
+        let jd = make_parsed_jd(vec![]);
+        let result = build_jd_role_context(&jd);
+        assert!(result.contains("Tone:"));
+    }
+
+    #[test]
+    fn role_context_contains_soft_signals() {
+        use crate::generation::jd_parser::RoleSignals;
+        let jd = ParsedJD {
+            hard_requirements: vec![],
+            soft_signals: vec!["Kubernetes".to_string(), "Kafka".to_string()],
+            role_signals: RoleSignals {
+                seniority: "senior".to_string(),
+                is_startup: false,
+                is_ic_focused: true,
+                is_research: false,
+            },
+            keyword_inventory: vec![],
+            detected_tone: crate::generation::jd_parser::JDTone::CollaborativeEnterprise,
+        };
+        let result = build_jd_role_context(&jd);
+        assert!(result.contains("Kubernetes"));
+        assert!(result.contains("Kafka"));
+    }
+
+    #[test]
+    fn role_context_no_soft_signals_shows_none() {
+        use crate::generation::jd_parser::RoleSignals;
+        let jd = ParsedJD {
+            hard_requirements: vec![],
+            soft_signals: vec![],
+            role_signals: RoleSignals {
+                seniority: "mid".to_string(),
+                is_startup: true,
+                is_ic_focused: true,
+                is_research: false,
+            },
+            keyword_inventory: vec![],
+            detected_tone: crate::generation::jd_parser::JDTone::AggressiveStartup,
+        };
+        let result = build_jd_role_context(&jd);
+        assert!(result.contains("None"));
+    }
+
+    #[test]
+    fn role_context_does_not_duplicate_requirements() {
+        use crate::generation::jd_parser::{Requirement, RoleSignals};
+        let req_text = "Must have 10 years of Rust experience";
+        let jd = ParsedJD {
+            hard_requirements: vec![Requirement {
+                text: req_text.to_string(),
+                is_required: true,
+            }],
+            soft_signals: vec![],
+            role_signals: RoleSignals {
+                seniority: "senior".to_string(),
+                is_startup: false,
+                is_ic_focused: true,
+                is_research: false,
+            },
+            keyword_inventory: vec![],
+            detected_tone: crate::generation::jd_parser::JDTone::CollaborativeEnterprise,
+        };
+        let result = build_jd_role_context(&jd);
+        assert!(!result.contains(req_text));
+    }
+
+    // ── build_entries_summary tests ───────────────────────────────────────────
+
+    fn make_default_entry() -> ContextEntryRow {
+        ContextEntryRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_id: Uuid::new_v4(),
+            version: 1,
+            entry_type: "experience".to_string(),
+            data: serde_json::json!({"company": "Acme Corp", "role": "Engineer"}),
+            raw_text: None,
+            recency_score: 0.8,
+            impact_score: 0.8,
+            tags: vec!["rust".to_string()],
+            flagged_evergreen: false,
+            contribution_type: "primary_contributor".to_string(),
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn entries_summary_includes_raw_text_snippet() {
+        let mut entry = make_default_entry();
+        entry.raw_text = Some("Led a team of five engineers building distributed cache\nReduced latency by 40% through architecture changes".to_string());
+        let result = build_entries_summary(&[entry]);
+        assert!(result.contains("Led a team"));
+    }
+
+    #[test]
+    fn entries_summary_includes_impact_score() {
+        let mut entry = make_default_entry();
+        entry.impact_score = 0.9;
+        let result = build_entries_summary(&[entry]);
+        assert!(result.contains("Impact:"));
+        assert!(result.contains("0.90"));
+    }
+
+    #[test]
+    fn entries_summary_includes_contribution_type() {
+        let mut entry = make_default_entry();
+        entry.contribution_type = "primary_contributor".to_string();
+        let result = build_entries_summary(&[entry]);
+        assert!(result.contains("primary_contributor"));
+    }
+
+    #[test]
+    fn entries_summary_handles_none_raw_text() {
+        let mut entry = make_default_entry();
+        entry.raw_text = None;
+        // Should not panic; should produce valid output without a Context block
+        let result = build_entries_summary(&[entry]);
+        assert!(!result.is_empty());
+        assert!(!result.contains("Context:"));
     }
 }
