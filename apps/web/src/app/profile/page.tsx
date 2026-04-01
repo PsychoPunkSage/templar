@@ -139,7 +139,7 @@ export default function ProfilePage() {
           {links.length > 0 && (
             <div className="flex flex-col gap-2">
               {links.map((link, i) => (
-                <div key={i} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                <div key={i} className="group flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
                   <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${LINK_TYPE_COLORS[link.type] ?? LINK_TYPE_COLORS.Custom}`}>
                     {link.type === "Custom" && link.label ? link.label : link.type}
                   </span>
@@ -149,7 +149,7 @@ export default function ProfilePage() {
                   )}
                   <button
                     onClick={() => handleRemoveLink(i)}
-                    className="shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+                    className="shrink-0 text-muted-foreground hover:text-destructive transition-all opacity-0 group-hover:opacity-100"
                     aria-label="Remove link"
                   >
                     <X className="h-3.5 w-3.5" />

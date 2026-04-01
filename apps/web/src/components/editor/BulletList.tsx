@@ -38,9 +38,12 @@ export function BulletList() {
     <div className="flex flex-col gap-4">
       {Object.entries(sections).map(([section, sectionBullets]) => (
         <div key={section}>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            {section}
-          </h3>
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground shrink-0">
+              {section}
+            </h3>
+            <div className="flex-1 border-t border-border" />
+          </div>
           <div className="flex flex-col gap-2">
             {sectionBullets.map((b, i) => (
               <BulletCard

@@ -2,7 +2,20 @@
 
 import { create } from "zustand";
 import { api } from "@/lib/api";
-import type { SimulatedBullet, FitReport, AuditManifest } from "@templar/types";
+import type { SimulatedBullet, FitReport, AuditManifest, ResumeBulletRow } from "@templar/types";
+
+/** Maps a DB bullet row back to the SimulatedBullet shape used by the store. */
+function bulletRowToSimulated(row: ResumeBulletRow): SimulatedBullet {
+  return {
+    text: row.bullet_text,
+    source_entry_id: row.source_entry_id,
+    section: row.section,
+    verified_line_count: row.line_count as 1 | 2,
+    jd_keywords_used: [],
+    was_adjusted: false,
+    flagged_for_review: row.grounding_score < 0.8 || row.rejection_reason != null,
+  };
+}
 
 /**
  * Hardcoded user ID for MVP development.
@@ -70,6 +83,17 @@ interface ResumeStore {
   analyzeFit: (forceRefresh?: boolean) => Promise<void>;
   /** Polls the render job status every 2 seconds until done or failed. */
   pollRenderStatus: () => void;
+  /**
+   * Loads a saved resume from the database by ID.
+   * Populates bullets and resumeId. Called on page load when a project has
+   * a current_resume_id, so bullets survive page refresh.
+   */
+  loadResume: (resumeId: string) => Promise<void>;
+  /**
+   * Re-triggers a PDF render for the current resumeId.
+   * Resets renderStatus to "queued" and starts polling.
+   */
+  rerender: () => Promise<void>;
   clearError: () => void;
 }
 
@@ -224,6 +248,65 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
       });
     } finally {
       set({ isGenerating: false });
+    }
+  },
+
+  rerender: async () => {
+    const { resumeId } = get();
+    if (!resumeId) return;
+    set({ renderStatus: "queued", renderJobId: null });
+    try {
+      const renderResp = await api.triggerRender(resumeId);
+      set({ renderJobId: renderResp.job_id, renderStatus: "queued" });
+      get().pollRenderStatus();
+    } catch (e) {
+      set({
+        error: e instanceof Error ? e.message : "Re-render failed",
+        renderStatus: "failed",
+      });
+    }
+  },
+
+  loadResume: async (resumeId) => {
+    try {
+      // Fetch bullets and latest render job in parallel
+      const [detail, renderJob] = await Promise.all([
+        api.getResume(resumeId),
+        api.getResumeRenderJob(resumeId),
+      ]);
+
+      // Only restore states that are actionable right now.
+      // "failed" is a historical record — do not replay it as the current session state.
+      // A failed render from a previous session should not block the user from seeing their bullets.
+      let restoredJobId: string | null = null;
+      let restoredStatus: RenderStatus = "idle";
+
+      if (renderJob) {
+        if (renderJob.status === "done") {
+          // Valid PDF in S3 — restore and show it
+          restoredStatus = "done";
+          restoredJobId = renderJob.job_id;
+        } else if (renderJob.status === "processing" || renderJob.status === "queued") {
+          // Job is still live — restore and resume polling
+          restoredStatus = renderJob.status === "processing" ? "rendering" : "queued";
+          restoredJobId = renderJob.job_id;
+        }
+        // "failed" / any other status → stays "idle" (historical, let user decide to re-render)
+      }
+
+      set({
+        resumeId: detail.resume.id,
+        bullets: detail.bullets.map(bulletRowToSimulated),
+        renderJobId: restoredJobId,
+        renderStatus: restoredStatus,
+      });
+
+      // Resume polling if a job was in-flight when the page was last closed
+      if (restoredStatus === "rendering" || restoredStatus === "queued") {
+        get().pollRenderStatus();
+      }
+    } catch {
+      // Non-fatal — if the fetch fails, bullets stay empty (user can regenerate)
     }
   },
 

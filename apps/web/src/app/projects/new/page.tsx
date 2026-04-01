@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { TemplateThumbnailPdf } from "@/components/pdf/TemplateThumbnailPdf";
 import type { TemplateSummary } from "@templar/types";
-import { Eye, X } from "lucide-react";
+import { Eye, X, Check } from "lucide-react";
 
 const MVP_USER_ID = "00000000-0000-0000-0000-000000000001";
 
@@ -32,9 +32,9 @@ function TemplatePickerCard({
   return (
     <button
       onClick={onSelect}
-      className={`group text-left rounded-xl border-2 overflow-hidden transition-all hover:border-primary/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      className={`group text-left rounded-xl border-2 overflow-hidden transition-all hover:border-primary/60 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         selected
-          ? "border-primary ring-2 ring-primary/20"
+          ? "border-primary ring-2 ring-primary/20 shadow-md"
           : "border-border"
       }`}
     >
@@ -44,10 +44,8 @@ function TemplatePickerCard({
 
         {/* Selection indicator */}
         {selected && (
-          <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
-            <svg className="w-3 h-3 text-primary-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-            </svg>
+          <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-primary flex items-center justify-center shadow-sm">
+            <Check className="w-3.5 h-3.5 text-primary-foreground" strokeWidth={3} />
           </div>
         )}
 

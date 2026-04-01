@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { Loader2, ImageOff } from "lucide-react";
 
 // PDF.js is lazy-loaded client-side only to avoid SSR issues.
 // The global is cached after first load to avoid redundant dynamic imports
@@ -97,7 +98,7 @@ export function StaticPdfPreview({ pdfUrl }: StaticPdfPreviewProps) {
       {isLoading && (
         <div className="flex h-full items-center justify-center">
           <div className="flex flex-col items-center gap-3 text-muted-foreground">
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            <Loader2 className="h-8 w-8 animate-spin" />
             <span className="text-sm">
               {slowLoadWarning
                 ? "Still compiling — first-time preview takes ~60s…"
@@ -109,7 +110,8 @@ export function StaticPdfPreview({ pdfUrl }: StaticPdfPreviewProps) {
 
       {/* Error state */}
       {!isLoading && renderError && (
-        <div className="flex h-full items-center justify-center flex-col gap-2">
+        <div className="flex h-full items-center justify-center flex-col gap-3">
+          <ImageOff className="h-8 w-8 text-muted-foreground opacity-50" />
           <span className="text-muted-foreground text-sm font-medium">
             Template preview unavailable
           </span>

@@ -15,14 +15,15 @@ function NavLink({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  // Highlight the link if we're on that path (or a sub-path of it)
   const isActive = pathname === href || pathname.startsWith(href + "/");
 
   return (
     <Link
       href={href}
-      className={`text-sm font-medium transition-colors hover:text-foreground ${
-        isActive ? "text-foreground" : "text-muted-foreground"
+      className={`text-sm font-medium px-3 py-1.5 rounded-md transition-colors ${
+        isActive
+          ? "bg-accent text-accent-foreground"
+          : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
       }`}
     >
       {children}
@@ -32,10 +33,10 @@ function NavLink({
 
 export function Header() {
   return (
-    <header className="sticky top-0 z-50 flex items-center justify-between px-6 py-3 border-b bg-background/95 backdrop-blur shrink-0">
+    <header className="sticky top-0 z-50 flex items-center justify-between px-6 py-2.5 border-b bg-background/80 backdrop-blur-md shrink-0">
       {/* Logo */}
-      <div className="flex items-center gap-6">
-        <Link href="/" className="flex items-center gap-2">
+      <div className="flex items-center gap-4">
+        <Link href="/" className="flex items-center gap-2 mr-2">
           <span className="font-bold text-lg tracking-tight">Templar</span>
           <span className="text-xs text-muted-foreground hidden sm:block">
             AI Resume Engine
@@ -43,9 +44,10 @@ export function Header() {
         </Link>
 
         {/* Primary navigation */}
-        <nav className="flex items-center gap-4">
+        <nav className="flex items-center gap-1">
           <NavLink href="/projects">Projects</NavLink>
           <NavLink href="/context">Context</NavLink>
+          <NavLink href="/profile">Profile</NavLink>
         </nav>
       </div>
 

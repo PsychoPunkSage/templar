@@ -8,6 +8,7 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { Plus } from "lucide-react";
 import { useProjectStore } from "@/store/projectStore";
 
 // Hardcoded MVP user — replaced by Clerk auth in Phase 9
@@ -64,8 +65,9 @@ export default function HomePage() {
         </div>
         <Link
           href="/projects/new"
-          className="inline-flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
+          className="inline-flex items-center gap-1.5 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
         >
+          <Plus className="h-4 w-4" />
           New Project
         </Link>
       </div>
@@ -78,8 +80,9 @@ export default function HomePage() {
           <p className="text-muted-foreground text-sm">No projects yet.</p>
           <Link
             href="/projects/new"
-            className="inline-flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
           >
+            <Plus className="h-4 w-4" />
             Create your first project
           </Link>
         </div>

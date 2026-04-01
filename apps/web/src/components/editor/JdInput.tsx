@@ -43,12 +43,19 @@ export function JdInput({ projectId }: JdInputProps) {
 
   return (
     <div className="flex flex-col gap-2">
-      <label
-        htmlFor="jd-input"
-        className="text-sm font-medium text-muted-foreground"
-      >
-        Job Description
-      </label>
+      <div className="flex items-center justify-between">
+        <label
+          htmlFor="jd-input"
+          className="text-xs uppercase tracking-widest font-medium text-muted-foreground"
+        >
+          Job Description
+        </label>
+        {jdText.length > 0 && (
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {jdText.length.toLocaleString()} chars
+          </span>
+        )}
+      </div>
       <Textarea
         id="jd-input"
         value={jdText}

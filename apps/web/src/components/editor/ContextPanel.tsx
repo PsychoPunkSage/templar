@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { UploadCloud } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -332,11 +333,10 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
             placeholder={
               'Paste your resume, work experience, or project descriptions here...\n\nSeparate multiple entries with a line containing only ---'
             }
-            className="h-36 resize-none font-mono text-sm"
+            className="h-36 resize-none font-mono text-sm bg-muted/50"
           />
           <Button
             size="sm"
-            variant="outline"
             onClick={handleTextSubmit}
             disabled={isSubmitting || !rawText.trim()}
             className="w-full"
@@ -392,7 +392,8 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
                 ))}
               </div>
             ) : (
-              <div className="space-y-1">
+              <div className="flex flex-col items-center gap-1">
+                <UploadCloud className="h-6 w-6 text-muted-foreground mb-1" />
                 <p className="text-sm text-muted-foreground">
                   Drop files here, or click to browse
                 </p>
@@ -409,7 +410,6 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
 
           <Button
             size="sm"
-            variant="outline"
             onClick={handleFileSubmit}
             disabled={isSubmitting || selectedFiles.length === 0}
             className="w-full"

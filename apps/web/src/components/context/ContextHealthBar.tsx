@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import type { CompletenessReport, CompletenessSection } from '@/lib/api'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -141,9 +142,10 @@ export default function ContextHealthBar({ completeness }: ContextHealthBarProps
         )}
 
         {/* Chevron */}
-        <span className="ml-auto shrink-0 text-muted-foreground text-xs">
-          {expanded ? '▲' : '▼'}
-        </span>
+        <ChevronDown
+          className={`ml-auto shrink-0 h-4 w-4 text-muted-foreground transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+          aria-hidden
+        />
       </button>
 
       {/* Expanded per-section detail */}
