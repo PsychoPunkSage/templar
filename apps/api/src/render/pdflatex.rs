@@ -92,24 +92,29 @@ pub async fn compile_latex(
     let mut stdout_handle = child.stdout.take();
     let mut stderr_handle = child.stderr.take();
 
-    // Wait for pdflatex to finish, but cap at 120 seconds.
+    // Wait for pdflatex to finish, but cap at PDFLATEX_TIMEOUT_SECS (env, default 120).
     // If it times out we MUST kill the child process. tokio::timeout() only cancels
     // the Rust future — the OS child process keeps running. Without an explicit kill(),
     // every timed-out pdflatex continues consuming CPU and disk I/O, and the next
     // attempt will be equally slow until the container is restarted.
-    let exit_status = match timeout(Duration::from_secs(120), child.wait()).await {
+    let timeout_secs: u64 = std::env::var("PDFLATEX_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
+    let compile_timeout = Duration::from_secs(timeout_secs);
+    let exit_status = match timeout(compile_timeout, child.wait()).await {
         Ok(Ok(status)) => status,
         Ok(Err(e)) => return Err(RenderError::Io(e)),
         Err(_) => {
             tracing::error!(
                 job_id = %job_id,
-                timeout_secs = 120,
+                timeout_secs = timeout_secs,
                 "pdflatex: timeout — killing child process"
             );
             let _ = child.kill().await;
             return Err(RenderError::CompilationFailed {
                 exit_code: -1,
-                stderr: "pdflatex compilation timed out after 120 seconds".to_string(),
+                stderr: format!("pdflatex compilation timed out after {timeout_secs} seconds"),
             });
         }
     };
@@ -250,6 +255,7 @@ pub async fn check_pdflatex_available() -> Result<(), RenderError> {
 
     Ok(())
 }
+
 
 // ────────────────────────────────────────────────────────────────────────────
 // Tests
