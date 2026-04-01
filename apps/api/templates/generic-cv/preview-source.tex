@@ -70,180 +70,40 @@
 % \award{Award Name}{Issuer}{Date}
 \newcommand{\award}[3]{\textbf{#1} --- #2 \hfill \textbf{#3}}
 
-% ============================================
-% DOCUMENT
-% ============================================
 \begin{document}
+
 \vspace*{\beforeheaderskip}
 
-% ============================================
-% HEADER
-% ============================================
 \begin{center}
-    {\normalfontsize\textbf{\color{headercolor}YOUR FULL NAME}} \\[1pt]
-    {\footnotesize DEGREE \& Major | Minor: MINOR | University Name (GPA/10)} \\[1pt]
+    {\normalfontsize\textbf{\color{headercolor}Alex Johnson}} \\[2pt]
     {\footnotesize
-    \href{mailto:you@email.com}{you@email.com} \ | \
-    +XX-XXXXXXXXXX \ | \
-    LinkedIn: \href{https://linkedin.com/in/handle}{handle} \ | \
-    GitHub: \href{https://github.com/Handle}{Handle}
+    \href{mailto:alex.johnson@email.com}{alex.johnson@email.com} \quad\textbar\quad
+    +1 (555) 867-5309 \quad\textbar\quad
+    San Francisco, CA \quad\textbar\quad
+    \href{https://linkedin.com/in/alexjohnson}{\texttt{in/alexjohnson}} \quad\textbar\quad
+    \href{https://alexjohnson.dev}{\texttt{alexjohnson.dev}}
     }
 \end{center}
 
+\vspace{4pt}
 
-% ============================================
-% SECTION: EDUCATION
-% Columns: Year | Degree | Institution | GPA
-% Add one \education{} line per degree.
-% ============================================
+\section*{Experience}
+\begin{itemize}[leftmargin=1.5em, itemsep=1pt, parsep=0pt, topsep=2pt]
+\item Led migration of monolithic backend to microservices, cutting deployment time by 60\%
+\item Designed distributed caching layer serving 10M requests/day with 99.9\% uptime
+\item Mentored team of 5 engineers; code review practices reduced production bugs by 35\%
+\end{itemize}
+
 \section*{Education}
-\begin{tabularx}{\textwidth}{p{1cm}p{5.5cm}Xr}
-\education{YEAR}{DEGREE NAME}{INSTITUTION NAME}{GPA / 10}
-\end{tabularx}
-
-
-% ============================================
-% SECTION: COURSEWORK
-% List relevant courses in a multi-column layout.
-% Change the number in {multicols}{N} to adjust columns.
-% ============================================
-\section*{Relevant Coursework}
-{\footnotesize
-\begin{multicols}{3}
-\begin{itemize}
-    \item COURSE NAME 1
-    \item COURSE NAME 2
-    \item COURSE NAME 3
-    \item COURSE NAME 4
-    \item COURSE NAME 5
-    \item COURSE NAME 6
+\begin{itemize}[leftmargin=1.5em, itemsep=1pt, parsep=0pt, topsep=2pt]
+\item B.S.\ Computer Science, Stanford University, GPA 3.8/4.0 (Class of 2018)
 \end{itemize}
-\end{multicols}
-}
 
-
-% ============================================
-% SECTION: PUBLICATIONS
-% Repeat from \textbf{Paper Title} down to the
-% closing brace for each additional paper.
-% ============================================
-\section*{Publications}
-\textbf{PAPER TITLE | VENUE / CONFERENCE NAME}
-
-\textit{AUTHOR 1, AUTHOR 2, AUTHOR 3 --- submitted/published CONF'YY}
-{\footnotesize
-\begin{itemize}
-    \item Contribution 1 --- what you built and \textbf{why it is novel}.
-    \item Contribution 2 --- \textbf{quantified impact} (e.g., X\% overhead, N services tested).
-    \item Contribution 3 --- methodology, reproducibility, or scale highlight.
+\section*{Skills}
+\begin{itemize}[leftmargin=1.5em, itemsep=1pt, parsep=0pt, topsep=2pt]
+\item Languages: Rust, Go, Python, TypeScript, SQL
+\item Infrastructure: Docker, Kubernetes, AWS, PostgreSQL, Redis
+\item Practices: CI/CD, Test-Driven Development, Agile, Technical Writing
 \end{itemize}
-}
-
-
-% ============================================
-% SECTION: INTERNSHIPS / WORK EXPERIENCE
-% Repeat the \job block + itemize for each role.
-% ============================================
-\section*{Internships}
-
-\job{COMPANY NAME}{ROLE TITLE}{Mon 'YY -- Mon 'YY}
-{\footnotesize
-\begin{itemize}
-    \item Bullet 1 --- what you built/designed, \textbf{key technologies}, and \textbf{quantified outcome}.
-    \item Bullet 2 --- system or feature you engineered; include \textbf{scale} (e.g., X req/sec, Xms latency).
-    \item Bullet 3 --- architecture, security, or infrastructure contribution and its \textbf{business impact}.
-\end{itemize}
-}
-
-
-% ============================================
-% SECTION: PROJECTS
-% Repeat the \project block + itemize for each project.
-% ============================================
-\section*{Projects}
-
-\project{PROJECT TITLE --- TAGLINE}{\href{https://github.com/Handle/repo}{GitHub}}{Mon 'YY -- Present}
-{\footnotesize
-\begin{itemize}
-    \item Bullet 1 --- core component built, \textbf{novel technical approach}, and problem it solves.
-    \item Bullet 2 --- subsystem or feature; include \textbf{design decisions} and tradeoffs.
-    \item Bullet 3 --- performance, scalability, or security property with \textbf{concrete numbers}.
-\end{itemize}
-}
-
-
-% ============================================
-% SECTION: RESEARCH EXPERIENCE
-% Same format as Internships but for lab/academic work.
-% ============================================
-\section*{Research Experience}
-
-\job{LAB / GROUP NAME}{Research Intern / RA}{Mon 'YY -- Mon 'YY}
-{\footnotesize
-\begin{itemize}
-    \item Bullet 1 --- research problem you worked on and your specific contribution.
-    \item Bullet 2 --- methodology, dataset, or experimental setup with \textbf{quantified results}.
-    \item Bullet 3 --- publication, preprint, or outcome of the work.
-\end{itemize}
-}
-
-
-% ============================================
-% SECTION: EXTRACURRICULARS / LEADERSHIP
-% Repeat \extracirc block + itemize for each role.
-% ============================================
-\section*{Extracurriculars}
-
-\extracirc{ROLE / POSITION}{CLUB OR ORGANIZATION NAME}{Mon 'YY -- Mon 'YY}
-{\footnotesize
-\begin{itemize}
-    \item Bullet 1 --- what you led, organized, or built within this role.
-    \item Bullet 2 --- team size, event scale, or measurable outcome.
-\end{itemize}
-}
-
-
-% ============================================
-% SECTION: AWARDS & ACHIEVEMENTS
-% Repeat \award for each entry.
-% For a rank: \award{Rank X of N --- Competition Name}{Organizer}{Mon 'YY}
-% ============================================
-\section*{Awards \& Achievements}
-
-\award{AWARD / FELLOWSHIP / SCHOLARSHIP NAME}{ISSUING ORGANIZATION}{Mon 'YY}
-
-
-% ============================================
-% SECTION: OPEN-SOURCE CONTRIBUTIONS
-% One bullet per project. Adjust count freely.
-% ============================================
-\section*{Open-Source Contributions}
-{\footnotesize
-\begin{itemize}
-    \item \textbf{PROJECT NAME} (\href{https://github.com/org/repo}{link}) --- brief description of contribution and merged PR count or impact.
-\end{itemize}
-}
-
-
-% ============================================
-% SECTION: TECHNICAL SKILLS
-% One \skillcat per category. Add/remove freely.
-% ============================================
-\section*{Technical Skills}
-
-\skillcat{Languages}{LANG1, LANG2, LANG3}
-
-\skillcat{Frameworks \& Libraries}{FRAMEWORK1, FRAMEWORK2, FRAMEWORK3}
-
-\skillcat{Datastores}{DB1, DB2, DB3}
-
-\skillcat{Infra.\ \& DevOps}{TOOL1, TOOL2, CLOUD1, CLOUD2}
-
-\skillcat{Observability}{TOOL1, TOOL2, TOOL3}
-
-\skillcat{Security}{CONCEPT1, CONCEPT2, TOOL1}
-
-% \skillcat{Systems \& Linux}{OS, subsystems --- uncomment if needed}
-
 
 \end{document}
