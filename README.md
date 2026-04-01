@@ -19,28 +19,34 @@ Templar is an AI-powered, context-aware, layout-optimized resume generation plat
 ## Tech Stack
 
 ### Frontend
+
 - Next.js (App Router) + TypeScript
 - Tailwind CSS + shadcn/ui
 - PDF.js — in-browser PDF preview
 - Zustand — client state management
 
 ### Backend
+
 - Rust (Axum) — primary API server; runs the layout simulation loop
 - PostgreSQL — context metadata, versioning, audit manifests
 - S3-compatible storage — raw `.md` context files, generated PDFs
 - Redis — async job queue for LaTeX rendering
 
 ### AI
+
 - Claude API (`claude-sonnet-4-5`) — context parsing, generation, grounding, compression
 
 ### LaTeX Rendering
+
 - pdflatex (TeX Live) — server-side PDF compilation, streamed to frontend
   - Note: switched from Tectonic due to format-cache hash mismatches in containerized environments
 
 ### Auth
+
 - Clerk or Supabase Auth
 
 ### Infrastructure
+
 - Docker + Railway or Render for MVP
 
 ---
@@ -90,15 +96,16 @@ Four silent strategy steps before any content is written:
 
 The hardest engineering component. Line coverage is a hard physical constraint, not a style preference.
 
-| Bullet Type | Coverage Requirement |
-|---|---|
-| 1-line | >= 80% horizontal fill |
-| 2-line | Line 1 = 100%, Line 2 >= 70% |
-| 3+ lines | Prohibited — compress unconditionally |
+| Bullet Type | Coverage Requirement                  |
+| ----------- | ------------------------------------- |
+| 1-line      | >= 80% horizontal fill                |
+| 2-line      | Line 1 = 100%, Line 2 >= 70%          |
+| 3+ lines    | Prohibited — compress unconditionally |
 
 **2-line promotion** requires all three: quantified outcome (HIGH), technical depth (HIGH), JD relevance (HIGH). Maximum 3 two-line bullets per page.
 
 **Simulation loop:**
+
 ```
 LLM draft
   → line-fill simulator (font metric tables + char width tables)
@@ -115,6 +122,7 @@ Font changes trigger full re-simulation. Simulation runs in `tokio::task::spawn_
 Every bullet must be traceable to a verified context entry. Below-threshold bullets are rejected and regenerated — they are never shown to the user.
 
 **Composite score formula:**
+
 ```
 0.40 * source_match
 + 0.30 * specificity_fidelity
@@ -123,6 +131,7 @@ Every bullet must be traceable to a verified context entry. Below-threshold bull
 ```
 
 **Hard rules:**
+
 - Minimum score: 0.80
 - `team_member` entries cannot produce "Architected", "Led", "Owned", or equivalent language
 - Every resume generates a hidden audit manifest in the database (never in the PDF)
@@ -141,13 +150,13 @@ Every bullet must be traceable to a verified context entry. Below-threshold bull
 
 Five built-in templates, all parameterized (font, spacing, margins injected at render time):
 
-| Template | Use Case |
-|---|---|
-| Hacker | Software engineering, open source — minimal, dense |
-| Researcher | Academia, R&D — formal, publication-ready |
-| Operator | PM, leadership — spacious, achievement-forward |
-| Founder | Startups, VC-facing — bold headers |
-| Classic | ATS-safe — plain, highly parseable |
+| Template   | Use Case                                           |
+| ---------- | -------------------------------------------------- |
+| Hacker     | Software engineering, open source — minimal, dense |
+| Researcher | Academia, R&D — formal, publication-ready          |
+| Operator   | PM, leadership — spacious, achievement-forward     |
+| Founder    | Startups, VC-facing — bold headers                 |
+| Classic    | ATS-safe — plain, highly parseable                 |
 
 ---
 
@@ -172,7 +181,7 @@ cp infra/.env.example infra/.env
 docker compose -f infra/docker-compose.yml up -d --build api web
 ```
 
-The web UI will be available at `http://localhost:3000`. The API runs at `http://localhost:8080`.
+The web UI will be available at `http://localhost:3001`. The API runs at `http://localhost:8080`.
 
 ### Environment Variables
 
@@ -204,20 +213,20 @@ NEXT_PUBLIC_API_URL=
 
 ## Development Status
 
-| Phase | Description | Status |
-|---|---|---|
-| 0 | Infra scaffold (monorepo, Docker, CI) | Complete |
-| 1 | Context Engine | Complete — 36 tests |
-| 2 | Generation Engine | Complete — 78 tests |
-| 3 | Layout Optimization | Complete — 122 tests |
-| 4 | Render Pipeline | Complete — 143 tests |
-| 5 | Grounding / Anti-Hallucination | Complete — 164 tests |
-| 5.5 | Context Robustness & Render Fix | Complete — 182 tests |
-| 7.0 | LlmFitScorer | Complete |
-| 8 | Template System + CV Projects + UI Nav | Complete — 189 tests |
-| — | Render Pipeline Unification | Complete — 223 tests |
-| — | Render/Generation Decoupling + UI fixes | Complete |
-| — | UI/UX Overhaul | Complete |
+| Phase | Description                             | Status               |
+| ----- | --------------------------------------- | -------------------- |
+| 0     | Infra scaffold (monorepo, Docker, CI)   | Complete             |
+| 1     | Context Engine                          | Complete — 36 tests  |
+| 2     | Generation Engine                       | Complete — 78 tests  |
+| 3     | Layout Optimization                     | Complete — 122 tests |
+| 4     | Render Pipeline                         | Complete — 143 tests |
+| 5     | Grounding / Anti-Hallucination          | Complete — 164 tests |
+| 5.5   | Context Robustness & Render Fix         | Complete — 182 tests |
+| 7.0   | LlmFitScorer                            | Complete             |
+| 8     | Template System + CV Projects + UI Nav  | Complete — 189 tests |
+| —     | Render Pipeline Unification             | Complete — 223 tests |
+| —     | Render/Generation Decoupling + UI fixes | Complete             |
+| —     | UI/UX Overhaul                          | Complete             |
 
 ---
 
