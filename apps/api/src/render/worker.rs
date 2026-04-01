@@ -21,7 +21,6 @@ use uuid::Uuid;
 use crate::layout::{default_page_config, FontFamily};
 use crate::models::resume::{ResumeBulletRow, ResumeRow};
 use crate::render::pdflatex::compile_latex;
-use crate::render::templates::build_latex_document;
 use crate::render::types::{RenderError, RenderParams, ResumeSection};
 use crate::templates::{ProfileData, SampleSection, TemplateCache};
 
@@ -57,19 +56,12 @@ pub fn spawn_render_worker(
 // Worker loop
 // ────────────────────────────────────────────────────────────────────────────
 
-/// How many render jobs can run in parallel.
-///
-/// pdflatex is CPU + I/O bound (compile + S3 upload). On a typical container with
-/// 2 vCPUs, 4 concurrent jobs keeps both cores busy without starving the HTTP server.
-/// Increase this if containers have more CPU; decrease if you see OOM.
-const WORKER_CONCURRENCY: usize = 4;
-
 /// Main worker loop — runs indefinitely, BRPOP-ing jobs from Redis.
 ///
-/// Concurrency model: we allow up to WORKER_CONCURRENCY jobs to run in parallel.
-/// Each dequeued job is spawned as an independent tokio task. A semaphore provides
-/// back-pressure: the BRPOP loop blocks when all slots are occupied, so Redis doesn't
-/// accumulate jobs faster than we can process them.
+/// Concurrency model: we allow up to RENDER_WORKER_COUNT (env, default 4) jobs to
+/// run in parallel. Each dequeued job is spawned as an independent tokio task. A
+/// semaphore provides back-pressure: the BRPOP loop blocks when all slots are
+/// occupied, so Redis doesn't accumulate jobs faster than we can process them.
 ///
 /// Why a semaphore instead of a thread pool?
 /// pdflatex compilation is `async` (tokio::process::Command), so it fits naturally
@@ -83,12 +75,17 @@ async fn worker_loop(
     s3_bucket: String,
     template_cache: Arc<TemplateCache>,
 ) {
-    info!("Render worker loop started (concurrency: {WORKER_CONCURRENCY})");
+    let concurrency: usize = std::env::var("RENDER_WORKER_COUNT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
+
+    info!("Render worker loop started (concurrency: {concurrency})");
 
     // Semaphore that limits concurrent render jobs. Arc so it can be cloned into
     // each spawned task — the task holds the permit for its entire lifetime, and
     // the permit is released (slot freed) when the task completes or panics.
-    let semaphore = Arc::new(Semaphore::new(WORKER_CONCURRENCY));
+    let semaphore = Arc::new(Semaphore::new(concurrency));
 
     loop {
         let mut conn = match redis.get_multiplexed_async_connection().await {
@@ -250,46 +247,76 @@ async fn process_render_job(
             "Render job: render data fetched"
         );
 
-        // Step 4: Build LaTeX document.
-        // Two paths:
-        //   a) File-based template (e.g. generic-cv): uses render_file_template()
-        //      with the .tex file from disk, substituting profile + bullets.
-        //   b) Legacy font-based path: uses build_latex_document() which generates
-        //      XeLaTeX with \usepackage{fontspec} + \setmainfont{<font>}.
-        // The file-based path is preferred when a template_id is set on the resume.
-        let engine_type = if resume_template_id.is_some() {
-            "file-template"
-        } else {
-            "xelatex-legacy"
-        };
-        info!(
-            job_id = %job_id,
-            resume_id = %resume_id,
-            engine = engine_type,
-            "Render job: building LaTeX document"
+        // Fetch profile once — used for hash computation AND passed into build_latex_for_job.
+        // This avoids a double DB fetch that the old code performed (once in build_latex_for_job,
+        // then again if falling through to the generic-cv branch).
+        let profile = fetch_user_profile(db, resume_id, None)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(
+                    job_id = %job_id,
+                    resume_id = %resume_id,
+                    error = %e,
+                    "No profile for resume — using defaults"
+                );
+                ProfileData::default()
+            });
+
+        // Compute a content hash covering template + profile + sections.
+        // If the hash matches the stored value AND a PDF already exists in S3,
+        // we skip compilation entirely — the rendered PDF is still valid.
+        let new_hash = compute_render_hash(
+            resume_template_id.as_deref(),
+            &profile,
+            &params.sections,
         );
-        let latex =
-            build_latex_for_job(&params, resume_template_id.as_deref(), template_cache, db).await;
+
+        // Cache-hit check: query current hash + pdf key from DB
+        let cached: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT content_hash, s3_pdf_key FROM resumes WHERE id = $1",
+        )
+        .bind(resume_id)
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+
+        if let Some((Some(existing_hash), Some(_pdf_key))) = cached {
+            if existing_hash == new_hash {
+                info!(
+                    job_id = %job_id,
+                    resume_id = %resume_id,
+                    "Content hash unchanged — skipping render, reusing existing PDF"
+                );
+                update_job_status(db, job_id, "done", None).await?;
+                return Ok(());
+            }
+        }
+
+        // Step 4: Build LaTeX document.
+        // Unified path: always pdflatex via file-based template.
+        //   a) template_id set + in cache → render_file_template()
+        //   b) template_id set but not in cache → warn, try generic-cv
+        //   c) generic-cv in cache → render_file_template() with generic-cv
+        //   d) nothing in cache → build_minimal_pdflatex_document()
+        let latex_source =
+            build_latex_for_job(&params, resume_template_id.as_deref(), template_cache, profile).await;
         info!(
             job_id = %job_id,
             resume_id = %resume_id,
-            latex_bytes = latex.len(),
-            engine = engine_type,
+            latex_bytes = latex_source.len(),
             "Render job: LaTeX source built"
         );
 
-        // Step 5: Compile LaTeX → PDF via pdflatex.
-        // TeX Live packages are installed on disk via apt — no cache hash, no network.
-        // compile_latex() runs pdflatex with -halt-on-error so failures are fast and clear.
+        // Step 5: Compile LaTeX → PDF via pdflatex (unified; no xelatex path).
         info!(
             job_id = %job_id,
             resume_id = %resume_id,
-            "Render job: spawning pdflatex"
+            "Render job: spawning pdflatex compiler"
         );
-        let pdflatex_result = compile_latex(&latex, job_id).await.map_err(|e| {
-            // Log pdflatex failure with FULL stderr before propagating the error.
-            // This is the key diagnostic log — it contains the LaTeX error message
-            // that explains why compilation failed (e.g. missing font, bad package).
+        let pdflatex_result = compile_latex(&latex_source, job_id)
+        .await
+        .map_err(|e| {
+            // Log failure with FULL stderr before propagating the error.
             if let RenderError::CompilationFailed {
                 exit_code,
                 ref stderr,
@@ -300,14 +327,14 @@ async fn process_render_job(
                     resume_id = %resume_id,
                     exit_code = exit_code,
                     stderr = %stderr,
-                    "pdflatex compilation FAILED"
+                    "LaTeX compilation FAILED"
                 );
             } else {
                 error!(
                     job_id = %job_id,
                     resume_id = %resume_id,
                     error = %e,
-                    "pdflatex invocation error"
+                    "LaTeX invocation error"
                 );
             }
             e
@@ -360,18 +387,20 @@ async fn process_render_job(
             "Render job: PDF uploaded to S3"
         );
 
-        // Step 7: Write latex_source + s3_pdf_key + rendered status in one query.
+        // Step 7: Write latex_source + s3_pdf_key + content_hash + rendered status.
         // Deliberately done AFTER successful compilation: storing latex_source before
         // compile_latex() means a failed compile would leave stale/broken LaTeX in the
         // DB. Combining it with the rendered-status update keeps things consistent —
-        // latex_source is only ever set when we know the compiled PDF is valid.
+        // latex_source and content_hash are only ever set when we know the PDF is valid.
         sqlx::query(
             "UPDATE resumes \
-             SET s3_pdf_key = $1, latex_source = $2, status = 'rendered', updated_at = NOW() \
-             WHERE id = $3",
+             SET s3_pdf_key = $1, latex_source = $2, content_hash = $3, \
+                 status = 'rendered', updated_at = NOW() \
+             WHERE id = $4",
         )
         .bind(&s3_key)
-        .bind(&latex)
+        .bind(&latex_source)
+        .bind(&new_hash)
         .bind(resume_id)
         .execute(db)
         .await?;
@@ -474,91 +503,94 @@ async fn fetch_render_data(
     ))
 }
 
+/// Computes a deterministic SHA-256 hash of all render inputs.
+///
+/// The hash covers: template_id, profile fields (name/email/phone/location),
+/// and all section names + bullets (sorted so insertion order doesn't affect the hash).
+///
+/// Used for cache-hit detection: if the hash is unchanged from the stored value
+/// AND an S3 key already exists, we can skip re-rendering entirely.
+fn compute_render_hash(
+    template_id: Option<&str>,
+    profile: &ProfileData,
+    sections: &[ResumeSection],
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(template_id.unwrap_or("").as_bytes());
+    hasher.update(b":");
+    hasher.update(profile.full_name.as_bytes());
+    hasher.update(b":");
+    hasher.update(profile.email.as_bytes());
+    hasher.update(b":");
+    hasher.update(profile.phone.as_bytes());
+    hasher.update(b":");
+    hasher.update(profile.location.as_bytes());
+    // Sort sections by name so the hash is stable regardless of section insertion order
+    let mut sorted_sections: Vec<_> = sections.iter().collect();
+    sorted_sections.sort_by(|a, b| a.name.cmp(&b.name));
+    for s in &sorted_sections {
+        hasher.update(b"::");
+        hasher.update(s.name.as_bytes());
+        let mut bullets = s.bullets.clone();
+        bullets.sort();
+        for b_text in &bullets {
+            hasher.update(b":");
+            hasher.update(b_text.as_bytes());
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
 /// Builds the LaTeX document string for a render job.
 ///
 /// Routing logic:
 ///   - If `template_id` is Some and matches a file-based template in the cache
 ///     → use `render_file_template()` with the user's profile data
-///   - Otherwise (None or unrecognized id) → fall back to `build_latex_document()`
-///     which uses the 5 built-in font-based templates
+///   - Otherwise (None or unrecognized id) → try generic-cv from cache,
+///     then fall back to `build_minimal_pdflatex_document()`
 ///
-/// This fallback is intentional: existing resumes generated before the template
-/// system existed (template_id = NULL) will still render correctly.
+/// `profile` is passed in (already fetched by the caller) to avoid a double DB fetch.
 async fn build_latex_for_job(
     params: &RenderParams,
     template_id: Option<&str>,
     template_cache: &Arc<TemplateCache>,
-    db: &PgPool,
+    profile: ProfileData,
 ) -> String {
+    // Apply canonical section ordering — done once here, reused in both template branches
+    let ordered_sections = crate::render::section_order::order_sections(&params.sections);
+    let sections: Vec<SampleSection> = ordered_sections
+        .iter()
+        .map(|s| SampleSection {
+            name: s.name.clone(),
+            bullets: s.bullets.clone(),
+        })
+        .collect();
+
     if let Some(tid) = template_id {
         // Acquire read lock — lightweight, no contention in practice
         let cache = template_cache.read().await;
         if let Some(template) = cache.get(tid) {
-            // Fetch user profile from context_entries to populate the header.
-            // If the user has no profile entry, use empty defaults — the PDF will
-            // have a blank header, which is still a valid document. The user can
-            // fix this by adding a profile entry via the /context page.
-            let profile = fetch_user_profile(db, params.resume_id)
-                .await
-                .unwrap_or_else(|e| {
-                    warn!(
-                        "No profile entry for resume {} (template '{}'), using defaults: {}",
-                        params.resume_id, tid, e
-                    );
-                    ProfileData::default()
-                });
-
-            // Convert RenderParams sections → SampleSection (same shape, different module)
-            let sections: Vec<SampleSection> = params
-                .sections
-                .iter()
-                .map(|s| SampleSection {
-                    name: s.name.clone(),
-                    bullets: s.bullets.clone(),
-                })
-                .collect();
-
             return crate::templates::render_file_template(template, &profile, &sections);
         } else {
-            // template_id set but not in cache — log and fall through to legacy path
+            // template_id set but not in cache — log and fall through to generic-cv
             warn!(
-                "Resume {} has template_id '{}' but it's not in the cache — using legacy template",
+                "Resume {} has template_id '{}' but it's not in the cache — falling back to generic-cv",
                 params.resume_id, tid
             );
         }
     }
 
-    // None branch: try generic-cv from cache first, then fall back to minimal pdflatex.
-    // NEVER call build_latex_document() here — it emits XeLaTeX (fontspec) which
-    // requires XeLaTeX/LuaLaTeX and specific fonts. The None branch targets plain
-    // pdflatex so it compiles without any font installation.
+    // None branch: try generic-cv from cache first.
     {
         let cache = template_cache.read().await;
         if let Some(template) = cache.get("generic-cv") {
-            let profile = fetch_user_profile(db, params.resume_id)
-                .await
-                .unwrap_or_else(|e| {
-                    warn!(
-                        "No profile entry for resume {} (generic-cv fallback), using defaults: {}",
-                        params.resume_id, e
-                    );
-                    ProfileData::default()
-                });
-
-            let sections: Vec<SampleSection> = params
-                .sections
-                .iter()
-                .map(|s| SampleSection {
-                    name: s.name.clone(),
-                    bullets: s.bullets.clone(),
-                })
-                .collect();
-
             return crate::templates::render_file_template(template, &profile, &sections);
         }
     }
 
-    // Final fallback: minimal pdflatex document — no extra fonts required.
+    // Last-resort fallback: build a minimal pdflatex document without fontspec.
+    // This path is taken when the template cache is empty (e.g. templates dir missing).
     build_minimal_pdflatex_document(params)
 }
 
@@ -570,7 +602,7 @@ async fn build_latex_for_job(
 ///
 /// Called when: template_id is None AND generic-cv is not in the template cache.
 fn build_minimal_pdflatex_document(params: &RenderParams) -> String {
-    use crate::render::templates::escape_latex;
+    use crate::render::escape::escape_latex;
 
     let mut doc = String::with_capacity(4096);
 
@@ -608,49 +640,59 @@ fn build_minimal_pdflatex_document(params: &RenderParams) -> String {
     doc
 }
 
-/// Fetches the user's profile data from their context entries.
+/// Fetches the user's profile data for a given resume.
 ///
-/// Queries `context_entries` for the most recent entry with `entry_type = 'profile'`
-/// and attempts to deserialize common fields (full_name, email, phone, location,
-/// linkedin, website) from the JSONB `data` column.
-///
-/// If the user has no profile entry, returns an error (caller uses ProfileData::default()).
-async fn fetch_user_profile(db: &PgPool, resume_id: Uuid) -> anyhow::Result<ProfileData> {
-    // First get user_id from the resume
-    let user_id = sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM resumes WHERE id = $1")
-        .bind(resume_id)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("resume not found"))?;
+/// Queries `user_profiles` via a JOIN on `resumes.user_id`.
+/// `selected_link_types`: if Some, only include links whose `type` is in the list.
+///   If None, include all links.
+/// Returns `ProfileData::default()` if no profile row exists.
+async fn fetch_user_profile(
+    db: &PgPool,
+    resume_id: Uuid,
+    selected_link_types: Option<&[String]>,
+) -> anyhow::Result<ProfileData> {
+    use crate::models::user::{ProfileLink, UserProfile};
 
-    // Get the most recent profile context entry
-    let data: Option<serde_json::Value> = sqlx::query_scalar::<_, serde_json::Value>(
-        r#"SELECT data FROM context_entries
-           WHERE user_id = $1 AND entry_type = 'profile'
-           ORDER BY version DESC
-           LIMIT 1"#,
+    let row = sqlx::query_as::<_, UserProfile>(
+        r#"SELECT up.*
+           FROM user_profiles up
+           JOIN resumes r ON r.user_id = up.user_id
+           WHERE r.id = $1"#,
     )
-    .bind(user_id)
+    .bind(resume_id)
     .fetch_optional(db)
     .await?;
 
-    let data = data.ok_or_else(|| anyhow::anyhow!("no profile entry for user {}", user_id))?;
-
-    // Extract fields leniently — missing keys become empty strings
-    let get_str = |key: &str| -> String {
-        data.get(key)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
+    let Some(p) = row else {
+        return Ok(ProfileData::default());
     };
 
+    let all_links: Vec<ProfileLink> =
+        serde_json::from_value(p.links).unwrap_or_default();
+
+    let header_links: Vec<(String, String)> = all_links
+        .into_iter()
+        .filter(|link| {
+            selected_link_types
+                .map(|types| types.iter().any(|t| t == &link.link_type))
+                .unwrap_or(true)
+        })
+        .map(|link| {
+            let display = link
+                .alias
+                .filter(|a| !a.is_empty())
+                .or_else(|| link.label.filter(|l| !l.is_empty()))
+                .unwrap_or_else(|| link.link_type.clone());
+            (display, link.url)
+        })
+        .collect();
+
     Ok(ProfileData {
-        full_name: get_str("full_name"),
-        email: get_str("email"),
-        phone: get_str("phone"),
-        location: get_str("location"),
-        linkedin: get_str("linkedin"),
-        website: get_str("website"),
+        full_name: p.full_name,
+        email: p.email,
+        phone: p.phone,
+        location: p.location,
+        header_links,
     })
 }
 
@@ -790,5 +832,70 @@ mod tests {
         // Would insert a render_jobs row, then cycle through status transitions.
         // Marked ignore — covered by integration test suite.
         let _ = pool;
+    }
+
+    fn make_profile(name: &str) -> ProfileData {
+        ProfileData {
+            full_name: name.to_string(),
+            email: "test@example.com".to_string(),
+            phone: "555-0100".to_string(),
+            location: "Remote".to_string(),
+            header_links: vec![],
+        }
+    }
+
+    fn make_sections(names_and_bullets: &[(&str, &[&str])]) -> Vec<ResumeSection> {
+        names_and_bullets
+            .iter()
+            .map(|(name, bullets)| ResumeSection {
+                name: name.to_string(),
+                bullets: bullets.iter().map(|b| b.to_string()).collect(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_compute_render_hash_deterministic() {
+        let profile = make_profile("Alice");
+        let sections = make_sections(&[("Experience", &["Built thing A", "Shipped thing B"])]);
+        let h1 = compute_render_hash(Some("generic-cv"), &profile, &sections);
+        let h2 = compute_render_hash(Some("generic-cv"), &profile, &sections);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_compute_render_hash_differs_on_template_change() {
+        let profile = make_profile("Alice");
+        let sections = make_sections(&[("Experience", &["Built thing A"])]);
+        let h1 = compute_render_hash(Some("generic-cv"), &profile, &sections);
+        let h2 = compute_render_hash(Some("hacker"), &profile, &sections);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_compute_render_hash_differs_on_bullet_change() {
+        let profile = make_profile("Alice");
+        let sections_a = make_sections(&[("Experience", &["Built thing A"])]);
+        let sections_b = make_sections(&[("Experience", &["Built thing B"])]);
+        let h1 = compute_render_hash(Some("generic-cv"), &profile, &sections_a);
+        let h2 = compute_render_hash(Some("generic-cv"), &profile, &sections_b);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_compute_render_hash_stable_across_section_order() {
+        let profile = make_profile("Alice");
+        // Same sections, different insertion order
+        let sections_ab = make_sections(&[
+            ("Experience", &["Built A"]),
+            ("Education", &["B.S. CS"]),
+        ]);
+        let sections_ba = make_sections(&[
+            ("Education", &["B.S. CS"]),
+            ("Experience", &["Built A"]),
+        ]);
+        let h1 = compute_render_hash(Some("generic-cv"), &profile, &sections_ab);
+        let h2 = compute_render_hash(Some("generic-cv"), &profile, &sections_ba);
+        assert_eq!(h1, h2, "Hash must be stable regardless of section insertion order");
     }
 }
