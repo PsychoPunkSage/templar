@@ -229,39 +229,36 @@ pub async fn run_simulation_loop(
     // ── Enforce 2-line promotion eligibility rules ──────────────────────────
     // Block A: If a bullet occupies 2 lines but doesn't meet promotion criteria,
     // attempt to compress it to 1 line.
-    for i in 0..sim_bullets.len() {
-        if sim_bullets[i].verified_line_count != 2 {
+    for bullet in &mut sim_bullets {
+        //for i in 0..sim_bullets.len() {
+        if bullet.verified_line_count != 2 {
             continue;
         }
         let draft = crate::generation::generator::DraftBullet {
-            text: sim_bullets[i].text.clone(),
-            source_entry_id: sim_bullets[i].source_entry_id,
-            section: sim_bullets[i].section.clone(),
+            text: bullet.text.clone(),
+            source_entry_id: bullet.source_entry_id,
+            section: bullet.section.clone(),
             line_estimate: 2,
-            jd_keywords_used: sim_bullets[i].jd_keywords_used.clone(),
+            jd_keywords_used: bullet.jd_keywords_used.clone(),
         };
         let promo = crate::layout::contract::score_promotion(&draft, parsed_jd);
         if !promo.eligible_for_two_lines {
             let char_budget = estimate_char_budget(config);
-            match compress_bullet(&sim_bullets[i].text, 2, char_budget, parsed_jd, llm, None).await
-            {
+            match compress_bullet(&bullet.text, 2, char_budget, parsed_jd, llm, None).await {
                 Ok(compressed) => {
-                    sim_bullets[i].text = compressed;
-                    sim_bullets[i].was_adjusted = true;
+                    bullet.text = compressed;
+                    bullet.was_adjusted = true;
                     llm_calls_made += 1;
                     let metrics = crate::layout::font_metrics::get_metrics(&config.font);
-                    let (new_count, _) = crate::layout::contract::simulate_lines(
-                        &sim_bullets[i].text,
-                        metrics,
-                        config,
-                    );
-                    sim_bullets[i].verified_line_count = new_count.max(1);
-                    if sim_bullets[i].verified_line_count == 2 {
-                        sim_bullets[i].flagged_for_review = true;
+                    let (new_count, _) =
+                        crate::layout::contract::simulate_lines(&bullet.text, metrics, config);
+                    bullet.verified_line_count = new_count.max(1);
+                    if bullet.verified_line_count == 2 {
+                        bullet.flagged_for_review = true;
                     }
                 }
                 Err(_) => {
-                    sim_bullets[i].flagged_for_review = true;
+                    bullet.flagged_for_review = true;
                 }
             }
         }
