@@ -207,6 +207,7 @@ impl LlmClient {
 
         // Strip markdown code fences if the model wraps JSON in them
         let text = strip_json_fences(text);
+        let text = extract_json_object(text);
 
         serde_json::from_str(text).map_err(|e| {
             tracing::error!(
@@ -217,6 +218,60 @@ impl LlmClient {
             LlmError::Parse(e)
         })
     }
+}
+
+/// Extracts the first complete JSON object or array from `text`, trimming any
+/// prefix prose and suffix prose the LLM may have added around the JSON.
+///
+/// Algorithm:
+/// 1. Find the first `{` or `[`.
+/// 2. Walk forward tracking brace depth, skipping characters inside string
+///    literals (toggle `in_string` on unescaped `"`, skip next char on `\`).
+/// 3. Return a slice from the opener to the matching closer inclusive.
+/// 4. If no opener is found, return the full input (serde_json will give the error).
+fn extract_json_object(text: &str) -> &str {
+    // Find the first { or [
+    let (start_byte, opener) = match text
+        .char_indices()
+        .find(|(_, c)| *c == '{' || *c == '[')
+    {
+        Some(pair) => pair,
+        None => return text,
+    };
+
+    let closer = if opener == '{' { '}' } else { ']' };
+    let mut depth: u32 = 0;
+    let mut in_string = false;
+    let mut chars = text[start_byte..].char_indices().peekable();
+
+    while let Some((rel_pos, ch)) = chars.next() {
+        let abs_pos = start_byte + rel_pos;
+        if in_string {
+            match ch {
+                '\\' => {
+                    // skip the escaped character
+                    chars.next();
+                }
+                '"' => in_string = false,
+                _ => {}
+            }
+        } else {
+            match ch {
+                '"' => in_string = true,
+                c if c == opener => depth += 1,
+                c if c == closer => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &text[start_byte..=abs_pos];
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Malformed JSON — return from opener to end; let serde_json produce the real error
+    &text[start_byte..]
 }
 
 /// Strips ```json ... ``` or ``` ... ``` code fences from LLM output.
@@ -259,5 +314,53 @@ mod tests {
     fn test_strip_json_fences_no_fences() {
         let input = "{\"key\": \"value\"}";
         assert_eq!(strip_json_fences(input), "{\"key\": \"value\"}");
+    }
+
+    #[test]
+    fn test_extract_json_object_trailing_prose() {
+        let input = "{\"k\":\"v\"}\nHere is my analysis.";
+        assert_eq!(extract_json_object(input), "{\"k\":\"v\"}");
+    }
+
+    #[test]
+    fn test_extract_json_object_array() {
+        let input = "[1,2,3]\nsome text after";
+        assert_eq!(extract_json_object(input), "[1,2,3]");
+    }
+
+    #[test]
+    fn test_extract_json_object_brace_in_string() {
+        let input = "{\"k\":\"{not a brace}\"}\ntext";
+        assert_eq!(extract_json_object(input), "{\"k\":\"{not a brace}\"}");
+    }
+
+    #[test]
+    fn test_extract_json_object_nested() {
+        let input = "{\"a\":{\"b\":1}}\ntext";
+        assert_eq!(extract_json_object(input), "{\"a\":{\"b\":1}}");
+    }
+
+    #[test]
+    fn test_extract_json_object_escaped_quote() {
+        let input = "{\"k\":\"he said \\\"hi\\\"\"}\ntext";
+        assert_eq!(extract_json_object(input), "{\"k\":\"he said \\\"hi\\\"\"}");
+    }
+
+    #[test]
+    fn test_extract_json_object_no_json() {
+        let input = "plain text no json here";
+        assert_eq!(extract_json_object(input), input);
+    }
+
+    #[test]
+    fn test_extract_json_object_prefix_prose() {
+        let input = "Sure! Here you go:\n{\"k\":1}";
+        assert_eq!(extract_json_object(input), "{\"k\":1}");
+    }
+
+    #[test]
+    fn test_extract_json_object_clean_json() {
+        let input = "{\"source_match\": 0.9, \"interpolation_risk\": 0.1}";
+        assert_eq!(extract_json_object(input), input);
     }
 }
