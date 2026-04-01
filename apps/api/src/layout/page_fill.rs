@@ -206,6 +206,91 @@ fn keyword_match_score(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Page fill remediation pass
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Runs one page fill remediation pass after the simulation loop.
+/// Analyzes overall whitespace/overflow and executes the recommended action.
+/// Max 1 pass — does not recurse.
+pub async fn run_page_fill_pass(
+    mut result: crate::layout::simulator::SimulationResult,
+    config: &crate::layout::font_metrics::PageConfig,
+    parsed_jd: &crate::generation::jd_parser::ParsedJD,
+    llm: &crate::llm_client::LlmClient,
+) -> Result<crate::layout::simulator::SimulationResult, crate::errors::AppError> {
+    use crate::layout::contract::simulate_lines;
+    use crate::layout::font_metrics::get_metrics;
+    use crate::layout::simulator::{compress_bullet, estimate_char_budget, expand_bullet};
+
+    let analysis = analyze_page_fill(&result.bullets, config);
+    if matches!(analysis.verdict, PageFillVerdict::Acceptable) {
+        return Ok(result);
+    }
+
+    let action = recommend_fill_action(&analysis, &result.bullets, parsed_jd);
+
+    // Estimate char budget for a 1-line bullet at this page config
+    let metrics = get_metrics(&config.font);
+    let char_budget = estimate_char_budget(config);
+
+    match action {
+        FillAction::PromoteBullet { bullet_index } => {
+            if bullet_index < result.bullets.len() {
+                let two_line_budget = char_budget * 2;
+                let new_text = expand_bullet(
+                    &result.bullets[bullet_index].text,
+                    analysis.whitespace_fraction,
+                    two_line_budget,
+                    parsed_jd,
+                    llm,
+                    None,
+                )
+                .await
+                .unwrap_or_else(|_| result.bullets[bullet_index].text.clone());
+                result.bullets[bullet_index].text = new_text;
+                result.bullets[bullet_index].was_adjusted = true;
+                result.llm_calls_made += 1;
+                let (new_count, _) =
+                    simulate_lines(&result.bullets[bullet_index].text, metrics, config);
+                result.bullets[bullet_index].verified_line_count = new_count.max(1);
+            }
+        }
+        FillAction::CompressBullet { bullet_index } => {
+            if bullet_index < result.bullets.len() {
+                let actual_lines = result.bullets[bullet_index].verified_line_count;
+                let new_text = compress_bullet(
+                    &result.bullets[bullet_index].text,
+                    actual_lines,
+                    char_budget,
+                    parsed_jd,
+                    llm,
+                    None,
+                )
+                .await
+                .unwrap_or_else(|_| result.bullets[bullet_index].text.clone());
+                result.bullets[bullet_index].text = new_text;
+                result.bullets[bullet_index].was_adjusted = true;
+                result.llm_calls_made += 1;
+                let (new_count, _) =
+                    simulate_lines(&result.bullets[bullet_index].text, metrics, config);
+                result.bullets[bullet_index].verified_line_count = new_count.max(1);
+            }
+        }
+        FillAction::RemoveBullet { bullet_index } => {
+            if bullet_index < result.bullets.len() {
+                result.bullets.remove(bullet_index);
+            }
+        }
+        FillAction::TightenSpacing => {
+            result.tighten_spacing = true;
+        }
+        FillAction::NoAction => {}
+    }
+
+    Ok(result)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────────────────────
 

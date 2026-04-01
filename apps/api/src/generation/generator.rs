@@ -23,6 +23,7 @@ use crate::errors::AppError;
 use crate::generation::content_selector::{select_content, SelectionResult};
 use crate::generation::fit_scoring::{FitReport, FitScorer};
 use crate::generation::jd_parser::parse_jd;
+use crate::generation::{fit_cache, hash_utils};
 use crate::generation::prompts::{GENERATION_PROMPT_TEMPLATE, GENERATION_SYSTEM};
 use crate::generation::tone::{get_tone_examples, ToneExamples};
 use crate::grounding::scorer::{regenerate_single_bullet, score_bullet};
@@ -58,6 +59,9 @@ pub struct DraftBullet {
 pub struct GenerateRequest {
     pub user_id: Uuid,
     pub jd_text: String,
+    /// When true, bypass the fit score cache and force a fresh LLM call.
+    #[serde(default)]
+    pub force_refresh: bool,
     // Reserved for Phase 7 persona-aware generation
     #[allow(dead_code)]
     pub persona_id: Option<Uuid>,
@@ -125,8 +129,44 @@ pub async fn generate_resume(
         ));
     }
 
-    // Step 3: Fit score
-    let fit_report = fit_scorer.score(&entries, &parsed_jd).await?;
+    // Step 3: Fit score (cache-aware)
+    let jd_hash = hash_utils::compute_jd_hash(&request.jd_text);
+    let context_hash = hash_utils::compute_context_hash(&entries);
+
+    let fit_report = if !request.force_refresh {
+        match fit_cache::lookup_cache(pool, request.user_id, &jd_hash, &context_hash).await {
+            Ok(Some(cached)) => {
+                tracing::info!(user_id = %request.user_id, "fit score cache hit in generate_resume");
+                cached
+            }
+            Ok(None) => {
+                let report = fit_scorer.score(&entries, &parsed_jd).await?;
+                if let Err(e) =
+                    fit_cache::upsert_cache(pool, request.user_id, &jd_hash, &context_hash, &report)
+                        .await
+                {
+                    tracing::warn!(error = %e, "fit-score cache upsert failed (non-fatal)");
+                }
+                report
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "fit-score cache lookup failed, falling through to scorer"
+                );
+                fit_scorer.score(&entries, &parsed_jd).await?
+            }
+        }
+    } else {
+        let report = fit_scorer.score(&entries, &parsed_jd).await?;
+        if let Err(e) =
+            fit_cache::upsert_cache(pool, request.user_id, &jd_hash, &context_hash, &report).await
+        {
+            tracing::warn!(error = %e, "fit-score cache upsert failed (non-fatal)");
+        }
+        report
+    };
+
     info!(
         "Fit score: {}/100 for user {}",
         fit_report.overall_score, request.user_id
@@ -155,6 +195,11 @@ pub async fn generate_resume(
     // Replaces LLM's line_estimate with simulation-verified line counts.
     // Bullets that fail after max passes are flagged for human review (not rejected).
     let simulation = run_simulation_loop(draft_bullets, page_config, &parsed_jd, llm).await?;
+
+    // Page fill remediation pass — runs after simulation loop to fix whitespace/overflow.
+    let simulation =
+        crate::layout::page_fill::run_page_fill_pass(simulation, page_config, &parsed_jd, llm)
+            .await?;
 
     if simulation.flagged_count > 0 {
         warn!(
@@ -220,8 +265,8 @@ pub async fn generate_resume(
         sqlx::query(
             r#"
             INSERT INTO resume_bullets
-                (resume_id, section, bullet_text, source_entry_id, grounding_score, line_count)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (resume_id, section, bullet_text, source_entry_id, grounding_score, line_count, rejection_reason)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
         )
         .bind(resume_id)
@@ -230,6 +275,7 @@ pub async fn generate_resume(
         .bind(sim_bullet.source_entry_id)
         .bind(grounding_result.score.composite as f64)
         .bind(sim_bullet.verified_line_count as i16)
+        .bind(grounding_result.rejection_reason.as_deref())
         .execute(pool)
         .await?;
     }
@@ -456,6 +502,10 @@ fn build_generation_prompt(
                     "entry_id": re.entry.entry_id,
                     "entry_type": re.entry.entry_type,
                     "contribution_type": re.entry.contribution_type,
+                    "allowed_verbs": crate::generation::tone::filter_verbs_for_contribution(
+                        &tone_examples.strong_verbs,
+                        &re.entry.contribution_type
+                    ),
                     "tags": re.entry.tags,
                     "data": re.entry.data,
                     "combined_score": re.combined_score,
@@ -571,6 +621,148 @@ mod tests {
         let request: GenerateRequest = serde_json::from_value(json).unwrap();
         assert!(!request.jd_text.is_empty());
         assert!(request.persona_id.is_none());
+    }
+
+    fn make_ranked_entry_with_contribution(contribution_type: &str) -> crate::generation::content_selector::RankedEntry {
+        use crate::generation::content_selector::RankedEntry;
+        use crate::models::context::ContextEntryRow;
+        RankedEntry {
+            entry: ContextEntryRow {
+                id: Uuid::new_v4(),
+                user_id: Uuid::new_v4(),
+                entry_id: Uuid::new_v4(),
+                version: 1,
+                entry_type: "experience".to_string(),
+                data: serde_json::json!({"company": "ACME", "role": "Engineer"}),
+                raw_text: None,
+                recency_score: 0.9,
+                impact_score: 0.8,
+                tags: vec![],
+                flagged_evergreen: false,
+                contribution_type: contribution_type.to_string(),
+                quality_score: 1.0,
+                quality_flags: vec![],
+                created_at: chrono::Utc::now(),
+            },
+            combined_score: 0.85,
+            jd_relevance: 0.7,
+        }
+    }
+
+    #[test]
+    fn test_generation_prompt_team_member_allowed_verbs() {
+        use crate::generation::content_selector::SelectionResult;
+        use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals};
+        use crate::generation::tone::{filter_verbs_for_contribution, get_tone_examples};
+        use std::collections::HashMap;
+
+        let jd = ParsedJD {
+            hard_requirements: vec![Requirement { text: "Rust".to_string(), is_required: true }],
+            soft_signals: vec![],
+            role_signals: RoleSignals {
+                is_startup: true,
+                is_ic_focused: true,
+                is_research: false,
+                seniority: "senior".to_string(),
+            },
+            keyword_inventory: vec![KeywordEntry {
+                keyword: "Rust".to_string(),
+                frequency: 5,
+                position_weight: 0.8,
+                weighted_score: 4.0,
+            }],
+            detected_tone: JDTone::AggressiveStartup,
+        };
+
+        let tone_examples = get_tone_examples(&jd.detected_tone);
+        let entry = make_ranked_entry_with_contribution("team_member");
+
+        let selection = SelectionResult {
+            selected_entries: vec![entry],
+            excluded_entries: vec![],
+            section_weights: HashMap::new(),
+            reframe_hints: vec![],
+        };
+
+        let prompt = build_generation_prompt(&jd, &selection, &tone_examples).unwrap();
+
+        // Verify allowed_verbs for team_member via filter_verbs_for_contribution
+        // (same function used in build_generation_prompt) — and that the prompt
+        // doesn't carry "Architected" as an allowed verb for this entry.
+        let allowed_verbs = filter_verbs_for_contribution(&tone_examples.strong_verbs, "team_member");
+        assert!(
+            !allowed_verbs.contains(&"Architected"),
+            "team_member must NOT have 'Architected' in allowed_verbs, got: {:?}",
+            allowed_verbs
+        );
+
+        // The prompt itself must NOT contain "Architected" in an allowed_verbs context.
+        // Since build_generation_prompt serializes allowed_verbs per-entry, we can check
+        // the serialized form of the filtered verbs does not include "Architected".
+        let serialized = serde_json::to_string(&allowed_verbs).unwrap();
+        assert!(
+            !serialized.contains("Architected"),
+            "Serialized team_member allowed_verbs must not contain Architected: {}",
+            serialized
+        );
+        // Verify the prompt was built without panic
+        assert!(!prompt.is_empty());
+    }
+
+    #[test]
+    fn test_generation_prompt_sole_author_allowed_verbs() {
+        use crate::generation::content_selector::SelectionResult;
+        use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals};
+        use crate::generation::tone::{filter_verbs_for_contribution, get_tone_examples};
+        use std::collections::HashMap;
+
+        let jd = ParsedJD {
+            hard_requirements: vec![Requirement { text: "Rust".to_string(), is_required: true }],
+            soft_signals: vec![],
+            role_signals: RoleSignals {
+                is_startup: true,
+                is_ic_focused: true,
+                is_research: false,
+                seniority: "senior".to_string(),
+            },
+            keyword_inventory: vec![KeywordEntry {
+                keyword: "Rust".to_string(),
+                frequency: 5,
+                position_weight: 0.8,
+                weighted_score: 4.0,
+            }],
+            detected_tone: JDTone::AggressiveStartup,
+        };
+
+        let tone_examples = get_tone_examples(&jd.detected_tone);
+        let entry = make_ranked_entry_with_contribution("sole_author");
+
+        let selection = SelectionResult {
+            selected_entries: vec![entry],
+            excluded_entries: vec![],
+            section_weights: HashMap::new(),
+            reframe_hints: vec![],
+        };
+
+        let prompt = build_generation_prompt(&jd, &selection, &tone_examples).unwrap();
+
+        // Verify allowed_verbs for sole_author includes "Architected"
+        let allowed_verbs = filter_verbs_for_contribution(&tone_examples.strong_verbs, "sole_author");
+        assert!(
+            allowed_verbs.contains(&"Architected"),
+            "sole_author MUST have 'Architected' in allowed_verbs, got: {:?}",
+            allowed_verbs
+        );
+
+        // The serialized form of sole_author allowed_verbs must contain "Architected"
+        let serialized = serde_json::to_string(&allowed_verbs).unwrap();
+        assert!(
+            serialized.contains("Architected"),
+            "Serialized sole_author allowed_verbs must contain Architected: {}",
+            serialized
+        );
+        // Verify the prompt was built without panic
+        assert!(!prompt.is_empty());
     }
 
     #[test]

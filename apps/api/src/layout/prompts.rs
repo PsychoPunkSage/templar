@@ -20,7 +20,7 @@ A resume bullet is too short and must be expanded to fill more of the line.\n\
 \n\
 CURRENT BULLET: {bullet_text}\n\
 CURRENT FILL: {fill_percent}% of the line (minimum required: {required_percent}%)\n\
-CHARACTER BUDGET: approximately {char_budget} characters for the expanded bullet\n\
+CHARACTER BUDGET: between {min_char_budget} and {char_budget} characters\n\
 JD KEYWORDS TO PRIORITIZE: {jd_keywords}\n\
 \n\
 EXPANSION RULES:\n\
@@ -31,6 +31,7 @@ EXPANSION RULES:\n\
 5. The result MUST be 1 or 2 printed lines MAXIMUM\n\
 6. Prioritize the JD keywords listed above when adding detail\n\
 \n\
+{previous_attempt}\
 Return JSON only: {\"text\": \"expanded bullet text here\"}";
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -50,7 +51,7 @@ A resume bullet is too long and must be compressed to fit within 2 printed lines
 \n\
 CURRENT BULLET: {bullet_text}\n\
 CURRENT LINES: {actual_lines} printed lines (maximum allowed: 2)\n\
-CHARACTER BUDGET: approximately {char_budget} characters for the compressed bullet\n\
+CHARACTER BUDGET: MUST NOT exceed {char_budget} characters. Count carefully.\n\
 JD KEYWORDS TO PRESERVE: {jd_keywords}\n\
 \n\
 PRIORITY ORDER (keep > remove):\n\
@@ -61,4 +62,5 @@ PRIORITY ORDER (keep > remove):\n\
 5. REMOVE: Soft qualifiers (\"various\", \"multiple\", \"significant\")\n\
 6. REMOVE: Verbose prepositions and filler clauses\n\
 \n\
+{previous_attempt}\
 The result MUST fit within 2 printed lines. Return JSON only: {\"text\": \"compressed bullet text here\"}";

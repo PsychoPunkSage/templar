@@ -57,6 +57,8 @@ pub struct SimulationResult {
     pub violations_remaining: u32,
     pub flagged_count: u32,
     pub llm_calls_made: u32,
+    /// Set by the page fill pass when minor overflow is best resolved by tightening spacing.
+    pub tighten_spacing: bool,
 }
 
 /// Intermediate type for deserializing the LLM's adjust response.
@@ -90,7 +92,7 @@ pub async fn run_simulation_loop(
     let mut total_passes = 0u8;
     let mut llm_calls_made = 0u32;
 
-    for _pass in 0..MAX_PASSES {
+    for pass in 0..MAX_PASSES {
         total_passes += 1;
 
         // CPU-bound pass — spawn_blocking to avoid blocking the async executor.
@@ -113,18 +115,21 @@ pub async fn run_simulation_loop(
         for (idx, coverage_result) in &violations {
             let bullet = &mut sim_bullets[*idx];
             let char_budget = estimate_char_budget(config);
+            // On pass > 0, pass the current text as the failed previous attempt so the
+            // LLM can see what it tried before and correct its approach.
+            let prev = if pass == 0 { None } else { Some(bullet.text.as_str()) };
 
             let adjusted_text = match &coverage_result.verdict {
                 LineCoverageVerdict::TooShort { fill_ratio, .. } => {
                     llm_calls_made += 1;
-                    expand_bullet(&bullet.text, *fill_ratio, char_budget, parsed_jd, llm)
+                    expand_bullet(&bullet.text, *fill_ratio, char_budget, parsed_jd, llm, prev)
                         .await
                         .unwrap_or_else(|_| bullet.text.clone())
                 }
 
                 LineCoverageVerdict::TooLong { actual_lines } => {
                     llm_calls_made += 1;
-                    compress_bullet(&bullet.text, *actual_lines, char_budget, parsed_jd, llm)
+                    compress_bullet(&bullet.text, *actual_lines, char_budget, parsed_jd, llm, prev)
                         .await
                         .unwrap_or_else(|_| bullet.text.clone())
                 }
@@ -138,6 +143,7 @@ pub async fn run_simulation_loop(
                         char_budget * 2, // 2-line budget
                         parsed_jd,
                         llm,
+                        prev,
                     )
                     .await
                     .unwrap_or_else(|_| bullet.text.clone())
@@ -209,12 +215,123 @@ pub async fn run_simulation_loop(
         bullet.verified_line_count = count;
     }
 
+    // ── Enforce 2-line promotion eligibility rules ──────────────────────────
+    // Block A: If a bullet occupies 2 lines but doesn't meet promotion criteria,
+    // attempt to compress it to 1 line.
+    for i in 0..sim_bullets.len() {
+        if sim_bullets[i].verified_line_count != 2 {
+            continue;
+        }
+        let draft = crate::generation::generator::DraftBullet {
+            text: sim_bullets[i].text.clone(),
+            source_entry_id: sim_bullets[i].source_entry_id,
+            section: sim_bullets[i].section.clone(),
+            line_estimate: 2,
+            jd_keywords_used: sim_bullets[i].jd_keywords_used.clone(),
+        };
+        let promo = crate::layout::contract::score_promotion(&draft, parsed_jd);
+        if !promo.eligible_for_two_lines {
+            let char_budget = estimate_char_budget(config);
+            match compress_bullet(&sim_bullets[i].text, 2, char_budget, parsed_jd, llm, None).await {
+                Ok(compressed) => {
+                    sim_bullets[i].text = compressed;
+                    sim_bullets[i].was_adjusted = true;
+                    llm_calls_made += 1;
+                    let metrics = crate::layout::font_metrics::get_metrics(&config.font);
+                    let (new_count, _) = crate::layout::contract::simulate_lines(
+                        &sim_bullets[i].text,
+                        metrics,
+                        config,
+                    );
+                    sim_bullets[i].verified_line_count = new_count.max(1);
+                    if sim_bullets[i].verified_line_count == 2 {
+                        sim_bullets[i].flagged_for_review = true;
+                    }
+                }
+                Err(_) => {
+                    sim_bullets[i].flagged_for_review = true;
+                }
+            }
+        }
+    }
+
+    // ── Enforce max 3 two-line bullets per page ──────────────────────────────
+    // Block B: If more than 3 bullets are 2-line and not flagged, compress the
+    // lowest-JD-relevance one until the cap is respected.
+    const MAX_TWO_LINE: usize = 3;
+    loop {
+        let two_line_indices: Vec<usize> = sim_bullets
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.verified_line_count == 2 && !b.flagged_for_review)
+            .map(|(i, _)| i)
+            .collect();
+        if two_line_indices.len() <= MAX_TWO_LINE {
+            break;
+        }
+        let jd_kw_set: std::collections::HashSet<String> = parsed_jd
+            .keyword_inventory
+            .iter()
+            .map(|k| k.keyword.to_lowercase())
+            .collect();
+        let target_idx = *two_line_indices
+            .iter()
+            .min_by(|&&a, &&b| {
+                let sa = sim_bullets[a]
+                    .jd_keywords_used
+                    .iter()
+                    .filter(|kw| jd_kw_set.contains(&kw.to_lowercase()))
+                    .count();
+                let sb = sim_bullets[b]
+                    .jd_keywords_used
+                    .iter()
+                    .filter(|kw| jd_kw_set.contains(&kw.to_lowercase()))
+                    .count();
+                sa.cmp(&sb)
+            })
+            .unwrap();
+        let char_budget = estimate_char_budget(config);
+        match compress_bullet(
+            &sim_bullets[target_idx].text,
+            2,
+            char_budget,
+            parsed_jd,
+            llm,
+            None,
+        )
+        .await
+        {
+            Ok(compressed) => {
+                sim_bullets[target_idx].text = compressed;
+                sim_bullets[target_idx].was_adjusted = true;
+                llm_calls_made += 1;
+                let metrics = crate::layout::font_metrics::get_metrics(&config.font);
+                let (new_count, _) = crate::layout::contract::simulate_lines(
+                    &sim_bullets[target_idx].text,
+                    metrics,
+                    config,
+                );
+                sim_bullets[target_idx].verified_line_count = new_count.max(1);
+                if sim_bullets[target_idx].verified_line_count == 2 {
+                    // Compression failed — flag and break to prevent infinite loop
+                    sim_bullets[target_idx].flagged_for_review = true;
+                    break;
+                }
+            }
+            Err(_) => {
+                sim_bullets[target_idx].flagged_for_review = true;
+                break;
+            }
+        }
+    }
+
     Ok(SimulationResult {
         bullets: sim_bullets,
         total_passes,
         violations_remaining,
         flagged_count,
         llm_calls_made,
+        tighten_spacing: false,
     })
 }
 
@@ -251,14 +368,15 @@ pub(crate) fn run_single_pass_sync(
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Calls the LLM to expand a bullet that doesn't fill enough horizontal space.
-async fn expand_bullet(
+pub(crate) async fn expand_bullet(
     text: &str,
     fill_ratio: f32,
     char_budget: usize,
     parsed_jd: &ParsedJD,
     llm: &LlmClient,
+    previous_attempt: Option<&str>,
 ) -> Result<String, AppError> {
-    let prompt = build_expand_prompt(text, fill_ratio, char_budget, parsed_jd);
+    let prompt = build_expand_prompt(text, fill_ratio, char_budget, parsed_jd, previous_attempt);
     let result: AdjustedBullet = llm
         .call_json(&prompt, EXPAND_SYSTEM)
         .await
@@ -267,14 +385,15 @@ async fn expand_bullet(
 }
 
 /// Calls the LLM to compress a bullet that wraps to 3+ lines.
-async fn compress_bullet(
+pub(crate) async fn compress_bullet(
     text: &str,
     actual_lines: u8,
     char_budget: usize,
     parsed_jd: &ParsedJD,
     llm: &LlmClient,
+    previous_attempt: Option<&str>,
 ) -> Result<String, AppError> {
-    let prompt = build_compress_prompt(text, actual_lines, char_budget, parsed_jd);
+    let prompt = build_compress_prompt(text, actual_lines, char_budget, parsed_jd, previous_attempt);
     let result: AdjustedBullet = llm
         .call_json(&prompt, COMPRESS_SYSTEM)
         .await
@@ -291,14 +410,24 @@ pub(crate) fn build_expand_prompt(
     fill_ratio: f32,
     char_budget: usize,
     parsed_jd: &ParsedJD,
+    previous_attempt: Option<&str>,
 ) -> String {
     let jd_keywords = top_jd_keywords(parsed_jd, 5);
+    let min_char_budget = ((char_budget as f32) * 0.85).max(1.0) as usize;
     EXPAND_PROMPT_TEMPLATE
         .replace("{bullet_text}", text)
         .replace("{fill_percent}", &format!("{:.0}", fill_ratio * 100.0))
         .replace("{required_percent}", "80")
         .replace("{char_budget}", &char_budget.to_string())
+        .replace("{min_char_budget}", &min_char_budget.to_string())
         .replace("{jd_keywords}", &jd_keywords)
+        .replace(
+            "{previous_attempt}",
+            &match previous_attempt {
+                Some(prev) => format!("PREVIOUS ATTEMPT (still failed): {}\n", prev),
+                None => String::new(),
+            },
+        )
 }
 
 pub(crate) fn build_compress_prompt(
@@ -306,6 +435,7 @@ pub(crate) fn build_compress_prompt(
     actual_lines: u8,
     char_budget: usize,
     parsed_jd: &ParsedJD,
+    previous_attempt: Option<&str>,
 ) -> String {
     let jd_keywords = top_jd_keywords(parsed_jd, 5);
     COMPRESS_PROMPT_TEMPLATE
@@ -313,6 +443,13 @@ pub(crate) fn build_compress_prompt(
         .replace("{actual_lines}", &actual_lines.to_string())
         .replace("{char_budget}", &char_budget.to_string())
         .replace("{jd_keywords}", &jd_keywords)
+        .replace(
+            "{previous_attempt}",
+            &match previous_attempt {
+                Some(prev) => format!("PREVIOUS ATTEMPT (still failed): {}\n", prev),
+                None => String::new(),
+            },
+        )
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -336,7 +473,7 @@ pub(crate) fn init_simulated(bullets: Vec<DraftBullet>) -> Vec<SimulatedBullet> 
 }
 
 /// Estimates the maximum character count for a 1-line bullet at the current config.
-fn estimate_char_budget(config: &PageConfig) -> usize {
+pub(crate) fn estimate_char_budget(config: &PageConfig) -> usize {
     let metrics = get_metrics(&config.font);
     // text_width_em / average_char_width gives approximate chars per line
     (config.text_width_em / metrics.average_char_width).round() as usize
@@ -505,7 +642,7 @@ mod tests {
     #[test]
     fn test_build_expand_prompt_contains_bullet_text() {
         let jd = make_parsed_jd();
-        let prompt = build_expand_prompt("Built a system", 0.45, 82, &jd);
+        let prompt = build_expand_prompt("Built a system", 0.45, 82, &jd, None);
         assert!(
             prompt.contains("Built a system"),
             "prompt should contain original bullet"
@@ -520,7 +657,7 @@ mod tests {
     #[test]
     fn test_build_compress_prompt_contains_line_count() {
         let jd = make_parsed_jd();
-        let prompt = build_compress_prompt("A very long bullet that goes on and on", 4, 164, &jd);
+        let prompt = build_compress_prompt("A very long bullet that goes on and on", 4, 164, &jd, None);
         assert!(
             prompt.contains("4"),
             "prompt should contain actual line count"
@@ -531,11 +668,48 @@ mod tests {
     #[test]
     fn test_build_expand_prompt_includes_jd_keywords() {
         let jd = make_parsed_jd();
-        let prompt = build_expand_prompt("Did work", 0.30, 82, &jd);
+        let prompt = build_expand_prompt("Did work", 0.30, 82, &jd, None);
         assert!(
             prompt.contains("Rust") || prompt.contains("distributed"),
             "prompt should include JD keywords"
         );
+    }
+
+    #[test]
+    fn test_build_compress_prompt_hard_ceiling() {
+        let jd = make_parsed_jd();
+        let prompt = build_compress_prompt("some bullet", 3, 100, &jd, None);
+        assert!(prompt.contains("MUST NOT exceed"), "compress prompt must use hard ceiling language");
+        assert!(!prompt.contains("approximately"), "compress prompt must not use approximate language");
+    }
+
+    #[test]
+    fn test_build_expand_prompt_with_previous_attempt() {
+        let jd = make_parsed_jd();
+        let prompt = build_expand_prompt("short bullet", 0.5, 120, &jd, Some("old attempt text"));
+        assert!(
+            prompt.contains("PREVIOUS ATTEMPT (still failed): old attempt text"),
+            "prompt must include previous attempt"
+        );
+    }
+
+    #[test]
+    fn test_build_compress_prompt_with_previous_attempt() {
+        let jd = make_parsed_jd();
+        let prompt = build_compress_prompt("long bullet", 3, 100, &jd, Some("previous long text"));
+        assert!(
+            prompt.contains("PREVIOUS ATTEMPT (still failed): previous long text"),
+            "prompt must include previous attempt"
+        );
+    }
+
+    #[test]
+    fn test_build_expand_prompt_min_char_budget() {
+        let jd = make_parsed_jd();
+        let prompt = build_expand_prompt("bullet", 0.5, 120, &jd, None);
+        // min = floor(120 * 0.85) = 102
+        assert!(prompt.contains("102"), "prompt must contain min char budget 102");
+        assert!(prompt.contains("120"), "prompt must contain max char budget 120");
     }
 
     // ── flagged_for_review after max passes ─────────────────────────────────
