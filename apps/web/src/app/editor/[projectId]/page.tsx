@@ -24,6 +24,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { AlertCircle, X } from "lucide-react";
 import { JdInput } from "@/components/editor/JdInput";
 import { BulletList } from "@/components/editor/BulletList";
 import { FitReportPanel } from "@/components/editor/FitReportPanel";
@@ -52,6 +53,7 @@ export default function ProjectEditorPage() {
     generate,
     analyzeFit,
     autoLoadCachedFitScore,
+    loadResume,
     isGenerating,
     fitScoreLoading,
     fitScoreCacheHit,
@@ -60,9 +62,12 @@ export default function ProjectEditorPage() {
     error,
     clearError,
     bullets,
+    resumeId,
     jdText,
     setJdText,
     resetForProject,
+    renderStatus,
+    rerender,
   } = useResumeStore();
   const { currentProject, loadProject, loadTemplates } = useProjectStore();
 
@@ -82,16 +87,23 @@ export default function ProjectEditorPage() {
     loadTemplates();
   }, [projectId, loadProject, loadTemplates]);
 
-  // Effect 2: Populate JD after project data loads, then attempt a silent
-  // cache restore for the fit score — no LLM call, no loading spinner.
+  // Effect 2: Populate JD + restore saved resume after project data loads.
   // Only runs when the loaded project matches this page's projectId.
   useEffect(() => {
-    if (currentProject?.id === projectId && currentProject.last_jd_text) {
+    if (currentProject?.id !== projectId) return;
+
+    if (currentProject.last_jd_text) {
       setJdText(currentProject.last_jd_text);
       autoLoadCachedFitScore(currentProject.last_jd_text);
     }
+
+    // Restore previously-generated bullets from DB if the store is empty.
+    // This handles page refresh — bullets are in resume_bullets, not just memory.
+    if (currentProject.current_resume_id && !resumeId) {
+      loadResume(currentProject.current_resume_id);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentProject?.id, currentProject?.last_jd_text, projectId]);
+  }, [currentProject?.id, currentProject?.last_jd_text, currentProject?.current_resume_id, projectId]);
 
   // Effect 3: Auto-switch to bullets tab after generation completes.
   useEffect(() => {
@@ -131,7 +143,7 @@ export default function ProjectEditorPage() {
   return (
     <div className="flex flex-col h-[calc(100vh-53px)] bg-background">
       {/* Action bar — project context + two-button workflow */}
-      <div className="flex items-center justify-between px-6 py-2.5 border-b bg-background shrink-0">
+      <div className="flex items-center justify-between px-6 py-2.5 border-b bg-background/90 backdrop-blur-sm shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           {/* Back to projects */}
           <button
@@ -167,6 +179,22 @@ export default function ProjectEditorPage() {
           >
             {analyzeFitLabel}
           </Button>
+          {bullets.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => rerender()}
+              disabled={
+                renderStatus === "queued" ||
+                renderStatus === "rendering" ||
+                isGenerating
+              }
+            >
+              {renderStatus === "queued" || renderStatus === "rendering"
+                ? "Rendering..."
+                : "Render PDF"}
+            </Button>
+          )}
           <Button
             size="sm"
             onClick={() => generate(projectId)}
@@ -180,13 +208,16 @@ export default function ProjectEditorPage() {
       {/* Error banner */}
       {error && (
         <div className="mx-6 mt-2 px-3 py-2 bg-destructive/10 text-destructive text-sm rounded-md flex items-center justify-between shrink-0">
-          <span>{error}</span>
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{error}</span>
+          </div>
           <button
             onClick={clearError}
-            className="font-bold ml-4 hover:opacity-70 transition-opacity"
+            className="ml-4 hover:opacity-70 transition-opacity"
             aria-label="Dismiss error"
           >
-            x
+            <X className="h-4 w-4" />
           </button>
         </div>
       )}

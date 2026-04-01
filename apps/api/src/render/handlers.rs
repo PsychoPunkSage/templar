@@ -230,6 +230,33 @@ pub async fn handle_get_pdf(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to build PDF response: {e}")))
 }
 
+/// GET /api/v1/resumes/:resume_id/render-job
+///
+/// Returns the latest render job for a resume.
+/// Used by the frontend on page load to restore render state (e.g. after a refresh).
+/// Returns 404 if no render job exists yet for this resume.
+pub async fn handle_get_resume_render_job(
+    State(state): State<AppState>,
+    Path(resume_id): Path<Uuid>,
+) -> Result<Json<RenderStatusResponse>, AppError> {
+    let job = sqlx::query_as::<_, RenderJobRow>(
+        "SELECT * FROM render_jobs WHERE resume_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(resume_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("No render job for resume {resume_id}")))?;
+
+    Ok(Json(RenderStatusResponse {
+        job_id: job.id,
+        resume_id: job.resume_id,
+        status: job.status,
+        error_message: job.error_message,
+        created_at: job.created_at,
+        updated_at: job.updated_at,
+    }))
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────────────────────

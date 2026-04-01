@@ -173,10 +173,10 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setFilter('all')}
-              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
+              className={`text-xs px-3 py-1 rounded-full border transition-colors ${
                 filter === 'all'
-                  ? 'border-primary bg-primary/10 text-primary font-medium'
-                  : 'border-border text-muted-foreground hover:border-primary/50'
+                  ? 'border-primary bg-primary text-primary-foreground font-medium'
+                  : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground'
               }`}
             >
               All ({entries.length})
@@ -187,10 +187,10 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
                 <button
                   key={type}
                   onClick={() => setFilter(type)}
-                  className={`text-xs px-2.5 py-1 rounded-md border capitalize transition-colors ${
+                  className={`text-xs px-3 py-1 rounded-full border capitalize transition-colors ${
                     filter === type
-                      ? 'border-primary bg-primary/10 text-primary font-medium'
-                      : 'border-border text-muted-foreground hover:border-primary/50'
+                      ? 'border-primary bg-primary text-primary-foreground font-medium'
+                      : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground'
                   }`}
                 >
                   {sectionLabel(type)} ({count})

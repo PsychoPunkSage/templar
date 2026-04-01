@@ -19,6 +19,9 @@ pub struct ResumeRow {
     /// Added in migration 004: which file-based template was used (None = legacy font template).
     /// TEXT column referencing the templates directory name, not a FK.
     pub template_id: Option<String>,
+    /// Added in migration 009: SHA-256 hash of render inputs (template + profile + bullets).
+    /// Used for cache-hit detection — if unchanged, skip re-render.
+    pub content_hash: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -33,6 +36,7 @@ pub struct ResumeBulletRow {
     pub grounding_score: f64,
     pub is_user_edited: bool,
     pub line_count: i16,
+    pub rejection_reason: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

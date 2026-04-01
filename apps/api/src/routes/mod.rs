@@ -9,6 +9,7 @@ use axum::{
 use crate::context::handlers as ctx;
 use crate::generation::handlers as gen;
 use crate::grounding::handlers as grounding;
+use crate::profile::handlers as profile;
 use crate::projects::handlers as projects;
 use crate::render::handlers as render;
 use crate::state::AppState;
@@ -64,6 +65,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/resumes/:id/audit",
             get(grounding::handle_get_audit_manifest),
         )
+        .route(
+            "/api/v1/resumes/:id/render-job",
+            get(render::handle_get_resume_render_job),
+        )
         // ── Render API (Phase 4) ───────────────────────────────────────────
         .route("/api/v1/render", post(render::handle_trigger_render))
         .route("/api/v1/render/:job_id", get(render::handle_get_pdf))
@@ -97,6 +102,11 @@ pub fn build_router(state: AppState) -> Router {
             get(projects::handle_get_project)
                 .patch(projects::handle_update_project)
                 .delete(projects::handle_delete_project),
+        )
+        // ── Profile API (Issue 5) ──────────────────────────────────────────
+        .route(
+            "/api/v1/profile",
+            axum::routing::get(profile::handle_get_profile).put(profile::handle_upsert_profile),
         )
         .with_state(state)
         // 10 MB global body size limit — protects all endpoints, covers the

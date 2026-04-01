@@ -23,11 +23,50 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::render::templates::escape_latex;
+use crate::render::escape::escape_latex;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public types
 // ────────────────────────────────────────────────────────────────────────────
+
+/// Per-template itemize spacing settings, parsed from `metadata.json`.
+///
+/// Defaults match the legacy hardcoded string used before this struct was introduced,
+/// so existing templates that do not specify `section_formatting` behave identically.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectionFormatting {
+    #[serde(default = "default_leftmargin")]
+    pub leftmargin: String,
+    #[serde(default = "default_itemsep")]
+    pub itemsep: String,
+    #[serde(default = "default_parsep")]
+    pub parsep: String,
+    #[serde(default = "default_topsep")]
+    pub topsep: String,
+}
+fn default_leftmargin() -> String {
+    "1.5em".to_string()
+}
+fn default_itemsep() -> String {
+    "1pt".to_string()
+}
+fn default_parsep() -> String {
+    "0pt".to_string()
+}
+fn default_topsep() -> String {
+    "2pt".to_string()
+}
+
+impl Default for SectionFormatting {
+    fn default() -> Self {
+        Self {
+            leftmargin: default_leftmargin(),
+            itemsep: default_itemsep(),
+            parsep: default_parsep(),
+            topsep: default_topsep(),
+        }
+    }
+}
 
 /// Metadata about a single template, loaded from `metadata.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +80,9 @@ pub struct TemplateMetadata {
     pub engine: String,
     /// S3 key for the pre-generated thumbnail PNG.
     pub thumbnail_s3_key: String,
+    /// Optional itemize spacing overrides. Defaults match legacy hardcoded values.
+    #[serde(default)]
+    pub section_formatting: Option<SectionFormatting>,
 }
 
 /// A user's contact/profile information, used to fill header placeholders.
@@ -50,10 +92,10 @@ pub struct ProfileData {
     pub email: String,
     pub phone: String,
     pub location: String,
-    /// LinkedIn handle or URL path (e.g. "in/username")
-    pub linkedin: String,
-    /// Personal website URL (optional)
-    pub website: String,
+    /// Pre-resolved links to show in the PDF header.
+    /// Each tuple is (display_text, url) where display_text is alias ?? label ?? type.
+    #[serde(default)]
+    pub header_links: Vec<(String, String)>,
 }
 
 /// A single section of sample content used to render template thumbnails.
@@ -225,7 +267,13 @@ pub fn render_file_template(
     let contact_line = build_contact_line(profile);
 
     // Build the sections LaTeX block (same format as build_latex_document's body)
-    let sections_latex = build_sections_latex(sections);
+    let fmt = template
+        .metadata
+        .section_formatting
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+    let sections_latex = build_sections_latex(sections, &fmt);
 
     // Apply all placeholder substitutions in a single chained replace.
     // Each value is already LaTeX-escaped before substitution.
@@ -261,33 +309,42 @@ fn build_contact_line(profile: &ProfileData) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if !profile.email.is_empty() {
-        // Email: use \href so it's clickable in the PDF
+        // \faIcon{name} is the stable cross-mode FA5 API — works in pdflatex generic mode.
+        // \faEnvelope / \faPhone* / \faMapMarkerAlt are CamelCase aliases that are NOT
+        // reliably defined in the pdflatex generic helper; \faIcon{css-name} always is.
         parts.push(format!(
-            r"\faEnvelope\ \href{{mailto:{email}}}{{{escaped}}}",
+            r"\faIcon{{envelope}}\ \href{{mailto:{email}}}{{{escaped}}}",
             email = profile.email,
             escaped = escape_latex(&profile.email),
         ));
     }
     if !profile.phone.is_empty() {
-        parts.push(format!(r"\faPhone*\ {}", escape_latex(&profile.phone)));
+        parts.push(format!(
+            r"\faIcon{{phone}}\ {}",
+            escape_latex(&profile.phone)
+        ));
     }
     if !profile.location.is_empty() {
         parts.push(format!(
-            r"\faMapMarkerAlt\ {}",
+            r"\faIcon{{map-marker-alt}}\ {}",
             escape_latex(&profile.location)
         ));
     }
-    if !profile.linkedin.is_empty() {
-        // LinkedIn: wrap as hyperlink if it looks like a path (starts with "in/")
-        let display = escape_latex(&profile.linkedin);
-        parts.push(format!(r"\faLinkedin\ {display}"));
-    }
-    if !profile.website.is_empty() {
-        let display = escape_latex(&profile.website);
-        parts.push(format!(r"\faGlobe\ {display}"));
+    for (display, url) in &profile.header_links {
+        if !display.is_empty() {
+            if url.is_empty() {
+                parts.push(escape_latex(display));
+            } else {
+                parts.push(format!(
+                    r"\href{{{}}}{{\texttt{{{}}}}}",
+                    url,
+                    escape_latex(display)
+                ));
+            }
+        }
     }
 
-    // Join with a spaced bar separator — LaTeX \quad gives even visual spacing
+    // Join with a spaced bar separator
     parts.join(r" \quad\textbar\quad ")
 }
 
@@ -295,8 +352,12 @@ fn build_contact_line(profile: &ProfileData) -> String {
 /// blocks for each section.
 ///
 /// All bullet text is run through `escape_latex()` here.
-fn build_sections_latex(sections: &[SampleSection]) -> String {
-    let item_opts = "leftmargin=1.5em, itemsep=1pt, parsep=0pt, topsep=2pt";
+/// Itemize spacing is controlled by `fmt` — defaults match the legacy hardcoded values.
+fn build_sections_latex(sections: &[SampleSection], fmt: &SectionFormatting) -> String {
+    let item_opts = format!(
+        "leftmargin={}, itemsep={}, parsep={}, topsep={}",
+        fmt.leftmargin, fmt.itemsep, fmt.parsep, fmt.topsep
+    );
     let mut out = String::new();
 
     for section in sections {
@@ -518,8 +579,10 @@ mod tests {
             email: "jane@example.com".to_string(),
             phone: "+1 555 000 0000".to_string(),
             location: "New York, NY".to_string(),
-            linkedin: "in/janedoe".to_string(),
-            website: "".to_string(), // empty — should be omitted from contact line
+            header_links: vec![(
+                "in/janedoe".to_string(),
+                "https://linkedin.com/in/janedoe".to_string(),
+            )],
         }
     }
 
@@ -547,18 +610,21 @@ mod tests {
     fn test_build_contact_line_omits_empty_fields() {
         let profile = sample_profile();
         let line = build_contact_line(&profile);
-        // website is empty — should not appear
+        // email must appear with the stable \faIcon{envelope} form
         assert!(
-            !line.contains("faGlobe"),
-            "empty website field must not produce icon"
+            line.contains(r"\faIcon{envelope}"),
+            "email must produce envelope icon via \\faIcon"
         );
-        // email must appear
+        // phone must appear with the stable \faIcon{phone} form
         assert!(
-            line.contains("faEnvelope"),
-            "email must produce envelope icon"
+            line.contains(r"\faIcon{phone}"),
+            "phone must produce phone icon via \\faIcon"
         );
-        // phone must appear
-        assert!(line.contains("faPhone"), "phone must produce phone icon");
+        // header_links entry must appear
+        assert!(
+            line.contains("janedoe"),
+            "header_links display text must appear in contact line"
+        );
     }
 
     #[test]
@@ -575,7 +641,7 @@ mod tests {
     #[test]
     fn test_build_sections_latex_skips_empty() {
         let sections = sample_sections();
-        let latex = build_sections_latex(&sections);
+        let latex = build_sections_latex(&sections, &SectionFormatting::default());
         // Empty Section has no bullets — must not appear in output
         assert!(
             !latex.contains("Empty Section"),
@@ -595,7 +661,7 @@ mod tests {
             name: "Wins".to_string(),
             bullets: vec!["Saved $50k".to_string()],
         }];
-        let latex = build_sections_latex(&sections);
+        let latex = build_sections_latex(&sections, &SectionFormatting::default());
         assert!(
             latex.contains(r"\$50k"),
             "dollar sign in bullet must be LaTeX-escaped"
@@ -613,6 +679,7 @@ mod tests {
                 tags: vec![],
                 engine: "pdflatex".to_string(),
                 thumbnail_s3_key: "thumbnails/test.png".to_string(),
+                section_formatting: None,
             },
             latex_source: "Name: {{FULL_NAME}}\n{{CONTACT_LINE}}\n{{SECTIONS}}".to_string(),
             sample_data: SampleData {
@@ -681,5 +748,48 @@ mod tests {
             t.latex_source.contains(r"\documentclass"),
             "template.tex must contain a \\documentclass declaration"
         );
+        assert_eq!(
+            t.latex_source.matches("\\usepackage{hyperref}").count(),
+            0,
+            "bare hyperref without options must not appear"
+        );
+        assert!(
+            t.latex_source.contains("\\usepackage[hidelinks]{hyperref}"),
+            "hidelinks variant must be present"
+        );
+    }
+
+    #[test]
+    fn test_section_formatting_defaults_match_legacy_hardcoded_values() {
+        let fmt = SectionFormatting::default();
+        let opts = format!(
+            "leftmargin={}, itemsep={}, parsep={}, topsep={}",
+            fmt.leftmargin, fmt.itemsep, fmt.parsep, fmt.topsep
+        );
+        assert_eq!(
+            opts, "leftmargin=1.5em, itemsep=1pt, parsep=0pt, topsep=2pt",
+            "Default SectionFormatting must match the legacy hardcoded itemize settings"
+        );
+    }
+
+    #[test]
+    fn test_build_sections_latex_uses_custom_formatting() {
+        let fmt = SectionFormatting {
+            leftmargin: "2em".to_string(),
+            itemsep: "3pt".to_string(),
+            parsep: "1pt".to_string(),
+            topsep: "4pt".to_string(),
+        };
+        let sections = vec![SampleSection {
+            name: "Skills".to_string(),
+            bullets: vec!["Rust".to_string(), "SQL".to_string()],
+        }];
+        let latex = build_sections_latex(&sections, &fmt);
+        assert!(
+            latex.contains("leftmargin=2em, itemsep=3pt, parsep=1pt, topsep=4pt"),
+            "LaTeX output must reflect custom formatting values"
+        );
+        assert!(latex.contains("\\item Rust"));
+        assert!(latex.contains("\\item SQL"));
     }
 }

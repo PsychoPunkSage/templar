@@ -68,9 +68,9 @@ export function FitReportPanel() {
             </Badge>
           )}
         </div>
-        <span className={`text-2xl font-bold ${scoreColor}`}>
+        <span className={`text-4xl font-bold tabular-nums leading-none ${scoreColor}`}>
           {fitReport.overall_score}
-          <span className="text-sm font-normal text-muted-foreground">
+          <span className="text-sm font-normal text-muted-foreground ml-0.5">
             /100
           </span>
         </span>
@@ -93,8 +93,8 @@ export function FitReportPanel() {
             {fitReport.strong_matches.slice(0, 8).map((m: FitMatch) => (
               <Badge
                 key={m.dimension}
-                variant="default"
-                className="text-xs"
+                variant="outline"
+                className="text-xs text-primary border-primary/40"
                 title={m.jd_requirement}
               >
                 {m.dimension}

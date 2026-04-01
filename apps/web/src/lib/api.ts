@@ -10,6 +10,9 @@ import type {
   ContextEntriesResponse,
   FitScoreResponse,
   FitReport,
+  UserProfileResponse,
+  UpsertProfileRequest,
+  ProfileLinkData,
 } from "@templar/types";
 
 /**
@@ -100,6 +103,18 @@ export const api = {
    */
   getAuditManifest: (id: string) =>
     apiFetch<AuditManifest>(`/api/v1/resumes/${id}/audit`),
+
+  /**
+   * GET /api/v1/resumes/:id/render-job
+   * Returns the latest render job for a resume (job_id + status).
+   * Used on page load to restore render state after a refresh.
+   * Returns null if no render job exists yet (404).
+   */
+  getResumeRenderJob: async (resumeId: string): Promise<{ job_id: string; status: string } | null> => {
+    const res = await fetch(`${API_BASE}/api/v1/resumes/${resumeId}/render-job`);
+    if (!res.ok) return null;
+    return res.json() as Promise<{ job_id: string; status: string }>;
+  },
 
   /**
    * POST /api/v1/render
@@ -237,4 +252,15 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ user_id: userId, patch }),
     }),
+
+  getProfile: (userId: string) =>
+    apiFetch<UserProfileResponse>(`/api/v1/profile?user_id=${userId}`),
+
+  updateProfile: (req: UpsertProfileRequest) =>
+    apiFetch<UserProfileResponse>("/api/v1/profile", {
+      method: "PUT",
+      body: JSON.stringify(req),
+    }),
 };
+
+export type { UserProfileResponse, UpsertProfileRequest, ProfileLinkData };

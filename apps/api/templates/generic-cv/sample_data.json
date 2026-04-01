@@ -4,8 +4,10 @@
     "email": "alex.johnson@email.com",
     "phone": "+1 (555) 867-5309",
     "location": "San Francisco, CA",
-    "linkedin": "in/alexjohnson",
-    "website": "alexjohnson.dev"
+    "header_links": [
+      ["in/alexjohnson", "https://linkedin.com/in/alexjohnson"],
+      ["alexjohnson.dev", "https://alexjohnson.dev"]
+    ]
   },
   "sections": [
     {

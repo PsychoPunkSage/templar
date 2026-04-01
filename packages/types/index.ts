@@ -27,6 +27,30 @@ export interface SimulatedBullet {
 // Database row types
 // ─────────────────────────────────────────────────────────────────────────────
 
+export interface ProfileLinkData {
+  type: string;
+  label?: string;
+  url: string;
+  alias?: string;
+}
+
+export interface UpsertProfileRequest {
+  user_id: string;
+  full_name?: string;
+  email?: string;
+  phone?: string;
+  location?: string;
+  links?: ProfileLinkData[];
+}
+
+export interface UserProfileResponse {
+  full_name: string;
+  email: string;
+  phone: string;
+  location: string;
+  links: ProfileLinkData[];
+}
+
 /**
  * A resume bullet row from the database.
  * Mirrors: apps/api/src/models/resume.rs — ResumeBulletRow
@@ -41,6 +65,8 @@ export interface ResumeBulletRow {
   is_user_edited: boolean
   line_count: number
   created_at: string
+  /** Set when grounding score failed — from migration 007. */
+  rejection_reason: string | null
 }
 
 /**

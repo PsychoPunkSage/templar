@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
@@ -448,7 +449,7 @@ export default function ContextEntryCard({
           onToggle()
         }
       }}
-      className="border rounded-lg p-4 hover:bg-muted/40 transition-colors cursor-pointer space-y-3 select-none"
+      className="border rounded-xl p-4 hover:bg-muted/40 transition-colors cursor-pointer space-y-3 select-none"
     >
       {/* ── Collapsed header ─────────────────────────────────────────── */}
       <div className="flex items-start gap-3">
@@ -493,9 +494,10 @@ export default function ContextEntryCard({
           )}
 
           {/* Expand/collapse chevron */}
-          <span className="text-muted-foreground text-xs" aria-hidden>
-            {isExpanded ? '▲' : '▼'}
-          </span>
+          <ChevronDown
+            className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+            aria-hidden
+          />
         </div>
       </div>
 
