@@ -29,7 +29,7 @@ pub async fn handle_get_audit_manifest(
     Path(resume_id): Path<Uuid>,
 ) -> Result<Json<AuditManifest>, AppError> {
     // Step 1: Verify resume exists
-    let _resume = sqlx::query_as::<_, ResumeRow>("SELECT * FROM resumes WHERE id = $1")
+    let resume = sqlx::query_as::<_, ResumeRow>("SELECT * FROM resumes WHERE id = $1")
         .bind(resume_id)
         .fetch_optional(&state.db)
         .await?
@@ -44,7 +44,7 @@ pub async fn handle_get_audit_manifest(
     .await?;
 
     // Step 3: Build manifest from persisted rows
-    let manifest = manifest_from_bullet_rows(resume_id, &bullets);
+    let manifest = manifest_from_bullet_rows(resume_id, resume.created_at, &bullets);
 
     Ok(Json(manifest))
 }

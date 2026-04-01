@@ -65,7 +65,11 @@ pub fn build_audit_manifest(
 ///
 /// Uses the stored `grounding_score` value to infer the verdict via the same
 /// threshold constants used at scoring time (≥ 0.80 = Pass, ≥ 0.65 = FlagForReview).
-pub fn manifest_from_bullet_rows(resume_id: Uuid, bullets: &[ResumeBulletRow]) -> AuditManifest {
+pub fn manifest_from_bullet_rows(
+    resume_id: Uuid,
+    resume_created_at: chrono::DateTime<chrono::Utc>,
+    bullets: &[ResumeBulletRow],
+) -> AuditManifest {
     let total = bullets.len() as u32;
     let mut bullets_rejected = 0u32;
     let mut bullets_flagged = 0u32;
@@ -89,7 +93,7 @@ pub fn manifest_from_bullet_rows(resume_id: Uuid, bullets: &[ResumeBulletRow]) -
                 source_entry_id: row.source_entry_id,
                 composite_score: composite,
                 verdict: verdict_str,
-                rejection_reason: None, // not persisted in current schema
+                rejection_reason: row.rejection_reason.clone(),
                 section: row.section.clone(),
             }
         })
@@ -103,7 +107,7 @@ pub fn manifest_from_bullet_rows(resume_id: Uuid, bullets: &[ResumeBulletRow]) -
 
     AuditManifest {
         resume_id,
-        generated_at: Utc::now(),
+        generated_at: resume_created_at,
         entries,
         overall_pass_rate,
         bullets_rejected,
@@ -216,6 +220,7 @@ mod tests {
                 grounding_score: 0.88, // pass
                 is_user_edited: false,
                 line_count: 1,
+                rejection_reason: None,
                 created_at: now,
             },
             ResumeBulletRow {
@@ -227,6 +232,7 @@ mod tests {
                 grounding_score: 0.70, // flag_for_review
                 is_user_edited: false,
                 line_count: 1,
+                rejection_reason: None,
                 created_at: now,
             },
             ResumeBulletRow {
@@ -238,11 +244,12 @@ mod tests {
                 grounding_score: 0.40, // fail
                 is_user_edited: false,
                 line_count: 1,
+                rejection_reason: None,
                 created_at: now,
             },
         ];
 
-        let manifest = manifest_from_bullet_rows(resume_id, &rows);
+        let manifest = manifest_from_bullet_rows(resume_id, now, &rows);
         assert_eq!(manifest.resume_id, resume_id);
         assert_eq!(manifest.entries.len(), 3);
         assert_eq!(manifest.bullets_rejected, 1);
