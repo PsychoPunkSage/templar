@@ -23,9 +23,9 @@ use crate::errors::AppError;
 use crate::generation::content_selector::{select_content, SelectionResult};
 use crate::generation::fit_scoring::{FitReport, FitScorer};
 use crate::generation::jd_parser::parse_jd;
-use crate::generation::{fit_cache, hash_utils};
 use crate::generation::prompts::{GENERATION_PROMPT_TEMPLATE, GENERATION_SYSTEM};
 use crate::generation::tone::{get_tone_examples, ToneExamples};
+use crate::generation::{fit_cache, hash_utils};
 use crate::grounding::scorer::{regenerate_single_bullet, score_bullet};
 use crate::grounding::types::{GroundingResult, GroundingVerdict};
 use crate::layout::{run_simulation_loop, PageConfig, SimulatedBullet};
@@ -623,7 +623,9 @@ mod tests {
         assert!(request.persona_id.is_none());
     }
 
-    fn make_ranked_entry_with_contribution(contribution_type: &str) -> crate::generation::content_selector::RankedEntry {
+    fn make_ranked_entry_with_contribution(
+        contribution_type: &str,
+    ) -> crate::generation::content_selector::RankedEntry {
         use crate::generation::content_selector::RankedEntry;
         use crate::models::context::ContextEntryRow;
         RankedEntry {
@@ -652,12 +654,17 @@ mod tests {
     #[test]
     fn test_generation_prompt_team_member_allowed_verbs() {
         use crate::generation::content_selector::SelectionResult;
-        use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals};
+        use crate::generation::jd_parser::{
+            JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals,
+        };
         use crate::generation::tone::{filter_verbs_for_contribution, get_tone_examples};
         use std::collections::HashMap;
 
         let jd = ParsedJD {
-            hard_requirements: vec![Requirement { text: "Rust".to_string(), is_required: true }],
+            hard_requirements: vec![Requirement {
+                text: "Rust".to_string(),
+                is_required: true,
+            }],
             soft_signals: vec![],
             role_signals: RoleSignals {
                 is_startup: true,
@@ -689,7 +696,8 @@ mod tests {
         // Verify allowed_verbs for team_member via filter_verbs_for_contribution
         // (same function used in build_generation_prompt) — and that the prompt
         // doesn't carry "Architected" as an allowed verb for this entry.
-        let allowed_verbs = filter_verbs_for_contribution(&tone_examples.strong_verbs, "team_member");
+        let allowed_verbs =
+            filter_verbs_for_contribution(&tone_examples.strong_verbs, "team_member");
         assert!(
             !allowed_verbs.contains(&"Architected"),
             "team_member must NOT have 'Architected' in allowed_verbs, got: {:?}",
@@ -712,12 +720,17 @@ mod tests {
     #[test]
     fn test_generation_prompt_sole_author_allowed_verbs() {
         use crate::generation::content_selector::SelectionResult;
-        use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals};
+        use crate::generation::jd_parser::{
+            JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals,
+        };
         use crate::generation::tone::{filter_verbs_for_contribution, get_tone_examples};
         use std::collections::HashMap;
 
         let jd = ParsedJD {
-            hard_requirements: vec![Requirement { text: "Rust".to_string(), is_required: true }],
+            hard_requirements: vec![Requirement {
+                text: "Rust".to_string(),
+                is_required: true,
+            }],
             soft_signals: vec![],
             role_signals: RoleSignals {
                 is_startup: true,
@@ -747,7 +760,8 @@ mod tests {
         let prompt = build_generation_prompt(&jd, &selection, &tone_examples).unwrap();
 
         // Verify allowed_verbs for sole_author includes "Architected"
-        let allowed_verbs = filter_verbs_for_contribution(&tone_examples.strong_verbs, "sole_author");
+        let allowed_verbs =
+            filter_verbs_for_contribution(&tone_examples.strong_verbs, "sole_author");
         assert!(
             allowed_verbs.contains(&"Architected"),
             "sole_author MUST have 'Architected' in allowed_verbs, got: {:?}",

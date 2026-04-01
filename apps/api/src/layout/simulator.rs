@@ -117,7 +117,11 @@ pub async fn run_simulation_loop(
             let char_budget = estimate_char_budget(config);
             // On pass > 0, pass the current text as the failed previous attempt so the
             // LLM can see what it tried before and correct its approach.
-            let prev = if pass == 0 { None } else { Some(bullet.text.as_str()) };
+            let prev = if pass == 0 {
+                None
+            } else {
+                Some(bullet.text.as_str())
+            };
 
             let adjusted_text = match &coverage_result.verdict {
                 LineCoverageVerdict::TooShort { fill_ratio, .. } => {
@@ -129,9 +133,16 @@ pub async fn run_simulation_loop(
 
                 LineCoverageVerdict::TooLong { actual_lines } => {
                     llm_calls_made += 1;
-                    compress_bullet(&bullet.text, *actual_lines, char_budget, parsed_jd, llm, prev)
-                        .await
-                        .unwrap_or_else(|_| bullet.text.clone())
+                    compress_bullet(
+                        &bullet.text,
+                        *actual_lines,
+                        char_budget,
+                        parsed_jd,
+                        llm,
+                        prev,
+                    )
+                    .await
+                    .unwrap_or_else(|_| bullet.text.clone())
                 }
 
                 LineCoverageVerdict::SecondLineTooShort { fill_ratio } => {
@@ -232,7 +243,8 @@ pub async fn run_simulation_loop(
         let promo = crate::layout::contract::score_promotion(&draft, parsed_jd);
         if !promo.eligible_for_two_lines {
             let char_budget = estimate_char_budget(config);
-            match compress_bullet(&sim_bullets[i].text, 2, char_budget, parsed_jd, llm, None).await {
+            match compress_bullet(&sim_bullets[i].text, 2, char_budget, parsed_jd, llm, None).await
+            {
                 Ok(compressed) => {
                     sim_bullets[i].text = compressed;
                     sim_bullets[i].was_adjusted = true;
@@ -393,7 +405,8 @@ pub(crate) async fn compress_bullet(
     llm: &LlmClient,
     previous_attempt: Option<&str>,
 ) -> Result<String, AppError> {
-    let prompt = build_compress_prompt(text, actual_lines, char_budget, parsed_jd, previous_attempt);
+    let prompt =
+        build_compress_prompt(text, actual_lines, char_budget, parsed_jd, previous_attempt);
     let result: AdjustedBullet = llm
         .call_json(&prompt, COMPRESS_SYSTEM)
         .await
@@ -657,7 +670,8 @@ mod tests {
     #[test]
     fn test_build_compress_prompt_contains_line_count() {
         let jd = make_parsed_jd();
-        let prompt = build_compress_prompt("A very long bullet that goes on and on", 4, 164, &jd, None);
+        let prompt =
+            build_compress_prompt("A very long bullet that goes on and on", 4, 164, &jd, None);
         assert!(
             prompt.contains("4"),
             "prompt should contain actual line count"
@@ -679,8 +693,14 @@ mod tests {
     fn test_build_compress_prompt_hard_ceiling() {
         let jd = make_parsed_jd();
         let prompt = build_compress_prompt("some bullet", 3, 100, &jd, None);
-        assert!(prompt.contains("MUST NOT exceed"), "compress prompt must use hard ceiling language");
-        assert!(!prompt.contains("approximately"), "compress prompt must not use approximate language");
+        assert!(
+            prompt.contains("MUST NOT exceed"),
+            "compress prompt must use hard ceiling language"
+        );
+        assert!(
+            !prompt.contains("approximately"),
+            "compress prompt must not use approximate language"
+        );
     }
 
     #[test]
@@ -708,8 +728,14 @@ mod tests {
         let jd = make_parsed_jd();
         let prompt = build_expand_prompt("bullet", 0.5, 120, &jd, None);
         // min = floor(120 * 0.85) = 102
-        assert!(prompt.contains("102"), "prompt must contain min char budget 102");
-        assert!(prompt.contains("120"), "prompt must contain max char budget 120");
+        assert!(
+            prompt.contains("102"),
+            "prompt must contain min char budget 102"
+        );
+        assert!(
+            prompt.contains("120"),
+            "prompt must contain max char budget 120"
+        );
     }
 
     // ── flagged_for_review after max passes ─────────────────────────────────

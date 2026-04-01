@@ -265,20 +265,16 @@ async fn process_render_job(
         // Compute a content hash covering template + profile + sections.
         // If the hash matches the stored value AND a PDF already exists in S3,
         // we skip compilation entirely — the rendered PDF is still valid.
-        let new_hash = compute_render_hash(
-            resume_template_id.as_deref(),
-            &profile,
-            &params.sections,
-        );
+        let new_hash =
+            compute_render_hash(resume_template_id.as_deref(), &profile, &params.sections);
 
         // Cache-hit check: query current hash + pdf key from DB
-        let cached: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT content_hash, s3_pdf_key FROM resumes WHERE id = $1",
-        )
-        .bind(resume_id)
-        .fetch_optional(db)
-        .await
-        .unwrap_or(None);
+        let cached: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT content_hash, s3_pdf_key FROM resumes WHERE id = $1")
+                .bind(resume_id)
+                .fetch_optional(db)
+                .await
+                .unwrap_or(None);
 
         if let Some((Some(existing_hash), Some(_pdf_key))) = cached {
             if existing_hash == new_hash {
@@ -298,8 +294,13 @@ async fn process_render_job(
         //   b) template_id set but not in cache → warn, try generic-cv
         //   c) generic-cv in cache → render_file_template() with generic-cv
         //   d) nothing in cache → build_minimal_pdflatex_document()
-        let latex_source =
-            build_latex_for_job(&params, resume_template_id.as_deref(), template_cache, profile).await;
+        let latex_source = build_latex_for_job(
+            &params,
+            resume_template_id.as_deref(),
+            template_cache,
+            profile,
+        )
+        .await;
         info!(
             job_id = %job_id,
             resume_id = %resume_id,
@@ -313,9 +314,7 @@ async fn process_render_job(
             resume_id = %resume_id,
             "Render job: spawning pdflatex compiler"
         );
-        let pdflatex_result = compile_latex(&latex_source, job_id)
-        .await
-        .map_err(|e| {
+        let pdflatex_result = compile_latex(&latex_source, job_id).await.map_err(|e| {
             // Log failure with FULL stderr before propagating the error.
             if let RenderError::CompilationFailed {
                 exit_code,
@@ -667,8 +666,7 @@ async fn fetch_user_profile(
         return Ok(ProfileData::default());
     };
 
-    let all_links: Vec<ProfileLink> =
-        serde_json::from_value(p.links).unwrap_or_default();
+    let all_links: Vec<ProfileLink> = serde_json::from_value(p.links).unwrap_or_default();
 
     let header_links: Vec<(String, String)> = all_links
         .into_iter()
@@ -886,16 +884,15 @@ mod tests {
     fn test_compute_render_hash_stable_across_section_order() {
         let profile = make_profile("Alice");
         // Same sections, different insertion order
-        let sections_ab = make_sections(&[
-            ("Experience", &["Built A"]),
-            ("Education", &["B.S. CS"]),
-        ]);
-        let sections_ba = make_sections(&[
-            ("Education", &["B.S. CS"]),
-            ("Experience", &["Built A"]),
-        ]);
+        let sections_ab =
+            make_sections(&[("Experience", &["Built A"]), ("Education", &["B.S. CS"])]);
+        let sections_ba =
+            make_sections(&[("Education", &["B.S. CS"]), ("Experience", &["Built A"])]);
         let h1 = compute_render_hash(Some("generic-cv"), &profile, &sections_ab);
         let h2 = compute_render_hash(Some("generic-cv"), &profile, &sections_ba);
-        assert_eq!(h1, h2, "Hash must be stable regardless of section insertion order");
+        assert_eq!(
+            h1, h2,
+            "Hash must be stable regardless of section insertion order"
+        );
     }
 }

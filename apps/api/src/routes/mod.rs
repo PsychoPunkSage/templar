@@ -106,8 +106,7 @@ pub fn build_router(state: AppState) -> Router {
         // ── Profile API (Issue 5) ──────────────────────────────────────────
         .route(
             "/api/v1/profile",
-            axum::routing::get(profile::handle_get_profile)
-                .put(profile::handle_upsert_profile),
+            axum::routing::get(profile::handle_get_profile).put(profile::handle_upsert_profile),
         )
         .with_state(state)
         // 10 MB global body size limit — protects all endpoints, covers the

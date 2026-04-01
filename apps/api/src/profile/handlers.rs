@@ -1,4 +1,8 @@
-use axum::{extract::{Query, State}, http::StatusCode, Json};
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    Json,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -26,13 +30,11 @@ pub async fn handle_get_profile(
     State(state): State<AppState>,
     Query(q): Query<UserIdQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let row = sqlx::query_as::<_, UserProfile>(
-        "SELECT * FROM user_profiles WHERE user_id = $1",
-    )
-    .bind(q.user_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let row = sqlx::query_as::<_, UserProfile>("SELECT * FROM user_profiles WHERE user_id = $1")
+        .bind(q.user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match row {
         Some(p) => Ok(Json(serde_json::json!({
@@ -83,11 +85,14 @@ pub async fn handle_upsert_profile(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok((StatusCode::OK, Json(serde_json::json!({
-        "full_name": row.full_name,
-        "email": row.email,
-        "phone": row.phone,
-        "location": row.location,
-        "links": row.links,
-    }))))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "full_name": row.full_name,
+            "email": row.email,
+            "phone": row.phone,
+            "location": row.location,
+            "links": row.links,
+        })),
+    ))
 }

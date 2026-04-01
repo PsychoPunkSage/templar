@@ -231,10 +231,7 @@ impl LlmClient {
 /// 4. If no opener is found, return the full input (serde_json will give the error).
 fn extract_json_object(text: &str) -> &str {
     // Find the first { or [
-    let (start_byte, opener) = match text
-        .char_indices()
-        .find(|(_, c)| *c == '{' || *c == '[')
-    {
+    let (start_byte, opener) = match text.char_indices().find(|(_, c)| *c == '{' || *c == '[') {
         Some(pair) => pair,
         None => return text,
     };

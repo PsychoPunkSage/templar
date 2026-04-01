@@ -319,7 +319,10 @@ fn build_contact_line(profile: &ProfileData) -> String {
         ));
     }
     if !profile.phone.is_empty() {
-        parts.push(format!(r"\faIcon{{phone}}\ {}", escape_latex(&profile.phone)));
+        parts.push(format!(
+            r"\faIcon{{phone}}\ {}",
+            escape_latex(&profile.phone)
+        ));
     }
     if !profile.location.is_empty() {
         parts.push(format!(
@@ -576,7 +579,10 @@ mod tests {
             email: "jane@example.com".to_string(),
             phone: "+1 555 000 0000".to_string(),
             location: "New York, NY".to_string(),
-            header_links: vec![("in/janedoe".to_string(), "https://linkedin.com/in/janedoe".to_string())],
+            header_links: vec![(
+                "in/janedoe".to_string(),
+                "https://linkedin.com/in/janedoe".to_string(),
+            )],
         }
     }
 
@@ -761,8 +767,7 @@ mod tests {
             fmt.leftmargin, fmt.itemsep, fmt.parsep, fmt.topsep
         );
         assert_eq!(
-            opts,
-            "leftmargin=1.5em, itemsep=1pt, parsep=0pt, topsep=2pt",
+            opts, "leftmargin=1.5em, itemsep=1pt, parsep=0pt, topsep=2pt",
             "Default SectionFormatting must match the legacy hardcoded itemize settings"
         );
     }
