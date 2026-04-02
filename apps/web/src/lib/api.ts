@@ -143,6 +143,33 @@ export const api = {
    */
   getPdfUrl: (jobId: string) => `${API_BASE}/api/v1/render/${jobId}`,
 
+  /**
+   * Downloads the rendered PDF for a job via a Blob URL.
+   * Uses fetch() + createObjectURL so the browser download dialog
+   * works cross-origin (a.download is silently ignored for cross-origin URLs).
+   * Revokes the blob URL immediately after the click — safe because the browser
+   * keeps the Blob alive until the download starts.
+   */
+  downloadPdf: async (jobId: string, filename?: string): Promise<void> => {
+    const res = await fetch(`${API_BASE}/api/v1/render/${jobId}`, {
+      headers: { Accept: "application/pdf" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as Record<string, unknown>;
+      const msg = (err?.error as Record<string, unknown>)?.message ?? `HTTP ${res.status}`;
+      throw new Error(String(msg));
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename ?? `templar-resume-${new Date().toISOString().split("T")[0]}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+
   // ── Templates API ──────────────────────────────────────────────────────────
 
   /**

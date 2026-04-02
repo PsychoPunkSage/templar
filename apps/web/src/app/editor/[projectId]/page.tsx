@@ -24,7 +24,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, X, Download, Loader2 } from "lucide-react";
 import { JdInput } from "@/components/editor/JdInput";
 import { BulletList } from "@/components/editor/BulletList";
 import { FitReportPanel } from "@/components/editor/FitReportPanel";
@@ -68,10 +68,24 @@ export default function ProjectEditorPage() {
     resetForProject,
     renderStatus,
     rerender,
+    renderJobId,
   } = useResumeStore();
   const { currentProject, loadProject, loadTemplates } = useProjectStore();
 
   const [leftTab, setLeftTab] = useState<"jd" | "bullets">("jd");
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  const handleDownload = async () => {
+    if (!renderJobId) return;
+    setIsDownloading(true);
+    try {
+      await api.downloadPdf(renderJobId);
+    } catch (e) {
+      console.error("[Editor] Download failed:", e);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   // Effect 1: Reset all project-scoped state immediately on project navigation.
   // This prevents state bleed-through when switching between projects.
@@ -193,6 +207,20 @@ export default function ProjectEditorPage() {
               {renderStatus === "queued" || renderStatus === "rendering"
                 ? "Rendering..."
                 : "Render PDF"}
+            </Button>
+          )}
+          {renderStatus === "done" && renderJobId && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleDownload}
+              disabled={isDownloading}
+              className="gap-1.5"
+            >
+              {isDownloading
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <Download className="h-3.5 w-3.5" />}
+              {isDownloading ? "Downloading..." : "Download PDF"}
             </Button>
           )}
           <Button
