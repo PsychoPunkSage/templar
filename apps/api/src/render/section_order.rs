@@ -42,10 +42,7 @@ mod tests {
     use super::*;
 
     fn make_section(name: &str) -> ResumeSection {
-        ResumeSection {
-            name: name.to_string(),
-            bullets: vec!["bullet".to_string()],
-        }
+        ResumeSection::flat(name.to_string(), vec!["bullet".to_string()])
     }
 
     #[test]
