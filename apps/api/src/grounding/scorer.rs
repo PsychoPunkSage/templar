@@ -169,6 +169,7 @@ pub async fn regenerate_single_bullet(
         text: result.text,
         source_entry_id: bullet.source_entry_id,
         section: bullet.section.clone(),
+        entry_header_latex: bullet.entry_header_latex.clone(),
         verified_line_count: bullet.verified_line_count,
         jd_keywords_used: bullet.jd_keywords_used.clone(),
         was_adjusted: true,
