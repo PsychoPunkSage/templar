@@ -21,8 +21,8 @@ use uuid::Uuid;
 use crate::layout::{default_page_config, FontFamily};
 use crate::models::resume::{ResumeBulletRow, ResumeRow};
 use crate::render::pdflatex::compile_latex;
-use crate::render::types::{RenderError, RenderParams, ResumeSection};
-use crate::templates::{ProfileData, SampleSection, TemplateCache};
+use crate::render::types::{RenderError, RenderParams, ResumeSection, ResumeSubEntry};
+use crate::templates::{ProfileData, SampleSection, SampleSubEntry, TemplateCache};
 
 /// Redis list key used for the render job queue.
 pub const RENDER_QUEUE_KEY: &str = "render:jobs";
@@ -453,35 +453,69 @@ async fn fetch_render_data(
 
     let resume_template_id = resume.template_id.clone();
 
-    // Fetch all bullets ordered by section + insertion order
+    // Fetch bullets ordered: section ASC, source_entry_id ASC, id ASC
+    // This groups same-entry bullets together within each section.
     let bullets = sqlx::query_as::<_, ResumeBulletRow>(
-        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, id",
+        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, source_entry_id, id",
     )
     .bind(resume_id)
     .fetch_all(db)
     .await?;
 
-    // Group bullets by section, preserving first-seen section order
+    // Group: section_name → ordered list of (source_entry_id, entry_header, Vec<bullet_text>)
+    // Preserve first-seen ordering of sections and entries within sections.
     let mut section_order: Vec<String> = Vec::new();
-    let mut section_map: HashMap<String, Vec<String>> = HashMap::new();
+    // section → Vec<(source_entry_id, entry_header, Vec<bullet_text>)>
+    let mut section_entries: HashMap<String, Vec<(Uuid, Option<String>, Vec<String>)>> =
+        HashMap::new();
 
-    for bullet in bullets {
-        if !section_map.contains_key(&bullet.section) {
+    for bullet in &bullets {
+        if !section_entries.contains_key(&bullet.section) {
             section_order.push(bullet.section.clone());
+            section_entries.insert(bullet.section.clone(), Vec::new());
         }
-        section_map
-            .entry(bullet.section)
-            .or_default()
-            .push(bullet.bullet_text);
+
+        let entries = section_entries.get_mut(&bullet.section).unwrap();
+
+        // Find existing entry group or create new one
+        if let Some(group) = entries
+            .iter_mut()
+            .find(|(id, _, _)| *id == bullet.source_entry_id)
+        {
+            // Add bullet to existing group (skip empty placeholder for skills entries)
+            if !bullet.bullet_text.is_empty() {
+                group.2.push(bullet.bullet_text.clone());
+            }
+        } else {
+            // New entry group: take entry_header from this bullet (it's the first in the group)
+            let initial_bullets = if bullet.bullet_text.is_empty() {
+                vec![]
+            } else {
+                vec![bullet.bullet_text.clone()]
+            };
+            entries.push((
+                bullet.source_entry_id,
+                bullet.entry_header.clone(),
+                initial_bullets,
+            ));
+        }
     }
 
-    let sections = section_order
+    // Build ResumeSection with ResumeSubEntry
+    let sections: Vec<ResumeSection> = section_order
         .into_iter()
-        .map(|name| {
-            let section_bullets = section_map.remove(&name).unwrap_or_default();
+        .map(|section_name| {
+            let entries = section_entries.remove(&section_name).unwrap_or_default();
+            let sub_entries = entries
+                .into_iter()
+                .map(|(_, header_latex, entry_bullets)| ResumeSubEntry {
+                    header_latex,
+                    bullets: entry_bullets,
+                })
+                .collect();
             ResumeSection {
-                name,
-                bullets: section_bullets,
+                name: section_name,
+                sub_entries,
             }
         })
         .collect();
@@ -531,7 +565,7 @@ fn compute_render_hash(
     for s in &sorted_sections {
         hasher.update(b"::");
         hasher.update(s.name.as_bytes());
-        let mut bullets = s.bullets.clone();
+        let mut bullets: Vec<&str> = s.all_bullets();
         bullets.sort();
         for b_text in &bullets {
             hasher.update(b":");
@@ -562,7 +596,14 @@ async fn build_latex_for_job(
         .iter()
         .map(|s| SampleSection {
             name: s.name.clone(),
-            bullets: s.bullets.clone(),
+            sub_entries: s
+                .sub_entries
+                .iter()
+                .map(|se| SampleSubEntry {
+                    header_latex: se.header_latex.clone(),
+                    bullets: se.bullets.clone(),
+                })
+                .collect(),
         })
         .collect();
 
@@ -626,13 +667,25 @@ fn build_minimal_pdflatex_document(params: &RenderParams) -> String {
 
     for section in &params.sections {
         doc.push_str(&format!(
-            "\n\\section{{{}}}\n\\begin{{itemize}}\n",
+            "\n\\section{{{}}}\n",
             escape_latex(&section.name)
         ));
-        for bullet in &section.bullets {
-            doc.push_str(&format!("  \\item {}\n", escape_latex(bullet)));
+        for sub in &section.sub_entries {
+            if let Some(h) = &sub.header_latex {
+                doc.push_str(h);
+                doc.push('\n');
+            }
+            if !sub.bullets.is_empty() {
+                doc.push_str("\\begin{itemize}\n");
+                for bullet in &sub.bullets {
+                    doc.push_str(&format!("  \\item {}\n", escape_latex(bullet)));
+                }
+                doc.push_str("\\end{itemize}\n");
+            }
+            if sub.header_latex.is_some() {
+                doc.push_str("\\vspace{2pt}\n");
+            }
         }
-        doc.push_str("\\end{itemize}\n");
     }
 
     doc.push_str("\n\\end{document}\n");
@@ -845,9 +898,11 @@ mod tests {
     fn make_sections(names_and_bullets: &[(&str, &[&str])]) -> Vec<ResumeSection> {
         names_and_bullets
             .iter()
-            .map(|(name, bullets)| ResumeSection {
-                name: name.to_string(),
-                bullets: bullets.iter().map(|b| b.to_string()).collect(),
+            .map(|(name, bullets)| {
+                ResumeSection::flat(
+                    name.to_string(),
+                    bullets.iter().map(|b| b.to_string()).collect(),
+                )
             })
             .collect()
     }

@@ -98,11 +98,69 @@ pub struct ProfileData {
     pub header_links: Vec<(String, String)>,
 }
 
-/// A single section of sample content used to render template thumbnails.
+/// A single sub-entry within a section (one job, one project, one skill category).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SampleSubEntry {
+    /// Pre-formatted LaTeX header using template macros — inserted verbatim (NOT escaped).
+    /// None for sections without sub-entry headers.
+    #[serde(default)]
+    pub header_latex: Option<String>,
+    /// Bullet texts — escaped by build_sections_latex.
+    #[serde(default)]
+    pub bullets: Vec<String>,
+}
+
+/// Intermediate deserialization type for SampleSection — supports both old flat format
+/// (`{"name": "...", "bullets": [...]}`) and new sub-entries format.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SampleSectionInput {
+    /// New format: has sub_entries
+    WithSubEntries {
+        name: String,
+        sub_entries: Vec<SampleSubEntry>,
+    },
+    /// Old format: flat bullets list (backward compat for existing sample_data.json files)
+    Flat { name: String, bullets: Vec<String> },
+}
+
+impl From<SampleSectionInput> for SampleSection {
+    fn from(input: SampleSectionInput) -> Self {
+        match input {
+            SampleSectionInput::WithSubEntries { name, sub_entries } => {
+                SampleSection { name, sub_entries }
+            }
+            SampleSectionInput::Flat { name, bullets } => SampleSection::flat(name, bullets),
+        }
+    }
+}
+
+/// A single section of sample content used to render template thumbnails.
+#[derive(Debug, Clone, Serialize)]
+#[serde(from = "SampleSectionInput")]
 pub struct SampleSection {
     pub name: String,
-    pub bullets: Vec<String>,
+    pub sub_entries: Vec<SampleSubEntry>,
+}
+
+impl<'de> serde::Deserialize<'de> for SampleSection {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let input = SampleSectionInput::deserialize(d)?;
+        Ok(SampleSection::from(input))
+    }
+}
+
+impl SampleSection {
+    /// Constructs a flat section from a plain bullet list (backward compat for sample_data.json).
+    pub fn flat(name: impl Into<String>, bullets: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            sub_entries: vec![SampleSubEntry {
+                header_latex: None,
+                bullets,
+            }],
+        }
+    }
 }
 
 /// Parsed `sample_data.json` — used exclusively for thumbnail generation.
@@ -361,15 +419,40 @@ fn build_sections_latex(sections: &[SampleSection], fmt: &SectionFormatting) -> 
     let mut out = String::new();
 
     for section in sections {
-        if section.bullets.is_empty() {
+        let total_bullets: usize = section.sub_entries.iter().map(|e| e.bullets.len()).sum();
+        let has_headers = section
+            .sub_entries
+            .iter()
+            .any(|e| e.header_latex.is_some());
+
+        // Skip entirely empty sections (no headers, no bullets)
+        if total_bullets == 0 && !has_headers {
             continue;
         }
+
         out.push_str(&format!("\\section*{{{}}}\n", escape_latex(&section.name)));
-        out.push_str(&format!("\\begin{{itemize}}[{}]\n", item_opts));
-        for bullet in &section.bullets {
-            out.push_str(&format!("  \\item {}\n", escape_latex(bullet)));
+
+        for sub in &section.sub_entries {
+            // Emit header verbatim — it uses template macros, already valid LaTeX
+            if let Some(h) = &sub.header_latex {
+                out.push_str(h);
+                out.push('\n');
+            }
+
+            if !sub.bullets.is_empty() {
+                out.push_str(&format!("\\begin{{itemize}}[{}]\n", item_opts));
+                for bullet in &sub.bullets {
+                    out.push_str(&format!("  \\item {}\n", escape_latex(bullet)));
+                }
+                out.push_str("\\end{itemize}\n");
+            }
+
+            // Small vertical gap between sub-entries within same section
+            if sub.header_latex.is_some() {
+                out.push_str("\\vspace{2pt}\n");
+            }
         }
-        out.push_str("\\end{itemize}\n\n");
+        out.push('\n');
     }
 
     out
@@ -588,21 +671,18 @@ mod tests {
 
     fn sample_sections() -> Vec<SampleSection> {
         vec![
-            SampleSection {
-                name: "Experience".to_string(),
-                bullets: vec![
+            SampleSection::flat(
+                "Experience",
+                vec![
                     "Led platform migration saving $50k/year".to_string(),
                     "Reduced P99 latency by 40% via caching".to_string(),
                 ],
-            },
-            SampleSection {
-                name: "Skills".to_string(),
-                bullets: vec!["Rust, Python, TypeScript".to_string()],
-            },
-            SampleSection {
-                name: "Empty Section".to_string(),
-                bullets: vec![], // should be skipped
-            },
+            ),
+            SampleSection::flat(
+                "Skills",
+                vec!["Rust, Python, TypeScript".to_string()],
+            ),
+            SampleSection::flat("Empty Section", vec![]), // should be skipped
         ]
     }
 
@@ -657,10 +737,10 @@ mod tests {
 
     #[test]
     fn test_build_sections_latex_escapes_dollars() {
-        let sections = vec![SampleSection {
-            name: "Wins".to_string(),
-            bullets: vec!["Saved $50k".to_string()],
-        }];
+        let sections = vec![SampleSection::flat(
+            "Wins",
+            vec!["Saved $50k".to_string()],
+        )];
         let latex = build_sections_latex(&sections, &SectionFormatting::default());
         assert!(
             latex.contains(r"\$50k"),
@@ -780,10 +860,10 @@ mod tests {
             parsep: "1pt".to_string(),
             topsep: "4pt".to_string(),
         };
-        let sections = vec![SampleSection {
-            name: "Skills".to_string(),
-            bullets: vec!["Rust".to_string(), "SQL".to_string()],
-        }];
+        let sections = vec![SampleSection::flat(
+            "Skills",
+            vec!["Rust".to_string(), "SQL".to_string()],
+        )];
         let latex = build_sections_latex(&sections, &fmt);
         assert!(
             latex.contains("leftmargin=2em, itemsep=3pt, parsep=1pt, topsep=4pt"),
