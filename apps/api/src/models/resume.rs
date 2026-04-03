@@ -37,6 +37,9 @@ pub struct ResumeBulletRow {
     pub is_user_edited: bool,
     pub line_count: i16,
     pub rejection_reason: Option<String>,
+    /// Added in migration 010: pre-formatted LaTeX entry header from LLM.
+    /// Non-NULL only for the first bullet of each source_entry_id group.
+    pub entry_header: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
