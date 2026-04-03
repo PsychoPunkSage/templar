@@ -341,6 +341,7 @@ mod tests {
             text: "Architected systems".to_string(),
             source_entry_id: Uuid::new_v4(),
             section: "experience".to_string(),
+            entry_header_latex: None,
             verified_line_count: line_count,
             jd_keywords_used: keywords.into_iter().map(|s| s.to_string()).collect(),
             was_adjusted: false,

@@ -40,6 +40,9 @@ pub struct SimulatedBullet {
     pub text: String,
     pub source_entry_id: Uuid,
     pub section: String,
+    /// Pre-formatted LaTeX entry header — passed through unchanged from DraftBullet.
+    #[serde(default)]
+    pub entry_header_latex: Option<String>,
     /// Line count as measured by the simulator (1 or 2 for passing bullets).
     pub verified_line_count: u8,
     pub jd_keywords_used: Vec<String>,
@@ -238,6 +241,7 @@ pub async fn run_simulation_loop(
             text: bullet.text.clone(),
             source_entry_id: bullet.source_entry_id,
             section: bullet.section.clone(),
+            entry_header_latex: None,
             line_estimate: 2,
             jd_keywords_used: bullet.jd_keywords_used.clone(),
         };
@@ -474,6 +478,7 @@ pub(crate) fn init_simulated(bullets: Vec<DraftBullet>) -> Vec<SimulatedBullet> 
             text: b.text,
             source_entry_id: b.source_entry_id,
             section: b.section,
+            entry_header_latex: b.entry_header_latex,
             verified_line_count: b.line_estimate, // will be overwritten by simulation
             jd_keywords_used: b.jd_keywords_used,
             was_adjusted: false,
@@ -557,6 +562,7 @@ mod tests {
             text: text.to_string(),
             source_entry_id: Uuid::new_v4(),
             section: "experience".to_string(),
+            entry_header_latex: None,
             line_estimate: 1,
             jd_keywords_used: vec!["Rust".to_string()],
         }
@@ -571,6 +577,7 @@ mod tests {
             text: "Built a system".to_string(),
             source_entry_id: id,
             section: "experience".to_string(),
+            entry_header_latex: None,
             line_estimate: 1,
             jd_keywords_used: vec!["Rust".to_string()],
         };
@@ -609,6 +616,7 @@ mod tests {
             text: "Built it.".to_string(),
             source_entry_id: Uuid::new_v4(),
             section: "experience".to_string(),
+            entry_header_latex: None,
             verified_line_count: 1,
             jd_keywords_used: vec![],
             was_adjusted: false,
@@ -633,6 +641,7 @@ mod tests {
             text: long_text,
             source_entry_id: Uuid::new_v4(),
             section: "experience".to_string(),
+            entry_header_latex: None,
             verified_line_count: 1,
             jd_keywords_used: vec![],
             was_adjusted: false,

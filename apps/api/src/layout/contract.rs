@@ -351,6 +351,7 @@ mod tests {
             text: text.to_string(),
             source_entry_id: Uuid::new_v4(),
             section: "experience".to_string(),
+            entry_header_latex: None,
             line_estimate: 1,
             jd_keywords_used: keywords.into_iter().map(|s| s.to_string()).collect(),
         }
