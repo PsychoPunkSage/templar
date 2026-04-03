@@ -68,14 +68,22 @@ JOB DESCRIPTION:
 /// System prompt for resume generation — enforces JSON-only output.
 pub const GENERATION_SYSTEM: &str = "You are an expert resume writer generating factual, \
     grounded resume bullets from verified professional context. \
-    You MUST respond with valid JSON only — a JSON array of bullet objects. \
+    You MUST respond with valid JSON only — a JSON array of entry objects. \
     Do NOT include any text outside the JSON array. \
     Do NOT use markdown code fences. \
     Do NOT invent facts not present in the context entries.";
 
+/// Hint for template macro usage — injected into the generation prompt.
+pub const TEMPLATE_MACROS_HINT: &str = r#"AVAILABLE LATEX MACROS for entry headers (use these exactly):
+  \job{Company}{Role/Position}{Date Range}            → Experience entries
+  \project{Project Name}{Tech Stack / Subtitle}{Date Range} → Project / OpenSource entries
+  \education{Year Range}{Degree}{Institution}{GPA or blank}  → Education entries
+  \skillcat{Category Name}{comma-separated skills}    → Skills (no bullet list needed)
+  \competition{Name}{Achievement}                     → Awards / Competitions"#;
+
 /// Resume generation prompt template.
 /// Replace: {grounding_instruction}, {scope_instruction}, {tone_json},
-///          {entries_json}, {keywords_json}, {jd_summary}
+///          {template_macros_hint}, {entries_json}, {keywords_json}, {jd_summary}
 pub const GENERATION_PROMPT_TEMPLATE: &str = r#"{grounding_instruction}
 
 {scope_instruction}
@@ -83,7 +91,9 @@ pub const GENERATION_PROMPT_TEMPLATE: &str = r#"{grounding_instruction}
 TONE CALIBRATION for this role:
 {tone_json}
 
-SELECTED CONTEXT ENTRIES (source of truth — ONLY use facts from these):
+{template_macros_hint}
+
+SELECTED CONTEXT ENTRIES — grouped by type (ONLY use facts from these):
 {entries_json}
 
 JD KEYWORDS to incorporate naturally (do NOT keyword-stuff):
@@ -92,25 +102,35 @@ JD KEYWORDS to incorporate naturally (do NOT keyword-stuff):
 JOB DESCRIPTION SUMMARY:
 {jd_summary}
 
-Generate resume bullets for each relevant context entry. Return a JSON ARRAY:
+Generate a structured resume from the context entries above. Return a JSON ARRAY where each object represents ONE context entry:
 [
-  {
-    "text": "Architected distributed caching layer reducing p99 latency by 40% across 3 services",
+  {{
     "source_entry_id": "the-exact-entry_id-uuid-from-context",
-    "section": "experience",
-    "line_estimate": 1,
-    "jd_keywords_used": ["distributed", "latency", "caching"]
-  }
+    "section": "Experience",
+    "entry_header_latex": "\\job{{Acme Corp}}{{Backend Engineer}}{{Jan 2023 -- Present}}",
+    "bullets": [
+      {{"text": "Architected distributed caching layer reducing p99 latency by 40%", "line_estimate": 1, "jd_keywords_used": ["distributed", "latency"]}},
+      {{"text": "Led migration of 3 services to Kubernetes", "line_estimate": 1, "jd_keywords_used": ["Kubernetes"]}}
+    ]
+  }},
+  {{
+    "source_entry_id": "uuid-2",
+    "section": "Skills",
+    "entry_header_latex": "\\skillcat{{Languages}}{{Rust, Go, Python, TypeScript}}",
+    "bullets": []
+  }}
 ]
 
 HARD RULES:
-1. EVERY bullet MUST have `source_entry_id` matching one of the entry_id values above — no exceptions
-2. `line_estimate` must be 1 or 2 — NEVER 3 or more
-3. Use ONLY facts from the context entries — no interpolation, no invention
-4. Match `contribution_type` to language exactly per the scope instruction above
-5. Pack information densely — one strong bullet per entry, two if the entry is rich enough
-6. Incorporate JD keywords naturally where they appear in the context — never force-fit
-7. Do NOT include bullets for entries with no relevant content for this role"#;
+1. EVERY object MUST have `source_entry_id` matching one of the entry_id values above
+2. `section` MUST be one of: "Experience", "Projects", "Education", "Skills", "Publications", "Other"
+3. `entry_header_latex` MUST use the provided LaTeX macros — never raw text, never empty string
+4. For Skills entries: put ALL content in `entry_header_latex` via `\skillcat{{}}{{}}`, leave `bullets` as []
+5. `line_estimate` for each bullet must be 1 or 2 — NEVER 3 or more
+6. Use ONLY facts from the context entries — no interpolation, no invention
+7. Match `contribution_type` to language per the scope instruction above
+8. Select ONLY entries relevant to this JD — skip irrelevant context entirely
+9. Do NOT include bullets for entries with no relevant content for this role"#;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Phase 7.0 — LLM-based fit scoring

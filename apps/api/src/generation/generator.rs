@@ -40,6 +40,24 @@ const MAX_GENERATION_RETRIES: u32 = 2;
 // Data models
 // ────────────────────────────────────────────────────────────────────────────
 
+/// A single bullet within a DraftEntry (as returned by the LLM).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftEntryBullet {
+    pub text: String,
+    pub line_estimate: u8,
+    #[serde(default)]
+    pub jd_keywords_used: Vec<String>,
+}
+
+/// One context entry as returned by the LLM: header + bullets grouped together.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftEntry {
+    pub source_entry_id: Uuid,
+    pub section: String,
+    pub entry_header_latex: Option<String>,
+    pub bullets: Vec<DraftEntryBullet>,
+}
+
 /// A single draft resume bullet produced by the generation LLM call.
 ///
 /// CRITICAL: every bullet MUST carry `source_entry_id` — bullets without it are rejected.
@@ -49,8 +67,13 @@ pub struct DraftBullet {
     pub text: String,
     pub source_entry_id: Uuid,
     pub section: String,
+    /// Pre-formatted LaTeX header using template macros (e.g. \job{...}).
+    /// Non-None only for the first bullet of each source entry group.
+    #[serde(default)]
+    pub entry_header_latex: Option<String>,
     /// LLM estimate only — layout Phase 3 will re-simulate. Must be 1 or 2.
     pub line_estimate: u8,
+    #[serde(default)]
     pub jd_keywords_used: Vec<String>,
 }
 
@@ -265,8 +288,8 @@ pub async fn generate_resume(
         sqlx::query(
             r#"
             INSERT INTO resume_bullets
-                (resume_id, section, bullet_text, source_entry_id, grounding_score, line_count, rejection_reason)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (resume_id, section, bullet_text, source_entry_id, grounding_score, line_count, rejection_reason, entry_header)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
         )
         .bind(resume_id)
@@ -276,6 +299,7 @@ pub async fn generate_resume(
         .bind(grounding_result.score.composite as f64)
         .bind(sim_bullet.verified_line_count as i16)
         .bind(grounding_result.rejection_reason.as_deref())
+        .bind(sim_bullet.entry_header_latex.as_deref())
         .execute(pool)
         .await?;
     }
@@ -340,8 +364,28 @@ pub async fn generate_resume(
 // LLM call with retry
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Normalizes LLM-output section name to canonical capitalized form.
+/// Accepts minor variants (case-insensitive) and maps to canonical names.
+fn normalize_section(llm_section: &str) -> String {
+    match llm_section.to_lowercase().trim() {
+        "experience" => "Experience".to_string(),
+        "project" | "projects" | "open_source" | "opensource" => "Projects".to_string(),
+        "education" => "Education".to_string(),
+        "skill" | "skills" => "Skills".to_string(),
+        "publication" | "publications" => "Publications".to_string(),
+        other => {
+            // Trust LLM for custom sections; capitalize first letter
+            let mut s = other.to_string();
+            if let Some(c) = s.get_mut(0..1) {
+                c.make_ascii_uppercase();
+            }
+            s
+        }
+    }
+}
+
 /// Calls the LLM to generate bullets. Retries up to MAX_GENERATION_RETRIES times
-/// if any bullet is missing a valid `source_entry_id`.
+/// if any entry is missing a valid `source_entry_id`.
 async fn call_llm_with_retry(
     llm: &LlmClient,
     parsed_jd: &crate::generation::jd_parser::ParsedJD,
@@ -357,41 +401,71 @@ async fn call_llm_with_retry(
         .collect();
 
     for attempt in 0..=MAX_GENERATION_RETRIES {
-        let bullets: Vec<DraftBullet> = llm
+        let entries: Vec<DraftEntry> = llm
             .call_json(&prompt, GENERATION_SYSTEM)
             .await
             .map_err(|e| AppError::Llm(format!("Generation LLM call failed: {e}")))?;
 
-        // Validate: every bullet must reference a valid selected entry
-        let invalid_count = bullets
+        // Validate: every entry must reference a valid selected entry
+        let invalid_count = entries
             .iter()
-            .filter(|b| !valid_entry_ids.contains(&b.source_entry_id))
+            .filter(|e| !valid_entry_ids.contains(&e.source_entry_id))
             .count();
 
-        if invalid_count == 0 {
-            // Flag line_estimate > 2 (layout Phase 3 will enforce, but log early)
-            for bullet in &bullets {
-                if bullet.line_estimate > 2 {
-                    warn!(
-                        "Bullet has line_estimate={} (max 2) — layout will compress: {:?}",
-                        bullet.line_estimate,
-                        bullet.text.chars().take(60).collect::<String>()
-                    );
-                }
-            }
-            return Ok(bullets);
+        if invalid_count > 0 {
+            warn!(
+                "Generation attempt {}/{}: {} entries missing valid source_entry_id — retrying",
+                attempt + 1,
+                MAX_GENERATION_RETRIES + 1,
+                invalid_count
+            );
+            continue;
         }
 
-        warn!(
-            "Generation attempt {}/{}: {} bullets missing valid source_entry_id — retrying",
-            attempt + 1,
-            MAX_GENERATION_RETRIES + 1,
-            invalid_count
-        );
+        // Flatten DraftEntry → Vec<DraftBullet>
+        let mut flat: Vec<DraftBullet> = Vec::new();
+        for entry in entries {
+            let section = normalize_section(&entry.section);
+
+            if entry.bullets.is_empty() {
+                // Skills-type entry: header carries all content, no bullets
+                flat.push(DraftBullet {
+                    text: String::new(),
+                    source_entry_id: entry.source_entry_id,
+                    section,
+                    entry_header_latex: entry.entry_header_latex,
+                    line_estimate: 1,
+                    jd_keywords_used: Vec::new(),
+                });
+            } else {
+                for (i, b) in entry.bullets.into_iter().enumerate() {
+                    if b.line_estimate > 2 {
+                        warn!(
+                            "Bullet has line_estimate={} (max 2) — layout will compress",
+                            b.line_estimate
+                        );
+                    }
+                    flat.push(DraftBullet {
+                        text: b.text,
+                        source_entry_id: entry.source_entry_id,
+                        section: section.clone(),
+                        // header only on first bullet of each entry group
+                        entry_header_latex: if i == 0 {
+                            entry.entry_header_latex.clone()
+                        } else {
+                            None
+                        },
+                        line_estimate: b.line_estimate,
+                        jd_keywords_used: b.jd_keywords_used,
+                    });
+                }
+            }
+        }
+        return Ok(flat);
     }
 
     Err(AppError::Llm(format!(
-        "Generation failed after {} attempts: bullets consistently lacked valid source_entry_id. \
+        "Generation failed after {} attempts: entries consistently lacked valid source_entry_id. \
         Check that context entries were passed correctly in the prompt.",
         MAX_GENERATION_RETRIES + 1
     )))
@@ -547,6 +621,10 @@ fn build_generation_prompt(
         .replace("{grounding_instruction}", GROUNDING_INSTRUCTION)
         .replace("{scope_instruction}", SCOPE_INSTRUCTION)
         .replace("{tone_json}", &tone_json)
+        .replace(
+            "{template_macros_hint}",
+            crate::generation::prompts::TEMPLATE_MACROS_HINT,
+        )
         .replace("{entries_json}", &entries_json)
         .replace("{keywords_json}", &keywords_json)
         .replace("{jd_summary}", &jd_summary))
@@ -567,6 +645,7 @@ mod tests {
             text: "Architected distributed caching layer reducing p99 latency by 40%".to_string(),
             source_entry_id: id,
             section: "experience".to_string(),
+            entry_header_latex: None,
             line_estimate: 1,
             jd_keywords_used: vec!["distributed".to_string(), "latency".to_string()],
         };
@@ -604,6 +683,7 @@ mod tests {
             text: "Test".to_string(),
             source_entry_id: Uuid::new_v4(),
             section: "experience".to_string(),
+            entry_header_latex: None,
             line_estimate: 2,
             jd_keywords_used: vec![],
         };
@@ -789,6 +869,7 @@ mod tests {
             text: "Contributed to distributed caching layer".to_string(),
             source_entry_id: Uuid::new_v4(),
             section: "experience".to_string(),
+            entry_header_latex: None,
             verified_line_count: 1,
             jd_keywords_used: vec!["distributed".to_string()],
             was_adjusted: false,
