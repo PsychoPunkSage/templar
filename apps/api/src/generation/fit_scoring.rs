@@ -15,6 +15,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::generation::jd_parser::ParsedJD;
@@ -51,6 +52,10 @@ pub struct FitReport {
     pub gaps: Vec<Gap>,                 // strength < 0.4
     pub recommendation: String,
     pub scorer_backend: String, // "keyword" | "llm" — for transparency
+    /// Entry IDs selected by the LLM fit scorer as relevant to this JD.
+    /// Empty when KeywordFitScorer is used — falls back to all SelectionResult entries.
+    #[serde(default)]
+    pub selected_entry_ids: Vec<Uuid>,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -111,6 +116,8 @@ struct LlmFitScoreResponse {
     partial_matches: Vec<FitMatch>,
     gaps: Vec<Gap>,
     recommendation: String,
+    #[serde(default)]
+    selected_entry_ids: Vec<String>,
 }
 
 #[async_trait]
@@ -167,14 +174,30 @@ impl FitScorer for LlmFitScorer {
             .call_json::<LlmFitScoreResponse>(&prompt, LLM_FIT_SCORE_SYSTEM)
             .await
         {
-            Ok(resp) => Ok(FitReport {
-                overall_score: resp.overall_score.clamp(0, 100),
-                strong_matches: resp.strong_matches,
-                partial_matches: resp.partial_matches,
-                gaps: resp.gaps,
-                recommendation: resp.recommendation,
-                scorer_backend: "llm".to_string(),
-            }),
+            Ok(resp) => {
+                let selected_entry_ids: Vec<Uuid> = resp
+                    .selected_entry_ids
+                    .iter()
+                    .filter_map(|s| {
+                        Uuid::parse_str(s).map_err(|e| {
+                            tracing::warn!(
+                                raw_id = %s,
+                                error = %e,
+                                "LlmFitScorer: failed to parse selected_entry_id UUID — skipping"
+                            );
+                        }).ok()
+                    })
+                    .collect();
+                Ok(FitReport {
+                    overall_score: resp.overall_score.clamp(0, 100),
+                    strong_matches: resp.strong_matches,
+                    partial_matches: resp.partial_matches,
+                    gaps: resp.gaps,
+                    recommendation: resp.recommendation,
+                    scorer_backend: "llm".to_string(),
+                    selected_entry_ids,
+                })
+            }
             Err(e) => {
                 // Fall back to keyword scorer on LLM error
                 tracing::warn!(error = %e, "LlmFitScorer: LLM call failed, falling back to keyword scorer");
@@ -240,14 +263,30 @@ impl LlmFitScorer {
             .call_json::<LlmFitScoreResponse>(&prompt, LLM_FIT_SCORE_SYSTEM)
             .await
         {
-            Ok(resp) => Ok(FitReport {
-                overall_score: resp.overall_score.clamp(0, 100),
-                strong_matches: resp.strong_matches,
-                partial_matches: resp.partial_matches,
-                gaps: resp.gaps,
-                recommendation: resp.recommendation,
-                scorer_backend: "llm_full".to_string(),
-            }),
+            Ok(resp) => {
+                let selected_entry_ids: Vec<Uuid> = resp
+                    .selected_entry_ids
+                    .iter()
+                    .filter_map(|s| {
+                        Uuid::parse_str(s).map_err(|e| {
+                            tracing::warn!(
+                                raw_id = %s,
+                                error = %e,
+                                "LlmFitScorer::score_full: failed to parse selected_entry_id UUID — skipping"
+                            );
+                        }).ok()
+                    })
+                    .collect();
+                Ok(FitReport {
+                    overall_score: resp.overall_score.clamp(0, 100),
+                    strong_matches: resp.strong_matches,
+                    partial_matches: resp.partial_matches,
+                    gaps: resp.gaps,
+                    recommendation: resp.recommendation,
+                    scorer_backend: "llm_full".to_string(),
+                    selected_entry_ids,
+                })
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "LlmFitScorer::score_full: LLM call failed, falling back to keyword scorer");
                 let mut report = compute_keyword_fit(entries, parsed_jd)?;
@@ -428,6 +467,7 @@ fn compute_keyword_fit(
             gaps: vec![],
             recommendation: "No keywords found in JD — cannot score fit.".to_string(),
             scorer_backend: "keyword".to_string(),
+            selected_entry_ids: vec![],
         });
     }
 
@@ -509,6 +549,7 @@ fn compute_keyword_fit(
         gaps,
         recommendation,
         scorer_backend: "keyword".to_string(),
+        selected_entry_ids: vec![],
     })
 }
 
