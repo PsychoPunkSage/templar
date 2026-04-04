@@ -60,6 +60,7 @@ pub struct EducationEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectEntry {
+    #[serde(alias = "project_name")]
     pub name: String,
     pub description: String,
     pub tech_stack: Vec<String>,

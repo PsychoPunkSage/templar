@@ -65,36 +65,31 @@ Extract ALL meaningful technical keywords (languages, frameworks, tools, concept
 JOB DESCRIPTION:
 {jd_text}"#;
 
-/// System prompt for resume generation — enforces JSON-only output.
-pub const GENERATION_SYSTEM: &str = "You are an expert resume writer generating factual, \
-    grounded resume bullets from verified professional context. \
-    You MUST respond with valid JSON only — a JSON array of entry objects. \
-    Do NOT include any text outside the JSON array. \
+/// System prompt for per-entry resume generation — enforces JSON-only output.
+pub const PER_ENTRY_GENERATION_SYSTEM: &str = "You are an expert resume writer generating factual, \
+    grounded resume bullets from a single professional context entry. \
+    You MUST respond with valid JSON only — a JSON object with a \"bullets\" array. \
+    Do NOT include any text outside the JSON object. \
     Do NOT use markdown code fences. \
-    Do NOT invent facts not present in the context entries.";
+    Do NOT invent facts not present in the context entry. \
+    Every bullet must be traceable to a specific claim in the raw context text provided.";
 
-/// Hint for template macro usage — injected into the generation prompt.
-pub const TEMPLATE_MACROS_HINT: &str = r#"AVAILABLE LATEX MACROS for entry headers (use these exactly):
-  \job{Company}{Role/Position}{Date Range}            → Experience entries
-  \project{Project Name}{Tech Stack / Subtitle}{Date Range} → Project / OpenSource entries
-  \education{Year Range}{Degree}{Institution}{GPA or blank}  → Education entries
-  \skillcat{Category Name}{comma-separated skills}    → Skills (no bullet list needed)
-  \competition{Name}{Achievement}                     → Awards / Competitions"#;
-
-/// Resume generation prompt template.
-/// Replace: {grounding_instruction}, {scope_instruction}, {tone_json},
-///          {template_macros_hint}, {entries_json}, {keywords_json}, {jd_summary}
-pub const GENERATION_PROMPT_TEMPLATE: &str = r#"{grounding_instruction}
+/// Per-entry resume generation prompt template.
+/// Replace: {grounding_instruction}, {scope_instruction}, {entry_type}, {contribution_type},
+///          {allowed_verbs_json}, {entry_data_json}, {raw_text}, {keywords_json}, {jd_summary}
+pub const PER_ENTRY_GENERATION_PROMPT_TEMPLATE: &str = r#"{grounding_instruction}
 
 {scope_instruction}
 
-TONE CALIBRATION for this role:
-{tone_json}
+ENTRY TYPE: {entry_type}
+CONTRIBUTION TYPE: {contribution_type}
+ALLOWED VERBS for this contribution level: {allowed_verbs_json}
 
-{template_macros_hint}
+CONTEXT ENTRY DATA (structured fields):
+{entry_data_json}
 
-SELECTED CONTEXT ENTRIES — grouped by type (ONLY use facts from these):
-{entries_json}
+RAW CONTEXT TEXT (original notes — primary source of truth):
+{raw_text}
 
 JD KEYWORDS to incorporate naturally (do NOT keyword-stuff):
 {keywords_json}
@@ -102,35 +97,21 @@ JD KEYWORDS to incorporate naturally (do NOT keyword-stuff):
 JOB DESCRIPTION SUMMARY:
 {jd_summary}
 
-Generate a structured resume from the context entries above. Return a JSON ARRAY where each object represents ONE context entry:
-[
-  {{
-    "source_entry_id": "the-exact-entry_id-uuid-from-context",
-    "section": "Experience",
-    "entry_header_latex": "\\job{{Acme Corp}}{{Backend Engineer}}{{Jan 2023 -- Present}}",
-    "bullets": [
-      {{"text": "Architected distributed caching layer reducing p99 latency by 40%", "line_estimate": 1, "jd_keywords_used": ["distributed", "latency"]}},
-      {{"text": "Led migration of 3 services to Kubernetes", "line_estimate": 1, "jd_keywords_used": ["Kubernetes"]}}
-    ]
-  }},
-  {{
-    "source_entry_id": "uuid-2",
-    "section": "Skills",
-    "entry_header_latex": "\\skillcat{{Languages}}{{Rust, Go, Python, TypeScript}}",
-    "bullets": []
-  }}
-]
+Generate resume bullets for this single context entry. Return a JSON object:
+{{
+  "bullets": [
+    {{"text": "...", "line_estimate": 1, "jd_keywords_used": ["k8s"]}}
+  ]
+}}
 
 HARD RULES:
-1. EVERY object MUST have `source_entry_id` matching one of the entry_id values above
-2. `section` MUST be one of: "Experience", "Projects", "Education", "Skills", "Publications", "Other"
-3. `entry_header_latex` MUST use the provided LaTeX macros — never raw text, never empty string
-4. For Skills entries: put ALL content in `entry_header_latex` via `\skillcat{{}}{{}}`, leave `bullets` as []
-5. `line_estimate` for each bullet must be 1 or 2 — NEVER 3 or more
-6. Use ONLY facts from the context entries — no interpolation, no invention
-7. Match `contribution_type` to language per the scope instruction above
-8. Select ONLY entries relevant to this JD — skip irrelevant context entirely
-9. Do NOT include bullets for entries with no relevant content for this role"#;
+1. Only use facts present in the context entry data or raw text — no invention, no interpolation
+2. `line_estimate` must be 1 or 2 — NEVER 3 or more
+3. Match `contribution_type` to verb language per the scope instruction above
+4. If this entry has no content relevant to the JD, return {{"bullets": []}}
+5. For Skill entries: return {{"bullets": []}} — the header carries all skill content
+6. Generate 2–4 bullets for experience/project entries; 1–2 for awards/publications
+7. Every bullet must begin with a strong action verb from the allowed verbs list"#;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Phase 7.0 — LLM-based fit scoring
@@ -175,7 +156,8 @@ Return a JSON object with this EXACT schema:
   "gaps": [
     {"keyword": "GraphQL", "jd_frequency": 3, "suggestion": null}
   ],
-  "recommendation": "Strong fit for the infrastructure role. Missing GraphQL experience but core Rust/distributed systems background is excellent."
+  "recommendation": "Strong fit for the infrastructure role. Missing GraphQL experience but core Rust/distributed systems background is excellent.",
+  "selected_entry_ids": ["uuid-1", "uuid-2"]
 }
 
 Rules:
@@ -184,6 +166,7 @@ Rules:
 - partial_matches: strength 0.4–0.79 — indirect, partial, or adjacent evidence
 - gaps: all JD keywords with strength < 0.4 — nothing relevant in candidate context
 - Keep recommendation to 2 sentences maximum
+- selected_entry_ids: list of entry_id UUIDs from context that are relevant to this JD — include entries with any match; omit only entries with zero relevance
 - Do NOT include any text outside the JSON object"#;
 
 /// Reframe hint prompt template.
