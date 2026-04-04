@@ -11,19 +11,23 @@
 //! Bullets with composite grounding score < 0.65 are regenerated once; if still failing,
 //! kept with flagged_for_review=true. grounding_score is persisted with real values.
 
-use std::collections::HashSet;
+use std::sync::Arc;
 
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::PgPool;
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::context::models::ContextEntryData;
 use crate::context::versioning::get_current_entries;
 use crate::errors::AppError;
 use crate::generation::content_selector::{select_content, SelectionResult};
 use crate::generation::fit_scoring::{FitReport, FitScorer};
 use crate::generation::jd_parser::parse_jd;
-use crate::generation::prompts::{GENERATION_PROMPT_TEMPLATE, GENERATION_SYSTEM};
+use crate::generation::prompts::{PER_ENTRY_GENERATION_PROMPT_TEMPLATE, PER_ENTRY_GENERATION_SYSTEM};
 use crate::generation::tone::{get_tone_examples, ToneExamples};
 use crate::generation::{fit_cache, hash_utils};
 use crate::grounding::scorer::{regenerate_single_bullet, score_bullet};
@@ -32,9 +36,6 @@ use crate::layout::{run_simulation_loop, PageConfig, SimulatedBullet};
 use crate::llm_client::prompts::{GROUNDING_INSTRUCTION, SCOPE_INSTRUCTION};
 use crate::llm_client::LlmClient;
 use crate::models::context::ContextEntryRow;
-
-/// Max LLM retries when bullets are missing source_entry_id.
-const MAX_GENERATION_RETRIES: u32 = 2;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Data models
@@ -49,12 +50,9 @@ pub struct DraftEntryBullet {
     pub jd_keywords_used: Vec<String>,
 }
 
-/// One context entry as returned by the LLM: header + bullets grouped together.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DraftEntry {
-    pub source_entry_id: Uuid,
-    pub section: String,
-    pub entry_header_latex: Option<String>,
+/// LLM response for a single context entry — bullets only, no header (header built by Rust).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PerEntryLlmResponse {
     pub bullets: Vec<DraftEntryBullet>,
 }
 
@@ -211,8 +209,8 @@ pub async fn generate_resume(
     // Step 5: Tone calibration
     let tone_examples = get_tone_examples(&parsed_jd.detected_tone);
 
-    // Step 6: LLM generation with retry on missing source_entry_id
-    let draft_bullets = call_llm_with_retry(llm, &parsed_jd, &selection, &tone_examples).await?;
+    // Step 6: LLM generation — parallel per-entry calls; entry selection filtered by fit_report
+    let draft_bullets = call_llm_with_retry(llm, &parsed_jd, &selection, &tone_examples, &fit_report).await?;
 
     // Step 7: Layout simulation — enforces Line Coverage Contract.
     // Replaces LLM's line_estimate with simulation-verified line counts.
@@ -384,91 +382,352 @@ fn normalize_section(llm_section: &str) -> String {
     }
 }
 
-/// Calls the LLM to generate bullets. Retries up to MAX_GENERATION_RETRIES times
-/// if any entry is missing a valid `source_entry_id`.
+// ────────────────────────────────────────────────────────────────────────────
+// Header building helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+fn format_date(d: NaiveDate) -> String {
+    d.format("%b %Y").to_string()
+}
+
+fn format_date_range_opt(start: Option<NaiveDate>, end: Option<NaiveDate>) -> String {
+    match (start, end) {
+        (Some(s), Some(e)) => format!("{} -- {}", format_date(s), format_date(e)),
+        (Some(s), None) => format!("{} -- Present", format_date(s)),
+        (None, Some(e)) => format!("-- {}", format_date(e)),
+        (None, None) => String::new(),
+    }
+}
+
+fn escape_header_latex(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str(r"\\"),
+            '{' | '}' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '#' => out.push_str(r"\#"),
+            '$' => out.push_str(r"\$"),
+            '%' => out.push_str(r"\%"),
+            '^' => out.push_str(r"\^{}"),
+            '&' => out.push_str(r"\&"),
+            '~' => out.push_str(r"\~{}"),
+            '_' => out.push_str(r"\_"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Builds the LaTeX header macro string for a context entry from its typed data.
+/// Returns None if the entry data cannot be deserialized (logs a warning).
+fn build_entry_header_latex(entry: &ContextEntryRow) -> Option<String> {
+    // Inject "entry_type" tag so serde can deserialize the tagged enum
+    let mut data_with_tag = entry.data.clone();
+    if let Some(obj) = data_with_tag.as_object_mut() {
+        obj.insert(
+            "entry_type".to_string(),
+            Value::String(entry.entry_type.clone()),
+        );
+    }
+
+    let entry_data: ContextEntryData = match serde_json::from_value(data_with_tag) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                entry_id = %entry.entry_id,
+                entry_type = %entry.entry_type,
+                error = %e,
+                "build_entry_header_latex: failed to deserialize ContextEntryData"
+            );
+            return None;
+        }
+    };
+
+    Some(match entry_data {
+        ContextEntryData::Experience(e) => {
+            let end = e
+                .date_end
+                .map(format_date)
+                .unwrap_or_else(|| "Present".to_string());
+            format!(
+                r#"\job{{{}}}{{{}}}{{{} -- {}}}"#,
+                escape_header_latex(&e.company),
+                escape_header_latex(&e.role),
+                format_date(e.date_start),
+                end
+            )
+        }
+        ContextEntryData::Project(e) => {
+            let tech = e.tech_stack.join(", ");
+            let dates = format_date_range_opt(e.date_start, e.date_end);
+            format!(
+                r#"\project{{{}}}{{{}}}{{{}}}"#,
+                escape_header_latex(&e.name),
+                escape_header_latex(&tech),
+                dates
+            )
+        }
+        ContextEntryData::OpenSource(e) => {
+            let tech = e.tech_stack.join(", ");
+            format!(
+                r#"\project{{{}}}{{{}}}{{}}"#,
+                escape_header_latex(&e.project_name),
+                escape_header_latex(&tech)
+            )
+        }
+        ContextEntryData::Education(e) => {
+            let end = e
+                .date_end
+                .map(format_date)
+                .unwrap_or_else(|| "Present".to_string());
+            let gpa_str = e.gpa.map(|g| format!("{:.2}", g)).unwrap_or_default();
+            format!(
+                r#"\education{{{} -- {}}}{{{}}}{{{}}}{{{}}}"#,
+                format_date(e.date_start),
+                end,
+                escape_header_latex(&e.degree),
+                escape_header_latex(&e.institution),
+                gpa_str
+            )
+        }
+        ContextEntryData::Skill(e) => {
+            let items = e.items.join(", ");
+            format!(
+                r#"\skillcat{{{}}}{{{}}}"#,
+                escape_header_latex(&e.category),
+                escape_header_latex(&items)
+            )
+        }
+        ContextEntryData::Award(e) => {
+            format!(
+                r#"\competition{{{}}}{{{}}}"#,
+                escape_header_latex(&e.title),
+                escape_header_latex(&e.issuer)
+            )
+        }
+        ContextEntryData::Publication(e) => {
+            format!(
+                r#"\competition{{{}}}{{{}}}"#,
+                escape_header_latex(&e.title),
+                escape_header_latex(&e.venue)
+            )
+        }
+        ContextEntryData::Extracurricular(e) => {
+            format!(
+                r#"\competition{{{}}}{{{}}}"#,
+                escape_header_latex(&e.organization),
+                escape_header_latex(&e.role)
+            )
+        }
+        ContextEntryData::Certification(e) => {
+            format!(
+                r#"\competition{{{}}}{{{}}}"#,
+                escape_header_latex(&e.name),
+                escape_header_latex(&e.issuer)
+            )
+        }
+    })
+}
+
+/// Builds the per-entry generation prompt for a single context entry.
+fn build_per_entry_prompt(
+    entry: &ContextEntryRow,
+    parsed_jd: &crate::generation::jd_parser::ParsedJD,
+    tone_examples: &ToneExamples,
+) -> Result<String, AppError> {
+    let allowed_verbs = crate::generation::tone::filter_verbs_for_contribution(
+        &tone_examples.strong_verbs,
+        &entry.contribution_type,
+    );
+    let allowed_verbs_json = serde_json::to_string(&allowed_verbs)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize verbs: {e}")))?;
+
+    let entry_data_json = serde_json::to_string_pretty(&entry.data)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize entry data: {e}")))?;
+
+    let raw_text = entry.raw_text.as_deref().unwrap_or("(no raw text provided)");
+
+    let keywords_json = serde_json::to_string(
+        &parsed_jd
+            .keyword_inventory
+            .iter()
+            .map(|k| &k.keyword)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize keywords: {e}")))?;
+
+    let jd_summary = format!(
+        "Detected tone: {:?}. Hard requirements: {}",
+        parsed_jd.detected_tone,
+        parsed_jd
+            .hard_requirements
+            .iter()
+            .take(5)
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+
+    Ok(PER_ENTRY_GENERATION_PROMPT_TEMPLATE
+        .replace("{grounding_instruction}", GROUNDING_INSTRUCTION)
+        .replace("{scope_instruction}", SCOPE_INSTRUCTION)
+        .replace("{entry_type}", &entry.entry_type)
+        .replace("{contribution_type}", &entry.contribution_type)
+        .replace("{allowed_verbs_json}", &allowed_verbs_json)
+        .replace("{entry_data_json}", &entry_data_json)
+        .replace("{raw_text}", raw_text)
+        .replace("{keywords_json}", &keywords_json)
+        .replace("{jd_summary}", &jd_summary))
+}
+
+/// Infers the resume section name for a context entry type.
+fn section_for_entry_type(entry_type: &str) -> &'static str {
+    match entry_type.to_lowercase().trim() {
+        "experience" => "Experience",
+        "project" | "open_source" => "Projects",
+        "education" => "Education",
+        "skill" => "Skills",
+        "publication" => "Publications",
+        _ => "Other",
+    }
+}
+
+/// Runs parallel per-entry LLM generation calls.
+///
+/// 1. Filters `selection.selected_entries` to `fit_report.selected_entry_ids` if non-empty.
+/// 2. Builds entry headers from typed data (no LLM needed for headers).
+/// 3. Spawns one LLM call per entry in parallel via JoinSet.
+/// 4. Flattens results into Vec<DraftBullet> with stable ordering.
 async fn call_llm_with_retry(
     llm: &LlmClient,
     parsed_jd: &crate::generation::jd_parser::ParsedJD,
     selection: &SelectionResult,
     tone_examples: &ToneExamples,
+    fit_report: &FitReport,
 ) -> Result<Vec<DraftBullet>, AppError> {
-    let prompt = build_generation_prompt(parsed_jd, selection, tone_examples)?;
+    // Filter entries: if fit_report has selected_entry_ids, honour them; else use all
+    let entries: Vec<&crate::generation::content_selector::RankedEntry> =
+        if fit_report.selected_entry_ids.is_empty() {
+            selection.selected_entries.iter().collect()
+        } else {
+            let id_set: std::collections::HashSet<Uuid> =
+                fit_report.selected_entry_ids.iter().cloned().collect();
+            selection
+                .selected_entries
+                .iter()
+                .filter(|re| id_set.contains(&re.entry.entry_id))
+                .collect()
+        };
 
-    let valid_entry_ids: HashSet<Uuid> = selection
-        .selected_entries
-        .iter()
-        .map(|re| re.entry.entry_id)
-        .collect();
-
-    for attempt in 0..=MAX_GENERATION_RETRIES {
-        let entries: Vec<DraftEntry> = llm
-            .call_json(&prompt, GENERATION_SYSTEM)
-            .await
-            .map_err(|e| AppError::Llm(format!("Generation LLM call failed: {e}")))?;
-
-        // Validate: every entry must reference a valid selected entry
-        let invalid_count = entries
-            .iter()
-            .filter(|e| !valid_entry_ids.contains(&e.source_entry_id))
-            .count();
-
-        if invalid_count > 0 {
-            warn!(
-                "Generation attempt {}/{}: {} entries missing valid source_entry_id — retrying",
-                attempt + 1,
-                MAX_GENERATION_RETRIES + 1,
-                invalid_count
-            );
-            continue;
-        }
-
-        // Flatten DraftEntry → Vec<DraftBullet>
-        let mut flat: Vec<DraftBullet> = Vec::new();
-        for entry in entries {
-            let section = normalize_section(&entry.section);
-
-            if entry.bullets.is_empty() {
-                // Skills-type entry: header carries all content, no bullets
-                flat.push(DraftBullet {
-                    text: String::new(),
-                    source_entry_id: entry.source_entry_id,
-                    section,
-                    entry_header_latex: entry.entry_header_latex,
-                    line_estimate: 1,
-                    jd_keywords_used: Vec::new(),
-                });
-            } else {
-                for (i, b) in entry.bullets.into_iter().enumerate() {
-                    if b.line_estimate > 2 {
-                        warn!(
-                            "Bullet has line_estimate={} (max 2) — layout will compress",
-                            b.line_estimate
-                        );
-                    }
-                    flat.push(DraftBullet {
-                        text: b.text,
-                        source_entry_id: entry.source_entry_id,
-                        section: section.clone(),
-                        // header only on first bullet of each entry group
-                        entry_header_latex: if i == 0 {
-                            entry.entry_header_latex.clone()
-                        } else {
-                            None
-                        },
-                        line_estimate: b.line_estimate,
-                        jd_keywords_used: b.jd_keywords_used,
-                    });
-                }
-            }
-        }
-        return Ok(flat);
+    if entries.is_empty() {
+        // Fallback: use all selected entries (e.g. if LLM returned IDs not in selection)
+        warn!("call_llm_with_retry: no entries after filtering by selected_entry_ids — using all selected entries");
+        let all: Vec<&crate::generation::content_selector::RankedEntry> = selection.selected_entries.iter().collect();
+        return call_llm_with_retry_entries(llm, parsed_jd, &all, tone_examples).await;
     }
 
-    Err(AppError::Llm(format!(
-        "Generation failed after {} attempts: entries consistently lacked valid source_entry_id. \
-        Check that context entries were passed correctly in the prompt.",
-        MAX_GENERATION_RETRIES + 1
-    )))
+    info!("Per-entry generation: {} entries to process", entries.len());
+    call_llm_with_retry_entries(llm, parsed_jd, &entries, tone_examples).await
+}
+
+async fn call_llm_with_retry_entries(
+    llm: &LlmClient,
+    parsed_jd: &crate::generation::jd_parser::ParsedJD,
+    entries: &[&crate::generation::content_selector::RankedEntry],
+    tone_examples: &ToneExamples,
+) -> Result<Vec<DraftBullet>, AppError> {
+    // Build all prompts synchronously before spawning tasks
+    let mut prompts: Vec<(usize, String, ContextEntryRow, Option<String>)> =
+        Vec::with_capacity(entries.len());
+
+    for (idx, ranked) in entries.iter().enumerate() {
+        let entry = &ranked.entry;
+        let prompt = build_per_entry_prompt(entry, parsed_jd, tone_examples)?;
+        let header = build_entry_header_latex(entry);
+        prompts.push((idx, prompt, entry.clone(), header));
+    }
+
+    // Spawn parallel LLM calls — capped at 4 concurrent to avoid 529 rate limiting
+    let sem = Arc::new(Semaphore::new(4));
+    let mut join_set: tokio::task::JoinSet<Result<(usize, PerEntryLlmResponse, ContextEntryRow, Option<String>), AppError>> =
+        tokio::task::JoinSet::new();
+
+    for (idx, prompt, entry, header) in prompts {
+        let llm = llm.clone();
+        let sem = sem.clone();
+        join_set.spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore closed");
+            llm.call_json::<PerEntryLlmResponse>(&prompt, PER_ENTRY_GENERATION_SYSTEM)
+                .await
+                .map(|r| (idx, r, entry, header))
+                .map_err(|e| AppError::Llm(format!("Per-entry LLM call failed for entry {idx}: {e}")))
+        });
+    }
+
+    // Collect results
+    let mut results: Vec<(usize, PerEntryLlmResponse, ContextEntryRow, Option<String>)> =
+        Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    while let Some(res) = join_set.join_next().await {
+        match res {
+            Ok(Ok(tuple)) => results.push(tuple),
+            Ok(Err(e)) => errors.push(e.to_string()),
+            Err(join_err) => errors.push(format!("JoinSet error: {join_err}")),
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(AppError::Llm(format!(
+            "Per-entry generation failed: {}",
+            errors.join("; ")
+        )));
+    }
+
+    // Sort by original index for stable ordering
+    results.sort_by_key(|(idx, _, _, _)| *idx);
+
+    // Flatten into Vec<DraftBullet>
+    let mut flat: Vec<DraftBullet> = Vec::new();
+
+    for (_, resp, entry, header) in results {
+        let section = normalize_section(section_for_entry_type(&entry.entry_type));
+
+        if resp.bullets.is_empty() {
+            // Skills-type entry or irrelevant entry: emit header-only placeholder
+            flat.push(DraftBullet {
+                text: String::new(),
+                source_entry_id: entry.entry_id,
+                section,
+                entry_header_latex: header,
+                line_estimate: 1,
+                jd_keywords_used: Vec::new(),
+            });
+        } else {
+            for (i, b) in resp.bullets.into_iter().enumerate() {
+                if b.line_estimate > 2 {
+                    warn!(
+                        "Bullet has line_estimate={} (max 2) — layout will compress",
+                        b.line_estimate
+                    );
+                }
+                flat.push(DraftBullet {
+                    text: b.text,
+                    source_entry_id: entry.entry_id,
+                    section: section.clone(),
+                    // header only on first bullet of each entry group
+                    entry_header_latex: if i == 0 { header.clone() } else { None },
+                    line_estimate: b.line_estimate,
+                    jd_keywords_used: b.jd_keywords_used,
+                });
+            }
+        }
+    }
+
+    Ok(flat)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -561,74 +820,6 @@ async fn run_grounding_loop(
     Ok(pairs)
 }
 
-/// Builds the generation prompt by filling the template with serialized context.
-fn build_generation_prompt(
-    parsed_jd: &crate::generation::jd_parser::ParsedJD,
-    selection: &SelectionResult,
-    tone_examples: &ToneExamples,
-) -> Result<String, AppError> {
-    let entries_json = serde_json::to_string_pretty(
-        &selection
-            .selected_entries
-            .iter()
-            .map(|re| {
-                serde_json::json!({
-                    "entry_id": re.entry.entry_id,
-                    "entry_type": re.entry.entry_type,
-                    "contribution_type": re.entry.contribution_type,
-                    "allowed_verbs": crate::generation::tone::filter_verbs_for_contribution(
-                        &tone_examples.strong_verbs,
-                        &re.entry.contribution_type
-                    ),
-                    "tags": re.entry.tags,
-                    "data": re.entry.data,
-                    "combined_score": re.combined_score,
-                })
-            })
-            .collect::<Vec<_>>(),
-    )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize entries: {e}")))?;
-
-    let keywords_json = serde_json::to_string(
-        &parsed_jd
-            .keyword_inventory
-            .iter()
-            .map(|k| &k.keyword)
-            .collect::<Vec<_>>(),
-    )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize keywords: {e}")))?;
-
-    let tone_json = serde_json::to_string(&serde_json::json!({
-        "strong_verbs": tone_examples.strong_verbs,
-        "ownership_prefix": tone_examples.ownership_prefix,
-        "avoid_verbs": tone_examples.avoid_verbs,
-    }))
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize tone: {e}")))?;
-
-    let jd_summary = format!(
-        "Detected tone: {:?}. Hard requirements: {}",
-        parsed_jd.detected_tone,
-        parsed_jd
-            .hard_requirements
-            .iter()
-            .take(5)
-            .map(|r| r.text.as_str())
-            .collect::<Vec<_>>()
-            .join("; ")
-    );
-
-    Ok(GENERATION_PROMPT_TEMPLATE
-        .replace("{grounding_instruction}", GROUNDING_INSTRUCTION)
-        .replace("{scope_instruction}", SCOPE_INSTRUCTION)
-        .replace("{tone_json}", &tone_json)
-        .replace(
-            "{template_macros_hint}",
-            crate::generation::prompts::TEMPLATE_MACROS_HINT,
-        )
-        .replace("{entries_json}", &entries_json)
-        .replace("{keywords_json}", &keywords_json)
-        .replace("{jd_summary}", &jd_summary))
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Tests
@@ -703,160 +894,148 @@ mod tests {
         assert!(request.persona_id.is_none());
     }
 
-    fn make_ranked_entry_with_contribution(
-        contribution_type: &str,
-    ) -> crate::generation::content_selector::RankedEntry {
-        use crate::generation::content_selector::RankedEntry;
-        use crate::models::context::ContextEntryRow;
-        RankedEntry {
-            entry: ContextEntryRow {
-                id: Uuid::new_v4(),
-                user_id: Uuid::new_v4(),
-                entry_id: Uuid::new_v4(),
-                version: 1,
-                entry_type: "experience".to_string(),
-                data: serde_json::json!({"company": "ACME", "role": "Engineer"}),
-                raw_text: None,
-                recency_score: 0.9,
-                impact_score: 0.8,
-                tags: vec![],
-                flagged_evergreen: false,
-                contribution_type: contribution_type.to_string(),
-                quality_score: 1.0,
-                quality_flags: vec![],
-                created_at: chrono::Utc::now(),
-            },
-            combined_score: 0.85,
-            jd_relevance: 0.7,
+    fn make_experience_entry_row() -> ContextEntryRow {
+        use chrono::NaiveDate;
+        ContextEntryRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_id: Uuid::new_v4(),
+            version: 1,
+            entry_type: "experience".to_string(),
+            data: serde_json::json!({
+                "company": "Acme Corp",
+                "role": "Backend Engineer",
+                "date_start": "2022-01-01",
+                "date_end": null,
+                "team_size": 5,
+                "tech_stack": ["Rust", "Kubernetes"],
+                "contribution_type": "primary_contributor",
+                "location": null,
+                "bullets": []
+            }),
+            raw_text: Some("Led development of distributed caching layer.".to_string()),
+            recency_score: 0.9,
+            impact_score: 0.8,
+            tags: vec!["rust".to_string()],
+            flagged_evergreen: false,
+            contribution_type: "primary_contributor".to_string(),
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn make_skill_entry_row() -> ContextEntryRow {
+        ContextEntryRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_id: Uuid::new_v4(),
+            version: 1,
+            entry_type: "skill".to_string(),
+            data: serde_json::json!({
+                "category": "Languages",
+                "items": ["Rust", "Go", "Python"],
+                "proficiency": null
+            }),
+            raw_text: None,
+            recency_score: 1.0,
+            impact_score: 0.5,
+            tags: vec!["rust".to_string(), "go".to_string()],
+            flagged_evergreen: true,
+            contribution_type: "sole_author".to_string(),
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: chrono::Utc::now(),
         }
     }
 
     #[test]
-    fn test_generation_prompt_team_member_allowed_verbs() {
-        use crate::generation::content_selector::SelectionResult;
-        use crate::generation::jd_parser::{
-            JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals,
-        };
-        use crate::generation::tone::{filter_verbs_for_contribution, get_tone_examples};
-        use std::collections::HashMap;
-
-        let jd = ParsedJD {
-            hard_requirements: vec![Requirement {
-                text: "Rust".to_string(),
-                is_required: true,
-            }],
-            soft_signals: vec![],
-            role_signals: RoleSignals {
-                is_startup: true,
-                is_ic_focused: true,
-                is_research: false,
-                seniority: "senior".to_string(),
-            },
-            keyword_inventory: vec![KeywordEntry {
-                keyword: "Rust".to_string(),
-                frequency: 5,
-                position_weight: 0.8,
-                weighted_score: 4.0,
-            }],
-            detected_tone: JDTone::AggressiveStartup,
-        };
-
-        let tone_examples = get_tone_examples(&jd.detected_tone);
-        let entry = make_ranked_entry_with_contribution("team_member");
-
-        let selection = SelectionResult {
-            selected_entries: vec![entry],
-            excluded_entries: vec![],
-            section_weights: HashMap::new(),
-            reframe_hints: vec![],
-        };
-
-        let prompt = build_generation_prompt(&jd, &selection, &tone_examples).unwrap();
-
-        // Verify allowed_verbs for team_member via filter_verbs_for_contribution
-        // (same function used in build_generation_prompt) — and that the prompt
-        // doesn't carry "Architected" as an allowed verb for this entry.
-        let allowed_verbs =
-            filter_verbs_for_contribution(&tone_examples.strong_verbs, "team_member");
-        assert!(
-            !allowed_verbs.contains(&"Architected"),
-            "team_member must NOT have 'Architected' in allowed_verbs, got: {:?}",
-            allowed_verbs
-        );
-
-        // The prompt itself must NOT contain "Architected" in an allowed_verbs context.
-        // Since build_generation_prompt serializes allowed_verbs per-entry, we can check
-        // the serialized form of the filtered verbs does not include "Architected".
-        let serialized = serde_json::to_string(&allowed_verbs).unwrap();
-        assert!(
-            !serialized.contains("Architected"),
-            "Serialized team_member allowed_verbs must not contain Architected: {}",
-            serialized
-        );
-        // Verify the prompt was built without panic
-        assert!(!prompt.is_empty());
+    fn test_build_entry_header_latex_experience() {
+        let entry = make_experience_entry_row();
+        let header = build_entry_header_latex(&entry);
+        assert!(header.is_some(), "experience entry must produce a header");
+        let h = header.unwrap();
+        assert!(h.contains(r"\job"), "experience header must use \\job macro");
+        assert!(h.contains("Acme Corp"), "must contain company name");
+        assert!(h.contains("Backend Engineer"), "must contain role");
+        assert!(h.contains("Jan 2022"), "must contain start date");
+        assert!(h.contains("Present"), "open end date must show Present");
     }
 
     #[test]
-    fn test_generation_prompt_sole_author_allowed_verbs() {
-        use crate::generation::content_selector::SelectionResult;
-        use crate::generation::jd_parser::{
-            JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals,
-        };
-        use crate::generation::tone::{filter_verbs_for_contribution, get_tone_examples};
-        use std::collections::HashMap;
+    fn test_build_entry_header_latex_skill() {
+        let entry = make_skill_entry_row();
+        let header = build_entry_header_latex(&entry);
+        assert!(header.is_some(), "skill entry must produce a header");
+        let h = header.unwrap();
+        assert!(h.contains(r"\skillcat"), "skill header must use \\skillcat macro");
+        assert!(h.contains("Languages"), "must contain category");
+        assert!(h.contains("Rust"), "must contain items");
+    }
 
-        let jd = ParsedJD {
-            hard_requirements: vec![Requirement {
-                text: "Rust".to_string(),
-                is_required: true,
-            }],
-            soft_signals: vec![],
-            role_signals: RoleSignals {
-                is_startup: true,
-                is_ic_focused: true,
-                is_research: false,
-                seniority: "senior".to_string(),
-            },
-            keyword_inventory: vec![KeywordEntry {
-                keyword: "Rust".to_string(),
-                frequency: 5,
-                position_weight: 0.8,
-                weighted_score: 4.0,
-            }],
-            detected_tone: JDTone::AggressiveStartup,
-        };
+    #[test]
+    fn test_build_entry_header_latex_bad_data_returns_none() {
+        let mut entry = make_experience_entry_row();
+        // Inject malformed data so deserialization fails
+        entry.data = serde_json::json!({"not_a_real_field": true});
+        let header = build_entry_header_latex(&entry);
+        // Should return None and log a warning, not panic
+        assert!(header.is_none());
+    }
 
-        let tone_examples = get_tone_examples(&jd.detected_tone);
-        let entry = make_ranked_entry_with_contribution("sole_author");
+    #[test]
+    fn test_per_entry_llm_response_deserialization() {
+        let json = r#"{
+            "bullets": [
+                {"text": "Architected distributed caching layer", "line_estimate": 1, "jd_keywords_used": ["distributed"]},
+                {"text": "Reduced p99 latency by 40%", "line_estimate": 1, "jd_keywords_used": []}
+            ]
+        }"#;
+        let resp: PerEntryLlmResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.bullets.len(), 2);
+        assert_eq!(resp.bullets[0].text, "Architected distributed caching layer");
+        assert_eq!(resp.bullets[0].line_estimate, 1);
+        assert_eq!(resp.bullets[0].jd_keywords_used, vec!["distributed"]);
+    }
 
-        let selection = SelectionResult {
-            selected_entries: vec![entry],
-            excluded_entries: vec![],
-            section_weights: HashMap::new(),
-            reframe_hints: vec![],
-        };
+    #[test]
+    fn test_per_entry_llm_response_empty_bullets() {
+        // Skills entries return empty bullets array
+        let json = r#"{"bullets": []}"#;
+        let resp: PerEntryLlmResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.bullets.is_empty());
+    }
 
-        let prompt = build_generation_prompt(&jd, &selection, &tone_examples).unwrap();
+    #[test]
+    fn test_escape_header_latex_special_chars() {
+        assert_eq!(escape_header_latex("A&B"), r"A\&B");
+        assert_eq!(escape_header_latex("A_B"), r"A\_B");
+        assert_eq!(escape_header_latex("A$B"), r"A\$B");
+        assert_eq!(escape_header_latex("A%B"), r"A\%B");
+        assert_eq!(escape_header_latex("A#B"), r"A\#B");
+        // Plain text unchanged
+        assert_eq!(escape_header_latex("Acme Corp"), "Acme Corp");
+    }
 
-        // Verify allowed_verbs for sole_author includes "Architected"
-        let allowed_verbs =
-            filter_verbs_for_contribution(&tone_examples.strong_verbs, "sole_author");
-        assert!(
-            allowed_verbs.contains(&"Architected"),
-            "sole_author MUST have 'Architected' in allowed_verbs, got: {:?}",
-            allowed_verbs
-        );
+    #[test]
+    fn test_format_date_range_opt() {
+        use chrono::NaiveDate;
+        let s = NaiveDate::from_ymd_opt(2022, 1, 1).unwrap();
+        let e = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+        assert_eq!(format_date_range_opt(Some(s), Some(e)), "Jan 2022 -- Jun 2024");
+        assert_eq!(format_date_range_opt(Some(s), None), "Jan 2022 -- Present");
+        assert_eq!(format_date_range_opt(None, None), "");
+    }
 
-        // The serialized form of sole_author allowed_verbs must contain "Architected"
-        let serialized = serde_json::to_string(&allowed_verbs).unwrap();
-        assert!(
-            serialized.contains("Architected"),
-            "Serialized sole_author allowed_verbs must contain Architected: {}",
-            serialized
-        );
-        // Verify the prompt was built without panic
-        assert!(!prompt.is_empty());
+    #[test]
+    fn test_section_for_entry_type() {
+        assert_eq!(section_for_entry_type("experience"), "Experience");
+        assert_eq!(section_for_entry_type("project"), "Projects");
+        assert_eq!(section_for_entry_type("open_source"), "Projects");
+        assert_eq!(section_for_entry_type("education"), "Education");
+        assert_eq!(section_for_entry_type("skill"), "Skills");
+        assert_eq!(section_for_entry_type("publication"), "Publications");
+        assert_eq!(section_for_entry_type("award"), "Other");
     }
 
     #[test]
