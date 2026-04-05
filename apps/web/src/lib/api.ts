@@ -280,6 +280,29 @@ export const api = {
       body: JSON.stringify({ user_id: userId, patch }),
     }),
 
+  /**
+   * DELETE /api/v1/context/entries/:entryId?user_id={uuid}
+   * Hard-deletes all versions of a context entry for the given user.
+   * Returns 204 No Content on success.
+   */
+  deleteContextEntry: async (entryId: string, userId: string): Promise<void> => {
+    const res = await fetch(
+      `${API_BASE}/api/v1/context/entries/${entryId}?user_id=${userId}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+  },
+
+  /**
+   * DELETE /api/v1/context?user_id={uuid}
+   * Hard-deletes ALL context entries for the given user.
+   * Returns the count of deleted entries.
+   */
+  clearAllContext: async (userId: string): Promise<{ deleted_count: number }> =>
+    apiFetch<{ deleted_count: number }>(`/api/v1/context?user_id=${userId}`, {
+      method: "DELETE",
+    }),
+
   getProfile: (userId: string) =>
     apiFetch<UserProfileResponse>(`/api/v1/profile?user_id=${userId}`),
 
