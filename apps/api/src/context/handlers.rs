@@ -370,6 +370,60 @@ pub async fn handle_ingest_upload(
     })))
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Delete handlers
+// ────────────────────────────────────────────────────────────────────────────
+
+/// DELETE /api/v1/context/entries/:id?user_id={uuid}
+///
+/// Hard-deletes all versions of a context entry for the given user.
+/// Returns 404 if the entry does not exist for this user.
+/// Returns 204 No Content on success.
+pub async fn handle_delete_entry(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<UserIdQuery>,
+) -> Result<StatusCode, AppError> {
+    let result = sqlx::query(
+        "DELETE FROM context_entries WHERE entry_id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(params.user_id)
+    .execute(&state.db)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound(format!(
+            "Context entry {} not found",
+            id
+        )));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+pub struct ClearContextResponse {
+    pub deleted_count: u64,
+}
+
+/// DELETE /api/v1/context?user_id={uuid}
+///
+/// Hard-deletes ALL context entries for the given user.
+/// Returns a count of deleted entries.
+pub async fn handle_clear_context(
+    State(state): State<AppState>,
+    Query(params): Query<UserIdQuery>,
+) -> Result<Json<ClearContextResponse>, AppError> {
+    let result = sqlx::query("DELETE FROM context_entries WHERE user_id = $1")
+        .bind(params.user_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(ClearContextResponse {
+        deleted_count: result.rows_affected(),
+    }))
+}
+
 /// GET /api/v1/context/ingest/batch/:id
 ///
 /// Returns the current status of a batch including per-item progress.

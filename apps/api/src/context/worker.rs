@@ -19,7 +19,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::context::batch;
-use crate::context::ingest::{confirm_ingest, parse_and_validate, IngestConfirmRequest};
+use crate::context::ingest::{confirm_ingest, parse_three_phase, IngestConfirmRequest};
 use crate::llm_client::LlmClient;
 
 /// Redis list key for the context ingest job queue.
@@ -170,26 +170,17 @@ async fn process_ingest_item(
     // Step 2: Mark item as processing
     batch::mark_item_processing(db, item_id).await?;
 
-    // Step 3: Parse and validate via LLM (quality is non-blocking — always proceeds)
-    let preview = match parse_and_validate(&entry_text, llm, db, user_id).await {
-        Ok(p) => p,
+    // Step 3: Three-phase parse (Phase A metadata + Phase B bullets, chunked)
+    // parse_three_phase borrows &entry_text — must complete before entry_text is moved
+    let parsed_entry = match parse_three_phase(&entry_text, llm).await {
+        Ok(e) => e,
         Err(e) => {
             let msg = format!("Parse failed: {e}");
-            error!(%item_id, %user_id, error = %e, "Ingest worker: parse_and_validate failed");
+            error!(%item_id, %user_id, error = %e, "Ingest worker: parse_three_phase failed");
             batch::mark_item_failed(db, item_id, &msg).await?;
             return Ok(());
         }
     };
-
-    if preview.quality.quality_score < 1.0 {
-        info!(
-            %item_id,
-            %user_id,
-            quality_score = preview.quality.quality_score,
-            flags = ?preview.quality.flags,
-            "Ingest worker: low quality entry — storing with hints (non-blocking)"
-        );
-    }
 
     // Step 4: Check for duplicate (heuristic + LLM confirm)
     let existing_entries = match get_current_entries(db, user_id).await {
@@ -200,8 +191,9 @@ async fn process_ingest_item(
         }
     };
 
+    // Clone parsed_entry before the dedup check — it's used in multiple branches
     let dedup_result =
-        crate::context::dedup::check_and_merge(&existing_entries, &preview.entry, llm).await;
+        crate::context::dedup::check_and_merge(&existing_entries, &parsed_entry, llm).await;
 
     match dedup_result {
         DedupResult::Merged(existing_entry_id) => {
@@ -214,7 +206,7 @@ async fn process_ingest_item(
                 llm,
                 user_id,
                 existing_entry_id,
-                &preview.entry,
+                &parsed_entry,
             )
             .await
             {
@@ -227,7 +219,8 @@ async fn process_ingest_item(
                     warn!(%item_id, %user_id, error = %e, "Ingest worker: merge failed, falling back to normal insert");
                     let confirm_req = IngestConfirmRequest {
                         user_id,
-                        entry: preview.entry,
+                        entry: parsed_entry.clone(),
+                        raw_text: Some(entry_text.clone()),
                         acknowledged_gaps: vec![],
                     };
                     commit_and_mark(db, s3, s3_bucket, item_id, user_id, confirm_req).await?;
@@ -241,7 +234,8 @@ async fn process_ingest_item(
             }
             let confirm_req = IngestConfirmRequest {
                 user_id,
-                entry: preview.entry,
+                entry: parsed_entry,
+                raw_text: Some(entry_text),
                 acknowledged_gaps: vec![],
             };
             commit_and_mark(db, s3, s3_bucket, item_id, user_id, confirm_req).await?;
