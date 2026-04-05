@@ -19,7 +19,10 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health::health_handler))
         // ── Context API (Phase 1) ──────────────────────────────────────────
-        .route("/api/v1/context", get(ctx::handle_get_context))
+        .route(
+            "/api/v1/context",
+            get(ctx::handle_get_context).delete(ctx::handle_clear_context),
+        )
         .route("/api/v1/context/health", get(ctx::handle_context_health))
         .route("/api/v1/context/history", get(ctx::handle_context_history))
         .route("/api/v1/context/version/:v", get(ctx::handle_get_version))
@@ -34,7 +37,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/context/entries/:id",
-            patch(ctx::handle_patch_entry),
+            patch(ctx::handle_patch_entry).delete(ctx::handle_delete_entry),
         )
         // ── Batch ingestion API (async pipeline) ──────────────────────────
         // Note: specific literal paths before the :id param route (Axum priority)
