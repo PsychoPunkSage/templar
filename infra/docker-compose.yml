@@ -41,6 +41,10 @@ services:
       RUST_LOG: info
       # Templates directory inside the container — matches COPY in Dockerfile.api
       TEMPLATES_DIR: /app/templates
+      # config.toml path inside the container (mounted below)
+      CONFIG_TOML_PATH: /app/config.toml
+    volumes:
+      - ../config.toml:/app/config.toml:ro
     depends_on:
       postgres:
         condition: service_healthy
