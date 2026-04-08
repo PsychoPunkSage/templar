@@ -1,9 +1,99 @@
 use anyhow::{Context, Result};
 
-/// Application configuration loaded from environment variables.
-/// Panics at startup if required variables are missing.
+// ────────────────────────────────────────────────────────────────────────────
+// config.toml deserialization structs
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Raw deserialized shape of config.toml.
+/// All fields are Option so missing sections/keys fall back to defaults.
+#[derive(Debug, Default, serde::Deserialize)]
+struct TomlConfig {
+    #[serde(default)]
+    concurrency: TomlConcurrencyConfig,
+    #[serde(default)]
+    ingestion: TomlIngestionConfig,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TomlConcurrencyConfig {
+    ingest_worker_count: Option<usize>,
+    ingest_llm_concurrency: Option<usize>,
+    generation_llm_concurrency: Option<usize>,
+    render_worker_count: Option<usize>,
+}
+
+impl Default for TomlConcurrencyConfig {
+    fn default() -> Self {
+        Self {
+            ingest_worker_count: None,
+            ingest_llm_concurrency: None,
+            generation_llm_concurrency: None,
+            render_worker_count: None,
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TomlIngestionConfig {
+    bullet_token_budget: Option<usize>,
+}
+
+impl Default for TomlIngestionConfig {
+    fn default() -> Self {
+        Self {
+            bullet_token_budget: None,
+        }
+    }
+}
+
+/// Attempts to load config.toml from several candidate paths.
+///
+/// Priority order for path lookup:
+///   1. `CONFIG_TOML_PATH` env var (explicit override)
+///   2. `config.toml` (current working directory — default in Docker)
+///   3. `../config.toml` (one level up — useful in `apps/api/` dev runs)
+///   4. `../../config.toml` (two levels up — useful in deep cargo targets)
+///
+/// If no file is found or parsing fails, logs at INFO/WARN and returns defaults.
+/// This function NEVER panics — missing config.toml is gracefully handled.
+fn read_toml_config() -> TomlConfig {
+    let paths = [
+        std::env::var("CONFIG_TOML_PATH").unwrap_or_default(),
+        "config.toml".to_string(),
+        "../config.toml".to_string(),
+        "../../config.toml".to_string(),
+    ];
+    for path in &paths {
+        if path.is_empty() {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(path) {
+            match toml::from_str::<TomlConfig>(&content) {
+                Ok(cfg) => {
+                    tracing::info!(path, "Loaded config.toml");
+                    return cfg;
+                }
+                Err(e) => {
+                    tracing::warn!(path, error = %e, "Failed to parse config.toml — using defaults");
+                }
+            }
+        }
+    }
+    tracing::info!("No config.toml found — using env vars and built-in defaults");
+    TomlConfig::default()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Application configuration
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Application configuration loaded from environment variables (+ optional config.toml).
+///
+/// Priority: env var > config.toml > hardcoded default.
+/// Panics at startup if *required* env vars (DATABASE_URL, etc.) are missing.
 #[derive(Debug, Clone)]
 pub struct Config {
+    // ── Required env vars ────────────────────────────────────────────────────
     pub database_url: String,
     pub redis_url: String,
     pub s3_bucket: String,
@@ -13,11 +103,46 @@ pub struct Config {
     pub anthropic_api_key: String,
     pub api_port: u16,
     pub rust_log: String,
+
+    // ── Concurrency tunables (env var > toml > default) ──────────────────────
+
+    /// Number of background Redis ingest workers.
+    /// Env: INGEST_WORKER_COUNT  |  Default: 2
+    pub ingest_worker_count: usize,
+
+    /// Max concurrent LLM calls across all ingest workers (shared semaphore).
+    /// Env: INGEST_LLM_CONCURRENCY  |  Default: 2
+    pub ingest_llm_concurrency: usize,
+
+    /// Max concurrent per-entry LLM calls during resume generation.
+    /// Env: GENERATION_LLM_CONCURRENCY  |  Default: 3
+    pub generation_llm_concurrency: usize,
+
+    /// Number of parallel pdflatex render workers.
+    /// Env: RENDER_WORKER_COUNT  |  Default: 4
+    pub render_worker_count: usize,
+
+    // ── Ingestion tunables ───────────────────────────────────────────────────
+
+    /// Estimated token budget per Phase-B bullet-extraction chunk.
+    /// Env: BULLET_TOKEN_BUDGET  |  Default: 1200
+    pub bullet_token_budget: usize,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self> {
         dotenvy::dotenv().ok(); // load .env if present; ignore if missing
+
+        let toml = read_toml_config();
+
+        // Helper: env var (parsed as T) → toml Option<T> → hardcoded default.
+        fn env_or<T: std::str::FromStr>(var: &str, toml_val: Option<T>, default: T) -> T {
+            std::env::var(var)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .or(toml_val)
+                .unwrap_or(default)
+        }
 
         Ok(Config {
             database_url: require_env("DATABASE_URL")?,
@@ -32,6 +157,35 @@ impl Config {
                 .parse::<u16>()
                 .context("API_PORT must be a valid port number")?,
             rust_log: std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+
+            // Concurrency tunables
+            ingest_worker_count: env_or(
+                "INGEST_WORKER_COUNT",
+                toml.concurrency.ingest_worker_count,
+                2,
+            ),
+            ingest_llm_concurrency: env_or(
+                "INGEST_LLM_CONCURRENCY",
+                toml.concurrency.ingest_llm_concurrency,
+                2,
+            ),
+            generation_llm_concurrency: env_or(
+                "GENERATION_LLM_CONCURRENCY",
+                toml.concurrency.generation_llm_concurrency,
+                3,
+            ),
+            render_worker_count: env_or(
+                "RENDER_WORKER_COUNT",
+                toml.concurrency.render_worker_count,
+                4,
+            ),
+
+            // Ingestion tunables
+            bullet_token_budget: env_or(
+                "BULLET_TOKEN_BUDGET",
+                toml.ingestion.bullet_token_budget,
+                1200,
+            ),
         })
     }
 }
