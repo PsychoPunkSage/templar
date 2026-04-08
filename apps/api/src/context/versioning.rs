@@ -34,6 +34,14 @@ pub struct CommitParams<'a> {
 
 /// Commits a new context entry as a versioned INSERT.
 /// CRITICAL: This is append-only. Never UPDATE existing rows.
+///
+/// Uses a single `sqlx::Transaction` with a PostgreSQL advisory lock keyed on `user_id`
+/// to prevent the `SELECT MAX(version)` + `INSERT` race condition that caused duplicate-key
+/// errors when multiple ingest workers ran concurrently for the same user.
+///
+/// The advisory lock (`pg_advisory_xact_lock`) serializes all commit calls for a given user
+/// without requiring a dedicated version-counter row. The lock is automatically released
+/// when the transaction commits or rolls back.
 pub async fn commit_context_update(
     pool: &PgPool,
     s3: &aws_sdk_s3::Client,
@@ -54,15 +62,42 @@ pub async fn commit_context_update(
         quality_score,
         quality_flags,
     } = params;
-    // 1. Determine next version
-    let current_max: Option<i32> =
-        sqlx::query_scalar("SELECT MAX(version) FROM context_entries WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(pool)
-            .await?;
-    let new_version = current_max.unwrap_or(0) + 1;
 
-    // 2. Append-only INSERT
+    // ── 1. Begin transaction ──────────────────────────────────────────────────
+    let mut tx = pool.begin().await?;
+
+    // ── 2. Advisory lock on user_id ───────────────────────────────────────────
+    // pg_advisory_xact_lock takes an i64. We fold the 128-bit UUID into 64 bits
+    // via XOR of its two halves. Collisions are theoretically possible but
+    // astronomically unlikely in practice (users are pre-registered).
+    let lock_key = {
+        let bytes = user_id.as_u128();
+        let hi = (bytes >> 64) as i64;
+        let lo = bytes as i64;
+        hi ^ lo
+    };
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(lock_key)
+        .execute(&mut *tx)
+        .await?;
+
+    // ── 3. Compute next version (safe under the advisory lock) ────────────────
+    // Read max from BOTH tables — stale orphaned snapshots (from previously
+    // failed runs without transactions) may have a higher version than entries.
+    // Using only context_entries max would produce a version that already exists
+    // in context_snapshots, causing a duplicate-key violation.
+    let current_max: i32 = sqlx::query_scalar(
+        "SELECT GREATEST(
+            COALESCE((SELECT MAX(version) FROM context_entries WHERE user_id = $1), 0),
+            COALESCE((SELECT MAX(version) FROM context_snapshots WHERE user_id = $1), 0)
+        )",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let new_version = current_max + 1;
+
+    // ── 4. Append-only INSERT (within transaction) ────────────────────────────
     sqlx::query(
         r#"
         INSERT INTO context_entries
@@ -85,16 +120,27 @@ pub async fn commit_context_update(
     .bind(contribution_type)
     .bind(quality_score)
     .bind(quality_flags)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     info!("Inserted context entry {entry_id} version {new_version} for user {user_id}");
 
-    // 3. Render all current entries to markdown
-    let all_entries = get_current_entries(pool, user_id).await?;
+    // ── 5. Render all current entries to markdown (within transaction for consistency) ──
+    let all_entries = sqlx::query_as::<_, ContextEntryRow>(
+        r#"
+        SELECT DISTINCT ON (entry_id) *
+        FROM context_entries
+        WHERE user_id = $1
+        ORDER BY entry_id, version DESC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
     let md_content = render_context_to_md(user_id, &all_entries);
 
-    // 4. Upload markdown snapshot to S3
+    // ── 6. Upload markdown snapshot to S3 (outside tx is fine — S3 is idempotent) ──
     let s3_key = format!("contexts/{}/v{}.md", user_id, new_version);
     s3.put_object()
         .bucket(s3_bucket)
@@ -107,7 +153,7 @@ pub async fn commit_context_update(
 
     info!("Uploaded context snapshot to s3://{}/{}", s3_bucket, s3_key);
 
-    // 5. Record snapshot
+    // ── 7. Insert snapshot record (within transaction) ────────────────────────
     let snapshot_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO context_snapshots (id, user_id, version, s3_key) VALUES ($1, $2, $3, $4)",
@@ -116,8 +162,11 @@ pub async fn commit_context_update(
     .bind(user_id)
     .bind(new_version)
     .bind(&s3_key)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    // ── 8. Commit ─────────────────────────────────────────────────────────────
+    tx.commit().await?;
 
     Ok(ContextVersion {
         version: new_version,
