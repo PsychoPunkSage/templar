@@ -151,21 +151,32 @@ async fn main() -> Result<()> {
     );
     info!("Render worker: spawned");
 
-    // Spawn N background context ingest workers (configurable via INGEST_WORKER_COUNT)
-    let ingest_worker_count: usize = std::env::var("INGEST_WORKER_COUNT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(4);
-    for _ in 0..ingest_worker_count {
+    // Shared semaphore for all ingest workers — caps total concurrent LLM calls.
+    let ingest_sem = Arc::new(tokio::sync::Semaphore::new(config.ingest_llm_concurrency));
+
+    // Spawn N background context ingest workers (from config: ingest_worker_count)
+    for _ in 0..config.ingest_worker_count {
         spawn_context_ingest_worker(
             state.redis.clone(),
             state.db.clone(),
             state.llm.clone(),
             state.s3.clone(),
             state.config.s3_bucket.clone(),
+            Arc::clone(&ingest_sem),
+            config.bullet_token_budget,
         );
     }
-    info!("Context ingest workers: spawned {ingest_worker_count}");
+    info!(
+        ingest_workers = config.ingest_worker_count,
+        ingest_llm_concurrency = config.ingest_llm_concurrency,
+        generation_llm_concurrency = config.generation_llm_concurrency,
+        layout_llm_concurrency = config.layout_llm_concurrency,
+        grounding_llm_concurrency = config.grounding_llm_concurrency,
+        render_workers = config.render_worker_count,
+        bullet_token_budget = config.bullet_token_budget,
+        "Concurrency config loaded"
+    );
+    info!("Context ingest workers: spawned {}", config.ingest_worker_count);
 
     // Build router
     let app = build_router(state)
