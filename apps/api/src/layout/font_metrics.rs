@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// The five supported resume font families, matching Templar's template set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FontFamily {
     /// Hacker template — clean humanist sans-serif.
     Inter,
@@ -67,6 +68,88 @@ pub fn default_page_config(font: FontFamily) -> PageConfig {
         margin_right_in: 1.0,
         usable_height_lines: 45,
         microtype_margin: 0.03,
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Paper size + template layout config
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Physical paper dimensions used for computing usable text width.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperSize {
+    #[default]
+    Letter,
+    A4,
+}
+
+impl PaperSize {
+    pub fn width_in(&self) -> f32 {
+        match self {
+            Self::Letter => 8.5,
+            Self::A4 => 8.268,
+        }
+    }
+}
+
+/// Layout physics declared by a template in its metadata.json.
+/// All fields have sensible defaults (Inter 11pt, Letter, 1" margins).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemplateLayoutConfig {
+    #[serde(default = "TemplateLayoutConfig::default_font")]
+    pub font: FontFamily,
+    #[serde(default = "TemplateLayoutConfig::default_font_size")]
+    pub font_size_pt: u8,
+    #[serde(default = "TemplateLayoutConfig::default_margin")]
+    pub margin_left_in: f32,
+    #[serde(default = "TemplateLayoutConfig::default_margin")]
+    pub margin_right_in: f32,
+    #[serde(default)]
+    pub paper: PaperSize,
+}
+
+impl TemplateLayoutConfig {
+    fn default_font() -> FontFamily {
+        FontFamily::Inter
+    }
+    fn default_font_size() -> u8 {
+        11
+    }
+    fn default_margin() -> f32 {
+        1.0
+    }
+}
+
+impl Default for TemplateLayoutConfig {
+    fn default() -> Self {
+        Self {
+            font: FontFamily::Inter,
+            font_size_pt: 11,
+            margin_left_in: 1.0,
+            margin_right_in: 1.0,
+            paper: PaperSize::Letter,
+        }
+    }
+}
+
+impl PageConfig {
+    /// Derive a PageConfig from a template's declared layout physics.
+    pub fn from_layout(layout: &TemplateLayoutConfig) -> Self {
+        let text_width_in =
+            layout.paper.width_in() - layout.margin_left_in - layout.margin_right_in;
+        let text_width_em = text_width_in * 72.27 / layout.font_size_pt as f32;
+        let line_height_pt = layout.font_size_pt as f32 * 1.2;
+        let usable_height_lines = (9.0_f32 * 72.27 / line_height_pt).floor() as u16;
+        PageConfig {
+            font: layout.font.clone(),
+            font_size_pt: layout.font_size_pt,
+            text_width_em,
+            margin_left_in: layout.margin_left_in,
+            margin_right_in: layout.margin_right_in,
+            usable_height_lines,
+            microtype_margin: 0.03,
+        }
     }
 }
 
@@ -315,6 +398,7 @@ pub fn get_metrics(font: &FontFamily) -> &'static FontMetricTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::simulator::estimate_char_budget;
 
     fn make_config(font: FontFamily) -> PageConfig {
         default_page_config(font)
@@ -437,5 +521,55 @@ mod tests {
         assert!(config.text_width_em > 40.0 && config.text_width_em < 50.0);
         assert!(config.usable_height_lines > 30);
         assert!((config.microtype_margin - 0.03).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_page_config_from_layout_generic_cv() {
+        let layout = TemplateLayoutConfig {
+            font: FontFamily::ComputerModern,
+            font_size_pt: 11,
+            margin_left_in: 0.5,
+            margin_right_in: 0.5,
+            paper: PaperSize::A4,
+        };
+        let config = PageConfig::from_layout(&layout);
+        // text_width_in = 8.268 - 0.5 - 0.5 = 7.268
+        // text_width_em = 7.268 * 72.27 / 11 ≈ 47.73
+        assert!(
+            (config.text_width_em - 47.73).abs() < 0.5,
+            "text_width_em={}",
+            config.text_width_em
+        );
+        let budget = estimate_char_budget(&config);
+        // 47.73 / 0.47 ≈ 101
+        assert!(budget >= 98 && budget <= 108, "char_budget={}", budget);
+    }
+
+    #[test]
+    fn test_page_config_from_layout_default_matches_inter() {
+        let config = PageConfig::from_layout(&TemplateLayoutConfig::default());
+        // Inter 11pt Letter 1" margins: text_width = 6.5", em = 6.5*72.27/11 ≈ 42.7
+        assert!(
+            (config.text_width_em - 42.7).abs() < 0.5,
+            "text_width_em={}",
+            config.text_width_em
+        );
+    }
+
+    #[test]
+    fn test_template_layout_config_serde_round_trip() {
+        let json = r#"{"font":"computer_modern","font_size_pt":11,"margin_left_in":0.5,"margin_right_in":0.5,"paper":"a4"}"#;
+        let layout: TemplateLayoutConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(layout.font, FontFamily::ComputerModern);
+        assert_eq!(layout.paper, PaperSize::A4);
+    }
+
+    #[test]
+    fn test_template_layout_config_default_serde() {
+        // Empty JSON object should deserialize to defaults
+        let layout: TemplateLayoutConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(layout.font, FontFamily::Inter);
+        assert_eq!(layout.font_size_pt, 11);
+        assert_eq!(layout.paper, PaperSize::Letter);
     }
 }
