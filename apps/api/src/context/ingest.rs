@@ -1,5 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use crate::context::completeness::compute_completeness_report;
@@ -302,17 +304,30 @@ pub(crate) fn chunk_text_for_bullets(text: &str, budget: usize) -> Vec<String> {
 /// Phase B: bullet extraction (chunked — failures are non-fatal)
 /// Phase C: assemble into `{entry_type, data}` structure (pure Rust)
 ///
+/// `sem` is a shared semaphore across all ingest workers — each individual LLM call
+/// acquires one permit and releases it immediately after the call completes. This caps
+/// total concurrent LLM calls (across all workers) to `sem.available_permits()` at any
+/// instant, preventing 429 rate-limit errors.
+///
+/// `bullet_token_budget` controls the chunk size for Phase B calls (replaces the
+/// previously hardcoded 1500). Set via `Config::bullet_token_budget`.
+///
 /// Returns `Ok(assembled_entry)` or `Err` if Phase A failed.
 pub(crate) async fn parse_three_phase(
     raw_text: &str,
     llm: &LlmClient,
+    sem: &Arc<Semaphore>,
+    bullet_token_budget: usize,
 ) -> Result<serde_json::Value, AppError> {
     // ── Phase A: metadata ────────────────────────────────────────────────────
+    // Acquire permit → call LLM → release permit immediately (before Phase B).
+    let _permit = sem.acquire().await.expect("ingest semaphore closed");
     let meta_prompt = CONTEXT_META_PROMPT.replace("{raw_text}", raw_text);
     let meta: serde_json::Value = llm
         .call_json(&meta_prompt, CONTEXT_META_SYSTEM)
         .await
         .map_err(|e| AppError::Llm(format!("Phase A metadata extraction failed: {e}")))?;
+    drop(_permit); // Release before Phase B calls
 
     let entry_type = meta
         .get("entry_type")
@@ -321,11 +336,12 @@ pub(crate) async fn parse_three_phase(
         .to_string();
 
     // ── Phase B: bullet extraction (chunked, non-fatal) ───────────────────────
-    const BULLET_TOKEN_BUDGET: usize = 1500;
-    let chunks = chunk_text_for_bullets(raw_text, BULLET_TOKEN_BUDGET);
+    // Each chunk acquires and immediately releases the permit.
+    let chunks = chunk_text_for_bullets(raw_text, bullet_token_budget);
     let mut all_bullets: Vec<serde_json::Value> = vec![];
 
-    for chunk in &chunks {
+    for (i, chunk) in chunks.iter().enumerate() {
+        let _permit = sem.acquire().await.expect("ingest semaphore closed");
         let prompt = CONTEXT_BULLET_PROMPT.replace("{raw_text}", chunk);
         match llm
             .call_json::<serde_json::Value>(&prompt, CONTEXT_BULLET_SYSTEM)
@@ -337,9 +353,10 @@ pub(crate) async fn parse_three_phase(
                 }
             }
             Err(e) => {
-                tracing::warn!("Phase B bullet chunk failed (non-fatal), skipping: {e}");
+                tracing::warn!(chunk = i, error = %e, "Phase B bullet chunk failed (non-fatal), skipping");
             }
         }
+        drop(_permit); // Release before next chunk
     }
 
     // Deduplicate by exact text match
@@ -350,10 +367,7 @@ pub(crate) async fn parse_three_phase(
     });
 
     // ── Phase C: assemble (pure Rust) ────────────────────────────────────────
-    let mut data = meta
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    let mut data = meta.as_object().cloned().unwrap_or_default();
 
     // Remove entry_type from data (it belongs at the top level)
     data.remove("entry_type");
