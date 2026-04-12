@@ -63,6 +63,11 @@ pub fn build_router(state: AppState) -> Router {
             post(gen::handle_get_cached_fit_score),
         )
         .route("/api/v1/resumes/generate", post(gen::handle_generate))
+        // FIX-08: async generation job status polling
+        .route(
+            "/api/v1/generation/jobs/:id/status",
+            get(gen::handle_generation_status),
+        )
         .route("/api/v1/resumes/:id", get(gen::handle_get_resume))
         .route(
             "/api/v1/resumes/:id/audit",
