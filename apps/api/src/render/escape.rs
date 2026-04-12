@@ -54,8 +54,8 @@ pub fn escape_latex(text: &str) -> String {
             '\u{00B7}' => result.push_str(r"\textperiodcentered{}"),
             '\u{2022}' => result.push_str(r"\textbullet{}"),
             // Smart quotes → proper LaTeX quotes
-            '\u{2018}' => result.push_str(r"`"),  // ' → `
-            '\u{2019}' => result.push_str(r"'"),  // ' → '
+            '\u{2018}' => result.push('`'),          // ' → `
+            '\u{2019}' => result.push('\''),       // ' → '
             '\u{201C}' => result.push_str(r"``"), // " → ``
             '\u{201D}' => result.push_str(r"''"), // " → ''
             // Ellipsis

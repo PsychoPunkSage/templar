@@ -8,6 +8,8 @@
 //! continues processing the next job.
 
 use std::collections::HashMap;
+
+type SectionEntryList = Vec<(uuid::Uuid, Option<String>, Vec<String>)>;
 use std::sync::Arc;
 
 use aws_sdk_s3::primitives::ByteStream;
@@ -468,8 +470,7 @@ async fn fetch_render_data(
     // Preserve first-seen ordering of sections and entries within sections.
     let mut section_order: Vec<String> = Vec::new();
     // section → Vec<(source_entry_id, entry_header, Vec<bullet_text>)>
-    let mut section_entries: HashMap<String, Vec<(Uuid, Option<String>, Vec<String>)>> =
-        HashMap::new();
+    let mut section_entries: HashMap<String, SectionEntryList> = HashMap::new();
 
     for bullet in &bullets {
         if !section_entries.contains_key(&bullet.section) {

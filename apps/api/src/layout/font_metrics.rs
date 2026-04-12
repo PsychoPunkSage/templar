@@ -142,7 +142,7 @@ impl PageConfig {
         let line_height_pt = layout.font_size_pt as f32 * 1.2;
         let usable_height_lines = (9.0_f32 * 72.27 / line_height_pt).floor() as u16;
         PageConfig {
-            font: layout.font.clone(),
+            font: layout.font,
             font_size_pt: layout.font_size_pt,
             text_width_em,
             margin_left_in: layout.margin_left_in,

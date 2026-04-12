@@ -14,7 +14,7 @@ struct TomlConfig {
     ingestion: TomlIngestionConfig,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 struct TomlConcurrencyConfig {
     ingest_worker_count: Option<usize>,
     ingest_llm_concurrency: Option<usize>,
@@ -25,31 +25,9 @@ struct TomlConcurrencyConfig {
     generation_worker_count: Option<usize>,
 }
 
-impl Default for TomlConcurrencyConfig {
-    fn default() -> Self {
-        Self {
-            ingest_worker_count: None,
-            ingest_llm_concurrency: None,
-            generation_llm_concurrency: None,
-            layout_llm_concurrency: None,
-            grounding_llm_concurrency: None,
-            render_worker_count: None,
-            generation_worker_count: None,
-        }
-    }
-}
-
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 struct TomlIngestionConfig {
     bullet_token_budget: Option<usize>,
-}
-
-impl Default for TomlIngestionConfig {
-    fn default() -> Self {
-        Self {
-            bullet_token_budget: None,
-        }
-    }
 }
 
 /// Attempts to load config.toml from several candidate paths.

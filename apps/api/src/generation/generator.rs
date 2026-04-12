@@ -39,6 +39,9 @@ use crate::llm_client::prompts::{GROUNDING_INSTRUCTION, SCOPE_INSTRUCTION};
 use crate::llm_client::LlmClient;
 use crate::models::context::ContextEntryRow;
 
+type GenerateLlmTaskResult =
+    Result<(usize, PerEntryLlmResponse, ContextEntryRow, Option<String>), AppError>;
+
 // ────────────────────────────────────────────────────────────────────────────
 // Data models
 // ────────────────────────────────────────────────────────────────────────────
@@ -137,6 +140,7 @@ pub struct GenerateResponse {
 /// `grounding_enabled` controls whether step 7b runs. Pass `true` in production,
 /// `false` in unit tests to skip LLM grounding calls.
 /// `config` provides concurrency tunables (generation_llm_concurrency).
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_resume(
     pool: &PgPool,
     llm: &LlmClient,
@@ -275,7 +279,7 @@ pub async fn generate_resume(
 
     // Step 6c: Skills phase — JD-filtered skill headers (pure Rust, no LLM).
     let skill_ranked_refs: Vec<&crate::generation::content_selector::RankedEntry> =
-        skill_ranked.iter().map(|re| *re).collect();
+        skill_ranked.to_vec();
     debug!(
         skill_entry_count = skill_ranked_refs.len(),
         total_selected = selection.selected_entries.len(),
@@ -932,10 +936,7 @@ fn build_entry_fit_context(entry_id: uuid::Uuid, fit_report: &FitReport) -> Stri
     // Gate: if the scorer returned entry IDs and this entry is not among them, tell the
     // LLM it was not selected — it should produce minimal/no bullets.
     let scorer_has_selection = !fit_report.selected_entry_ids.is_empty();
-    let is_selected = fit_report
-        .selected_entry_ids
-        .iter()
-        .any(|id| *id == entry_id);
+    let is_selected = fit_report.selected_entry_ids.contains(&entry_id);
 
     if scorer_has_selection && !is_selected {
         return "This entry was NOT selected as a strong JD match. \
@@ -997,11 +998,11 @@ fn dedup_bullets(bullets: Vec<DraftBullet>) -> Vec<DraftBullet> {
             continue;
         }
         let tokens_i = tokenize(&bullets[i].text);
-        for j in (i + 1)..n {
-            if to_remove.contains(&j) || bullets[j].text.is_empty() {
+        for (j, bullet_j) in bullets.iter().enumerate().skip(i + 1) {
+            if to_remove.contains(&j) || bullet_j.text.is_empty() {
                 continue;
             }
-            let tokens_j = tokenize(&bullets[j].text);
+            let tokens_j = tokenize(&bullet_j.text);
             let intersection = tokens_i.intersection(&tokens_j).count();
             let union_count = tokens_i.union(&tokens_j).count();
             if union_count == 0 {
@@ -1314,9 +1315,8 @@ async fn call_llm_with_retry_entries(
 
     // Spawn parallel LLM calls — capped at generation_llm_concurrency to avoid 429 rate limiting
     let sem = Arc::new(Semaphore::new(generation_llm_concurrency));
-    let mut join_set: tokio::task::JoinSet<
-        Result<(usize, PerEntryLlmResponse, ContextEntryRow, Option<String>), AppError>,
-    > = tokio::task::JoinSet::new();
+    let mut join_set: tokio::task::JoinSet<GenerateLlmTaskResult> =
+        tokio::task::JoinSet::new();
 
     for (idx, prompt, entry, header) in prompts {
         let llm = llm.clone();
