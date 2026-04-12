@@ -40,6 +40,9 @@ pub struct ResumeBulletRow {
     /// Added in migration 010: pre-formatted LaTeX entry header from LLM.
     /// Non-NULL only for the first bullet of each source_entry_id group.
     pub entry_header: Option<String>,
+    /// Added in migration 011: insertion rank from the generation pipeline (0-based).
+    /// Used in ORDER BY for render to preserve relevance-ranked order.
+    pub order_idx: i32,
     pub created_at: DateTime<Utc>,
 }
 

@@ -37,7 +37,7 @@ pub async fn handle_get_audit_manifest(
 
     // Step 2: Load all bullets for this resume
     let bullets = sqlx::query_as::<_, ResumeBulletRow>(
-        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, id",
+        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, order_idx, id",
     )
     .bind(resume_id)
     .fetch_all(&state.db)
