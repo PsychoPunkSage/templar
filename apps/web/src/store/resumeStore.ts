@@ -2,19 +2,58 @@
 
 import { create } from "zustand";
 import { api } from "@/lib/api";
-import type { SimulatedBullet, FitReport, AuditManifest, ResumeBulletRow } from "@templar/types";
+import type {
+  SimulatedBullet,
+  FitReport,
+  AuditManifest,
+  ResumeBulletRow,
+  EntryGroup,
+} from "@templar/types";
 
-/** Maps a DB bullet row back to the SimulatedBullet shape used by the store. */
-function bulletRowToSimulated(row: ResumeBulletRow): SimulatedBullet {
-  return {
-    text: row.bullet_text,
-    source_entry_id: row.source_entry_id,
-    section: row.section,
-    verified_line_count: row.line_count as 1 | 2,
-    jd_keywords_used: [],
-    was_adjusted: false,
-    flagged_for_review: row.grounding_score < 0.8 || row.rejection_reason != null,
-  };
+type GenerationStatus = "idle" | "queued" | "processing" | "done" | "failed";
+type RenderStatus = "idle" | "queued" | "rendering" | "done" | "failed";
+
+/**
+ * Reconstructs an EntryGroup from ResumeBulletRow for the loadResume() path.
+ * Display headers are not available from DB alone — uses "other" fallback with source_entry_id label.
+ * Groups bullets by source_entry_id, preserving order_idx / id ordering from the DB query.
+ */
+function bulletRowsToEntryGroups(rows: ResumeBulletRow[]): EntryGroup[] {
+  // Preserve insertion order — rows arrive sorted by (section, order_idx, id) from the DB
+  const orderMap = new Map<string, number>();
+  const groupMap = new Map<string, EntryGroup>();
+
+  for (const row of rows) {
+    if (!groupMap.has(row.source_entry_id)) {
+      orderMap.set(row.source_entry_id, orderMap.size);
+      groupMap.set(row.source_entry_id, {
+        source_entry_id: row.source_entry_id,
+        section: row.section,
+        // Use stored entry_header LaTeX as label when available (better than raw UUID).
+        // Full typed display headers come from detail.resume.entry_groups in loadResume().
+        display_header: { type: "other", label: row.entry_header ?? row.source_entry_id },
+        entry_header_latex: row.entry_header ?? null,
+        bullets: [],
+      });
+    }
+
+    const bullet: SimulatedBullet = {
+      text: row.bullet_text,
+      source_entry_id: row.source_entry_id,
+      section: row.section,
+      verified_line_count: row.line_count as 1 | 2,
+      jd_keywords_used: [],
+      was_adjusted: false,
+      flagged_for_review: row.grounding_score < 0.8 || row.rejection_reason != null,
+    };
+
+    groupMap.get(row.source_entry_id)!.bullets.push(bullet);
+  }
+
+  // Return in insertion order
+  return [...orderMap.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([id]) => groupMap.get(id)!);
 }
 
 /**
@@ -23,12 +62,11 @@ function bulletRowToSimulated(row: ResumeBulletRow): SimulatedBullet {
  */
 export const MVP_USER_ID = "00000000-0000-0000-0000-000000000001";
 
-type RenderStatus = "idle" | "queued" | "rendering" | "done" | "failed";
-
 interface ResumeStore {
   // ─── State ─────────────────────────────────────────────────────────────────
   resumeId: string | null;
-  bullets: SimulatedBullet[];
+  /** Structured per-entry bullet groups — populated on generation complete or resume load. */
+  entryGroups: EntryGroup[];
   jdText: string;
   fitReport: FitReport | null;
   auditManifest: AuditManifest | null;
@@ -50,6 +88,10 @@ interface ResumeStore {
   lastAnalyzedJdText: string | null;
   /** True when context has been updated since the last successful fit analysis. */
   contextChangedSinceAnalysis: boolean;
+  /** Tracks the async generation job (FIX-08). */
+  generationJobId: string | null;
+  /** Current phase of the async generation pipeline (FIX-08). */
+  generationStatus: GenerationStatus;
 
   // ─── Actions ───────────────────────────────────────────────────────────────
   setJdText: (text: string) => void;
@@ -67,14 +109,19 @@ interface ResumeStore {
    */
   autoLoadCachedFitScore: (jdText: string) => Promise<void>;
   /**
-   * Full generation pipeline:
-   * 1. POST /api/v1/resumes/generate
-   * 2. GET  /api/v1/resumes/:id/audit  (non-blocking)
-   * 3. POST /api/v1/render
-   * 4. Start polling render status
-   * 5. Link resume to project (fire-and-forget)
+   * Full generation pipeline (FIX-08):
+   * 1. POST /api/v1/resumes/generate → returns { job_id } immediately
+   * 2. Persist job_id to project (fire-and-forget)
+   * 3. Poll GET /api/v1/generation/jobs/:id/status every 3s until done/failed
+   * 4. On done: fetch audit, trigger PDF render, start render polling, link resume
    */
   generate: (projectId?: string) => Promise<void>;
+  /**
+   * Polls GET /api/v1/generation/jobs/:id/status every 3 seconds.
+   * On done: populates entryGroups, triggers render pipeline.
+   * On failed: surfaces error.
+   */
+  pollGenerationStatus: () => void;
   /**
    * Standalone fit analysis (two-step JD workflow).
    * Calls POST /api/v1/resumes/fit-score and updates fitReport, fitScoreCacheHit, hashes.
@@ -85,7 +132,7 @@ interface ResumeStore {
   pollRenderStatus: () => void;
   /**
    * Loads a saved resume from the database by ID.
-   * Populates bullets and resumeId. Called on page load when a project has
+   * Populates entryGroups and resumeId. Called on page load when a project has
    * a current_resume_id, so bullets survive page refresh.
    */
   loadResume: (resumeId: string) => Promise<void>;
@@ -99,7 +146,7 @@ interface ResumeStore {
 
 export const useResumeStore = create<ResumeStore>((set, get) => ({
   resumeId: null,
-  bullets: [],
+  entryGroups: [],
   jdText: "",
   fitReport: null,
   auditManifest: null,
@@ -114,6 +161,8 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
   lastContextHash: null,
   lastAnalyzedJdText: null,
   contextChangedSinceAnalysis: false,
+  generationJobId: null,
+  generationStatus: "idle",
 
   setJdText: (text) => set({ jdText: text }),
   setCurrentProjectId: (id) => set({ currentProjectId: id }),
@@ -128,13 +177,15 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
     lastContextHash: null,
     lastAnalyzedJdText: null,
     contextChangedSinceAnalysis: false,
-    bullets: [],
+    entryGroups: [],
     resumeId: null,
     auditManifest: null,
     renderJobId: null,
     renderStatus: "idle",
     isGenerating: false,
     error: null,
+    generationJobId: null,
+    generationStatus: "idle",
   }),
 
   invalidateFitScore: () => set({ contextChangedSinceAnalysis: true }),
@@ -192,63 +243,129 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
       console.warn("[store] generate() aborted — jdText is empty");
       return;
     }
-    console.log("[store] generate() start — proceeding with pipeline");
-    // Allow caller to set projectId context for this generation session
+    console.log("[store] generate() start — enqueueing async job");
+
     if (projectId !== undefined) set({ currentProjectId: projectId });
 
     set({
       isGenerating: true,
       error: null,
+      generationStatus: "queued",
+      generationJobId: null,
       renderStatus: "idle",
       renderJobId: null,
       auditManifest: null,
+      entryGroups: [],
     });
 
     try {
-      // Step 1: Generate resume
-      const generated = await api.generateResume(MVP_USER_ID, jdText);
-      console.log("[store] Step 1 done — resume generated", { resume_id: generated.resume_id, bulletCount: generated.bullets.length });
-      set({
-        resumeId: generated.resume_id,
-        bullets: generated.bullets,
-        fitReport: generated.fit_report,
-        fitScoreCacheHit: false,
-        lastJdHash: null,
-        lastContextHash: null,
-      });
+      // Step 1: Enqueue — returns immediately with { job_id, status: "queued" }
+      const { job_id } = await api.generateResume(MVP_USER_ID, jdText);
+      console.log("[store] generation job enqueued", { job_id });
+      set({ generationJobId: job_id });
 
-      // Step 2: Fetch audit manifest (non-blocking — failure should not abort flow)
-      api.getAuditManifest(generated.resume_id).then((audit) => {
-        set({ auditManifest: audit });
-      }).catch(() => {
-        // Audit manifest fetch failure is non-fatal — silently ignored
-      });
-
-      // Step 3: Trigger PDF render
-      const renderResp = await api.triggerRender(generated.resume_id);
-      console.log("[store] Step 3 done — render triggered", { job_id: renderResp.job_id });
-      set({ renderJobId: renderResp.job_id, renderStatus: "queued" });
-
-      // Step 4: Start polling
-      get().pollRenderStatus();
-
-      // Step 5: Link resume to project (fire-and-forget).
-      // We use fire-and-forget here because: if it fails, the user still has their
-      // generated resume (resume_id is returned above). current_resume_id is
-      // "best effort" bookkeeping — not on the critical render path.
+      // Step 2: Persist job_id to project so page-reload can resume polling (fire-and-forget)
       const pid = get().currentProjectId;
       if (pid) {
-        api.updateProject(pid, { current_resume_id: generated.resume_id }).catch((err) => {
-          console.warn("Failed to link resume to project (non-fatal):", err);
+        api.updateProject(pid, { generation_job_id: job_id }).catch((err) => {
+          console.warn("Failed to persist generation_job_id to project (non-fatal):", err);
         });
       }
+
+      // Step 3: Start polling
+      get().pollGenerationStatus();
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : "Generation failed",
+        generationStatus: "failed",
+        isGenerating: false,
       });
-    } finally {
-      set({ isGenerating: false });
     }
+  },
+
+  pollGenerationStatus: () => {
+    const poll = async () => {
+      const { generationJobId, generationStatus } = get();
+
+      // Stop if no job or already terminal
+      if (!generationJobId || generationStatus === "done" || generationStatus === "failed") {
+        return;
+      }
+
+      try {
+        const status = await api.getGenerationStatus(generationJobId);
+        console.log("[store] generation poll tick", { generationJobId, status: status.status });
+
+        set({ generationStatus: status.status as GenerationStatus });
+
+        if (status.status === "done") {
+          const resumeId = status.resume_id ?? null;
+          set({
+            resumeId,
+            entryGroups: status.entry_groups ?? [],
+            fitReport: status.fit_report ?? null,
+            fitScoreCacheHit: false,
+            lastJdHash: null,
+            lastContextHash: null,
+            isGenerating: false,
+          });
+          console.log("[store] generation done", {
+            resumeId,
+            entryGroupCount: (status.entry_groups ?? []).length,
+          });
+
+          // Fetch audit manifest (non-blocking)
+          if (resumeId) {
+            api.getAuditManifest(resumeId).then((audit) => {
+              set({ auditManifest: audit });
+            }).catch(() => {
+              // Audit manifest fetch failure is non-fatal — silently ignored
+            });
+
+            // Trigger PDF render
+            try {
+              const renderResp = await api.triggerRender(resumeId);
+              console.log("[store] render triggered after generation", { job_id: renderResp.job_id });
+              set({ renderJobId: renderResp.job_id, renderStatus: "queued" });
+              get().pollRenderStatus();
+            } catch (renderErr) {
+              console.warn("Failed to trigger render after generation (non-fatal):", renderErr);
+              set({ renderStatus: "failed", error: renderErr instanceof Error ? renderErr.message : "Render trigger failed" });
+            }
+
+            // Link resume to project (fire-and-forget)
+            const pid = get().currentProjectId;
+            if (pid) {
+              api.updateProject(pid, { current_resume_id: resumeId }).catch((err) => {
+                console.warn("Failed to link resume to project (non-fatal):", err);
+              });
+            }
+          }
+
+          return; // stop polling
+        }
+
+        if (status.status === "failed") {
+          set({
+            error: status.error ?? "Generation failed",
+            isGenerating: false,
+          });
+          return; // stop polling
+        }
+
+        // queued | processing — continue polling every 3 seconds
+        setTimeout(poll, 3000);
+      } catch (e) {
+        set({
+          error: e instanceof Error ? e.message : "Failed to check generation status",
+          generationStatus: "failed",
+          isGenerating: false,
+        });
+      }
+    };
+
+    // Initial poll after a short delay to allow the worker to pick up the job
+    setTimeout(poll, 2000);
   },
 
   rerender: async () => {
@@ -277,36 +394,35 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
 
       // Only restore states that are actionable right now.
       // "failed" is a historical record — do not replay it as the current session state.
-      // A failed render from a previous session should not block the user from seeing their bullets.
       let restoredJobId: string | null = null;
       let restoredStatus: RenderStatus = "idle";
 
       if (renderJob) {
         if (renderJob.status === "done") {
-          // Valid PDF in S3 — restore and show it
           restoredStatus = "done";
           restoredJobId = renderJob.job_id;
         } else if (renderJob.status === "processing" || renderJob.status === "queued") {
-          // Job is still live — restore and resume polling
           restoredStatus = renderJob.status === "processing" ? "rendering" : "queued";
           restoredJobId = renderJob.job_id;
         }
-        // "failed" / any other status → stays "idle" (historical, let user decide to re-render)
+        // "failed" / any other status → stays "idle"
       }
 
       set({
         resumeId: detail.resume.id,
-        bullets: detail.bullets.map(bulletRowToSimulated),
+        // Use stored entry_groups (full typed display headers) when available (post-migration 014).
+        // Fall back to bulletRowsToEntryGroups for legacy resumes — shows entry_header LaTeX as label.
+        entryGroups: detail.entry_groups ?? bulletRowsToEntryGroups(detail.bullets),
         renderJobId: restoredJobId,
         renderStatus: restoredStatus,
       });
 
-      // Resume polling if a job was in-flight when the page was last closed
+      // Resume polling if a render job was in-flight when the page was last closed
       if (restoredStatus === "rendering" || restoredStatus === "queued") {
         get().pollRenderStatus();
       }
     } catch {
-      // Non-fatal — if the fetch fails, bullets stay empty (user can regenerate)
+      // Non-fatal — if the fetch fails, entryGroups stay empty (user can regenerate)
     }
   },
 
@@ -322,18 +438,11 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
       try {
         const statusResp = await api.getRenderStatus(renderJobId);
         // Map backend "processing" → frontend "rendering".
-        // The backend DB stores the job lifecycle state as "processing" (RenderStatus::Processing),
-        // but the frontend RenderStatus union only has "rendering" — not "processing".
-        // Without this mapping the store receives an unrecognised string, the polling
-        // condition `newStatus !== "done" && newStatus !== "failed"` still continues,
-        // but renderStatus never reaches a value the UI components recognise as active.
         const rawStatus = statusResp.status === "processing" ? "rendering" : statusResp.status;
         const newStatus = rawStatus as RenderStatus;
-        console.log("[store] poll tick", { renderJobId, rawStatus: statusResp.status, mappedStatus: newStatus });
+        console.log("[store] render poll tick", { renderJobId, rawStatus: statusResp.status, mappedStatus: newStatus });
 
         if (newStatus === "failed") {
-          // Surface the backend error_message to the UI so the user sees a real
-          // error description instead of just "PDF render failed." with no context.
           const backendError = statusResp.error_message
             ? `Render failed: ${statusResp.error_message}`
             : "Resume PDF render failed. Please try generating again.";
@@ -348,11 +457,9 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
         }
 
         if (newStatus !== "done" && newStatus !== "failed") {
-          // Continue polling every 2 seconds
           setTimeout(poll, 2000);
         }
       } catch {
-        // Network error during poll — mark as failed
         set({
           renderStatus: "failed",
           error: "Lost connection while waiting for render. Please try again.",
@@ -360,7 +467,6 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
       }
     };
 
-    // Initial poll (starts the loop)
     setTimeout(poll, 2000);
   },
 }));

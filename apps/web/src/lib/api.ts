@@ -1,5 +1,6 @@
 import type {
-  GenerateResponse,
+  GenerateJobResponse,
+  GenerationStatusResponse,
   ResumeDetailResponse,
   AuditManifest,
   TemplateListResponse,
@@ -81,14 +82,25 @@ export const api = {
   },
 
   /**
-   * POST /api/v1/resumes/generate
-   * Generates a resume from context entries + job description.
+   * POST /api/v1/resumes/generate  (FIX-08)
+   * Enqueues an async generation job and returns immediately with { job_id, status: "queued" }.
+   * The actual pipeline runs in the background worker.
+   * Poll GET /api/v1/generation/jobs/:id/status to track progress.
    */
   generateResume: (userId: string, jdText: string) =>
-    apiFetch<GenerateResponse>("/api/v1/resumes/generate", {
+    apiFetch<GenerateJobResponse>("/api/v1/resumes/generate", {
       method: "POST",
       body: JSON.stringify({ user_id: userId, jd_text: jdText }),
     }),
+
+  /**
+   * GET /api/v1/generation/jobs/:id/status  (FIX-08 + FIX-10)
+   * Polls the status of an async generation job.
+   * On status='done': entry_groups, fit_report, and layout_flagged are populated.
+   * On status='failed': error is populated.
+   */
+  getGenerationStatus: (jobId: string) =>
+    apiFetch<GenerationStatusResponse>(`/api/v1/generation/jobs/${jobId}/status`),
 
   /**
    * GET /api/v1/resumes/:id
