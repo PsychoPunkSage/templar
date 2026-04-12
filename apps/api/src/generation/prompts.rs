@@ -76,7 +76,8 @@ pub const PER_ENTRY_GENERATION_SYSTEM: &str = "You are an expert resume writer g
 
 /// Per-entry resume generation prompt template.
 /// Replace: {grounding_instruction}, {scope_instruction}, {entry_type}, {contribution_type},
-///          {allowed_verbs_json}, {entry_data_json}, {raw_text}, {keywords_json}, {jd_summary}
+///          {allowed_verbs_json}, {entry_data_json}, {raw_text}, {keywords_json},
+///          {jd_context}, {entry_fit_context}
 pub const PER_ENTRY_GENERATION_PROMPT_TEMPLATE: &str = r#"{grounding_instruction}
 
 {scope_instruction}
@@ -94,8 +95,11 @@ RAW CONTEXT TEXT (original notes — primary source of truth):
 JD KEYWORDS to incorporate naturally (do NOT keyword-stuff):
 {keywords_json}
 
-JOB DESCRIPTION SUMMARY:
-{jd_summary}
+FULL JD CONTEXT:
+{jd_context}
+
+JD FIT FOR THIS ENTRY:
+{entry_fit_context}
 
 Generate resume bullets for this single context entry. Return a JSON object:
 {{
@@ -108,10 +112,9 @@ HARD RULES:
 1. Only use facts present in the context entry data or raw text — no invention, no interpolation
 2. `line_estimate` must be 1 or 2 — NEVER 3 or more
 3. Match `contribution_type` to verb language per the scope instruction above
-4. If this entry has no content relevant to the JD, return {{"bullets": []}}
-5. For Skill entries: return {{"bullets": []}} — the header carries all skill content
-6. Generate 2–4 bullets for experience/project entries; 1–2 for awards/publications
-7. Every bullet must begin with a strong action verb from the allowed verbs list"#;
+4. If the JD FIT section above shows no strong or partial matches for this entry, return {{"bullets": []}}
+5. Generate 2–4 bullets for experience/project entries; 1–2 for awards/publications
+6. Every bullet must begin with a strong action verb from the allowed verbs list"#;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Phase 7.0 — LLM-based fit scoring
@@ -157,7 +160,7 @@ Return a JSON object with this EXACT schema:
     {"keyword": "GraphQL", "jd_frequency": 3, "suggestion": null}
   ],
   "recommendation": "Strong fit for the infrastructure role. Missing GraphQL experience but core Rust/distributed systems background is excellent.",
-  "selected_entry_ids": ["uuid-1", "uuid-2"]
+  "selected_entry_indices": [0, 2]
 }
 
 Rules:
@@ -166,7 +169,7 @@ Rules:
 - partial_matches: strength 0.4–0.79 — indirect, partial, or adjacent evidence
 - gaps: all JD keywords with strength < 0.4 — nothing relevant in candidate context
 - Keep recommendation to 2 sentences maximum
-- selected_entry_ids: list of entry_id UUIDs from context that are relevant to this JD — include entries with any match; omit only entries with zero relevance
+- selected_entry_indices: list of integer indices from the [N] prefix in CANDIDATE CONTEXT SUMMARY — include entries with any match; omit only entries with zero relevance
 - Do NOT include any text outside the JSON object"#;
 
 /// Reframe hint prompt template.

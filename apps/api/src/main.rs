@@ -28,7 +28,7 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::context::worker::spawn_context_ingest_worker;
 use crate::db::create_pool;
-use crate::generation::fit_scoring::{KeywordFitScorer, LlmFitScorer};
+use crate::generation::fit_scoring::LlmFitScorer;
 use crate::layout::{default_page_config, FontFamily};
 use crate::llm_client::LlmClient;
 use crate::render::pdflatex::check_pdflatex_available;
@@ -67,18 +67,13 @@ async fn main() -> Result<()> {
     let llm = LlmClient::new(config.anthropic_api_key.clone());
     info!("LLM client initialized (model: {})", llm_client::MODEL);
 
-    // Initialize fit scorer.
-    // Default: LlmFitScorer (semantic, Claude-backed). Set FIT_SCORER_BACKEND=keyword to opt out.
-    let fit_scorer_backend =
-        std::env::var("FIT_SCORER_BACKEND").unwrap_or_else(|_| "llm".to_string());
-    let fit_scorer: Arc<dyn crate::generation::fit_scoring::FitScorer> =
-        if fit_scorer_backend == "llm" {
-            info!("Fit scorer: LlmFitScorer (semantic, Claude-backed)");
-            Arc::new(LlmFitScorer(llm.clone()))
-        } else {
-            info!("Fit scorer: KeywordFitScorer (default)");
-            Arc::new(KeywordFitScorer)
-        };
+    // Fit scorer: always LlmFitScorer (semantic, Claude-backed).
+    // KeywordFitScorer has been removed — it returned empty selected_entry_ids which
+    // disabled the entry filter in call_llm_with_retry, making JD-aware selection a no-op.
+    let fit_scorer: Arc<dyn crate::generation::fit_scoring::FitScorer> = {
+        info!("Fit scorer: LlmFitScorer (semantic, Claude-backed)");
+        Arc::new(LlmFitScorer(llm.clone()))
+    };
 
     // Initialize layout page config (Phase 3: Inter 11pt on US letter, 1" margins)
     let page_config = default_page_config(FontFamily::Inter);

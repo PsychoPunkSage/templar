@@ -2,9 +2,12 @@
 
 //! Fit Scoring — pluggable, trait-based scorer measuring candidate context vs a parsed JD.
 //!
-//! Two implementations:
-//! - [`KeywordFitScorer`]: pure-Rust keyword matching. Fast, deterministic, used in generation.
-//! - [`LlmFitScorer`]: semantic scoring via Claude. Used by the explicit fit-score endpoint.
+//! One implementation:
+//! - [`LlmFitScorer`]: semantic scoring via Claude. Used for both fit-score endpoint and
+//!   the generation pipeline. Always active — no keyword fallback in normal flow.
+//!
+//! `compute_keyword_fit` is kept as a private fallback used ONLY when the LlmFitScorer
+//! LLM call errors out (network failure, rate-limit, etc.). It is NOT used as the scorer.
 //!
 //! Prompt construction helpers (private):
 //! - `build_entries_summary()`: per-entry metadata + raw_text snippet (≤500 chars). Gives
@@ -53,7 +56,7 @@ pub struct FitReport {
     pub recommendation: String,
     pub scorer_backend: String, // "keyword" | "llm" — for transparency
     /// Entry IDs selected by the LLM fit scorer as relevant to this JD.
-    /// Empty when KeywordFitScorer is used — falls back to all SelectionResult entries.
+    /// Empty only when LlmFitScorer LLM call errored and keyword fallback was used.
     #[serde(default)]
     pub selected_entry_ids: Vec<Uuid>,
 }
@@ -76,33 +79,7 @@ pub trait FitScorer: Send + Sync {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// KeywordFitScorer — default Phase 2 implementation
-// ────────────────────────────────────────────────────────────────────────────
-
-/// Pure-Rust keyword-based fit scorer. Fast, deterministic, no LLM call.
-///
-/// Algorithm:
-/// 1. For each keyword in ParsedJD.keyword_inventory:
-///    - tag exact match → strength 1.0
-///    - raw_text substring match → strength 0.6
-///    - no match → strength 0.0
-/// 2. overall_score = Σ(strength × weighted_score) / Σ(weighted_score) × 100
-/// 3. Classify: strong (≥0.8), partial (0.4–0.79), gap (<0.4)
-pub struct KeywordFitScorer;
-
-#[async_trait]
-impl FitScorer for KeywordFitScorer {
-    async fn score(
-        &self,
-        entries: &[ContextEntryRow],
-        parsed_jd: &ParsedJD,
-    ) -> Result<FitReport, AppError> {
-        compute_keyword_fit(entries, parsed_jd)
-    }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// LlmFitScorer — semantic scorer stub (Phase 7)
+// LlmFitScorer — the only scorer
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Semantic fit scorer via Claude (Phase 7.0 implementation).
@@ -117,7 +94,7 @@ struct LlmFitScoreResponse {
     gaps: Vec<Gap>,
     recommendation: String,
     #[serde(default)]
-    selected_entry_ids: Vec<String>,
+    selected_entry_indices: Vec<usize>,
 }
 
 #[async_trait]
@@ -176,16 +153,20 @@ impl FitScorer for LlmFitScorer {
         {
             Ok(resp) => {
                 let selected_entry_ids: Vec<Uuid> = resp
-                    .selected_entry_ids
+                    .selected_entry_indices
                     .iter()
-                    .filter_map(|s| {
-                        Uuid::parse_str(s).map_err(|e| {
-                            tracing::warn!(
-                                raw_id = %s,
-                                error = %e,
-                                "LlmFitScorer: failed to parse selected_entry_id UUID — skipping"
-                            );
-                        }).ok()
+                    .filter_map(|&idx| {
+                        match entries.get(idx) {
+                            Some(e) => Some(e.entry_id),
+                            None => {
+                                tracing::warn!(
+                                    idx = idx,
+                                    total = entries.len(),
+                                    "LlmFitScorer: selected_entry_indices out of range — skipping"
+                                );
+                                None
+                            }
+                        }
                     })
                     .collect();
                 Ok(FitReport {
@@ -265,16 +246,20 @@ impl LlmFitScorer {
         {
             Ok(resp) => {
                 let selected_entry_ids: Vec<Uuid> = resp
-                    .selected_entry_ids
+                    .selected_entry_indices
                     .iter()
-                    .filter_map(|s| {
-                        Uuid::parse_str(s).map_err(|e| {
-                            tracing::warn!(
-                                raw_id = %s,
-                                error = %e,
-                                "LlmFitScorer::score_full: failed to parse selected_entry_id UUID — skipping"
-                            );
-                        }).ok()
+                    .filter_map(|&idx| {
+                        match entries.get(idx) {
+                            Some(e) => Some(e.entry_id),
+                            None => {
+                                tracing::warn!(
+                                    idx = idx,
+                                    total = entries.len(),
+                                    "LlmFitScorer::score_full: selected_entry_indices out of range — skipping"
+                                );
+                                None
+                            }
+                        }
                     })
                     .collect();
                 Ok(FitReport {
@@ -357,7 +342,8 @@ fn build_jd_role_context(parsed_jd: &ParsedJD) -> String {
 fn build_entries_summary_full(entries: &[ContextEntryRow]) -> String {
     entries
         .iter()
-        .map(|e| {
+        .enumerate()
+        .map(|(idx, e)| {
             let company_or_name = e
                 .data
                 .get("company")
@@ -382,7 +368,7 @@ fn build_entries_summary_full(entries: &[ContextEntryRow]) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let header = format!("[{}] {} — {}", e.entry_type, company_or_name, role);
+            let header = format!("[{}] [{}] {} — {}", idx, e.entry_type, company_or_name, role);
             let meta = format!(
                 "  Skills: {}\n  Contribution: {} | Impact: {:.2} | Recency: {:.2}",
                 skills, e.contribution_type, e.impact_score, e.recency_score
@@ -405,7 +391,8 @@ fn build_entries_summary_full(entries: &[ContextEntryRow]) -> String {
 fn build_entries_summary(entries: &[ContextEntryRow]) -> String {
     entries
         .iter()
-        .map(|e| {
+        .enumerate()
+        .map(|(idx, e)| {
             let company_or_name = e
                 .data
                 .get("company")
@@ -431,7 +418,7 @@ fn build_entries_summary(entries: &[ContextEntryRow]) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let header = format!("[{}] {} — {}", e.entry_type, company_or_name, role);
+            let header = format!("[{}] [{}] {} — {}", idx, e.entry_type, company_or_name, role);
             let meta = format!(
                 "  Skills: {}\n  Contribution: {} | Impact: {:.2} | Recency: {:.2}",
                 skills, e.contribution_type, e.impact_score, e.recency_score
