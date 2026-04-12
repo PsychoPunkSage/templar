@@ -60,6 +60,7 @@ pub async fn score_bullet(
     bullet: &SimulatedBullet,
     source_entry: &ContextEntryRow,
     llm: &LlmClient,
+    was_adjusted: bool,
 ) -> Result<GroundingResult, AppError> {
     // Step 1: fast pre-LLM scope inflation check
     if let Some(reason) = check_scope_inflation(&bullet.text, &source_entry.contribution_type) {
@@ -79,8 +80,17 @@ pub async fn score_bullet(
     let entry_data_json = serde_json::to_string(&source_entry.data)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize entry data: {e}")))?;
 
+    let layout_adjusted_note = if was_adjusted {
+        "NOTE: This bullet was modified by the layout optimizer after generation. \
+         Be especially strict about any technical details, tools, or metrics \
+         not present in the source entry data below."
+    } else {
+        ""
+    };
+
     let prompt = GROUNDING_SCORE_PROMPT_TEMPLATE
         .replace("{bullet_text}", &bullet.text)
+        .replace("{layout_adjusted_note}", layout_adjusted_note)
         .replace("{entry_id}", &source_entry.entry_id.to_string())
         .replace("{contribution_type}", &source_entry.contribution_type)
         .replace("{entry_data_json}", &entry_data_json);
@@ -124,6 +134,8 @@ pub async fn score_bullet(
 ///
 /// Called when `score_bullet` returns `Fail`. Provides the rejection reason so
 /// the LLM can specifically address the violation (scope inflation, interpolation, etc.).
+/// `parsed_jd` threads JD tone and top keywords into the rewrite prompt so the
+/// rewritten bullet stays aligned with the target role language.
 ///
 /// Returns a new `SimulatedBullet` with the same metadata but rewritten text.
 /// On error, returns the original bullet unchanged.
@@ -131,16 +143,28 @@ pub async fn regenerate_single_bullet(
     bullet: &SimulatedBullet,
     source_entry: &ContextEntryRow,
     rejection_reason: &str,
+    parsed_jd: &crate::generation::jd_parser::ParsedJD,
     llm: &LlmClient,
 ) -> Result<SimulatedBullet, AppError> {
     let entry_data_json = serde_json::to_string(&source_entry.data)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize entry data: {e}")))?;
+
+    let jd_keywords = parsed_jd
+        .keyword_inventory
+        .iter()
+        .take(10)
+        .map(|k| k.keyword.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let jd_tone = format!("{:?}", parsed_jd.detected_tone);
 
     let prompt = build_rewrite_prompt(
         &bullet.text,
         rejection_reason,
         &entry_data_json,
         &source_entry.contribution_type,
+        &jd_keywords,
+        &jd_tone,
     );
 
     let rewrite_system = "You are a resume bullet rewriter. You MUST return valid JSON only.\n\
@@ -186,6 +210,8 @@ fn build_rewrite_prompt(
     rejection_reason: &str,
     entry_data_json: &str,
     contribution_type: &str,
+    jd_keywords: &str,
+    jd_tone: &str,
 ) -> String {
     format!(
         "Rewrite this resume bullet to fix the grounding issue.\n\n\
@@ -193,6 +219,9 @@ fn build_rewrite_prompt(
         REJECTION REASON: {rejection_reason}\n\n\
         CONTRIBUTION TYPE: {contribution_type}\n\n\
         SOURCE DATA (use ONLY these facts, do not invent):\n{entry_data_json}\n\n\
+        JD ROLE CONTEXT:\n\
+        Tone: {jd_tone}\n\
+        Top keywords to naturally use (only if factually present in source data): {jd_keywords}\n\n\
         Rules:\n\
         - For 'team_member': use 'Contributed to', 'Collaborated on', 'Implemented as part of team'\n\
         - For 'reviewer': use 'Reviewed', 'Evaluated', 'Assessed'\n\
@@ -246,5 +275,38 @@ mod tests {
             score.composite
         );
         assert_eq!(score.verdict(), GroundingVerdict::Fail);
+    }
+
+    #[test]
+    fn test_build_rewrite_prompt_includes_jd_keywords() {
+        let prompt = build_rewrite_prompt(
+            "Worked on distributed systems",
+            "scope_inflation: used 'Architected' for team_member contribution",
+            r#"{"company": "Acme", "role": "SWE"}"#,
+            "team_member",
+            "rust, async, tokio, distributed-systems, kubernetes",
+            "StartupEnergetic",
+        );
+        assert!(prompt.contains("rust"), "prompt must include jd keyword 'rust'");
+        assert!(
+            prompt.contains("distributed-systems"),
+            "prompt must include 'distributed-systems'"
+        );
+    }
+
+    #[test]
+    fn test_build_rewrite_prompt_includes_jd_tone() {
+        let prompt = build_rewrite_prompt(
+            "Built API endpoint",
+            "specificity_fidelity: missing quantification",
+            r#"{"company": "Acme"}"#,
+            "primary_contributor",
+            "go, grpc, microservices",
+            "CollaborativeEnterprise",
+        );
+        assert!(
+            prompt.contains("CollaborativeEnterprise"),
+            "prompt must include jd_tone"
+        );
     }
 }

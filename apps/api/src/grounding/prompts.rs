@@ -43,10 +43,11 @@ Return exactly:\n\
 /// - `{entry_id}` — UUID of the source context entry
 /// - `{contribution_type}` — the user's role (sole_author, primary_contributor, team_member, reviewer)
 /// - `{entry_data_json}` — JSON of the full context entry data field
+/// - `{layout_adjusted_note}` — non-empty warning if bullet was rewritten by the layout optimizer
 pub const GROUNDING_SCORE_PROMPT_TEMPLATE: &str = r#"Score this resume bullet for grounding quality.
 
 BULLET: {bullet_text}
-
+{layout_adjusted_note}
 SOURCE ENTRY (what this bullet claims to be based on):
 entry_id: {entry_id}
 contribution_type: {contribution_type}
