@@ -32,6 +32,7 @@ use crate::generation::fit_scoring::LlmFitScorer;
 use crate::layout::{default_page_config, FontFamily};
 use crate::llm_client::LlmClient;
 use crate::render::pdflatex::check_pdflatex_available;
+use crate::generation::worker::spawn_generation_worker;
 use crate::render::worker::spawn_render_worker;
 use crate::routes::build_router;
 use crate::state::AppState;
@@ -146,6 +147,20 @@ async fn main() -> Result<()> {
     );
     info!("Render worker: spawned");
 
+    // Spawn background generation worker (FIX-08: decouples generation from HTTP request)
+    spawn_generation_worker(
+        state.redis.clone(),
+        state.db.clone(),
+        state.llm.clone(),
+        state.fit_scorer.clone(),
+        state.page_config.clone(),
+        state.config.clone(),
+    );
+    info!(
+        generation_workers = state.config.generation_worker_count,
+        "Generation worker: spawned"
+    );
+
     // Shared semaphore for all ingest workers — caps total concurrent LLM calls.
     let ingest_sem = Arc::new(tokio::sync::Semaphore::new(config.ingest_llm_concurrency));
 
@@ -168,6 +183,7 @@ async fn main() -> Result<()> {
         layout_llm_concurrency = config.layout_llm_concurrency,
         grounding_llm_concurrency = config.grounding_llm_concurrency,
         render_workers = config.render_worker_count,
+        generation_workers = config.generation_worker_count,
         bullet_token_budget = config.bullet_token_budget,
         "Concurrency config loaded"
     );

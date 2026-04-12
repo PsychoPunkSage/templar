@@ -22,6 +22,7 @@ struct TomlConcurrencyConfig {
     layout_llm_concurrency: Option<usize>,
     grounding_llm_concurrency: Option<usize>,
     render_worker_count: Option<usize>,
+    generation_worker_count: Option<usize>,
 }
 
 impl Default for TomlConcurrencyConfig {
@@ -33,6 +34,7 @@ impl Default for TomlConcurrencyConfig {
             layout_llm_concurrency: None,
             grounding_llm_concurrency: None,
             render_worker_count: None,
+            generation_worker_count: None,
         }
     }
 }
@@ -134,6 +136,12 @@ pub struct Config {
     /// Env: RENDER_WORKER_COUNT  |  Default: 4
     pub render_worker_count: usize,
 
+    /// Number of parallel background generation workers.
+    /// Each worker dequeues a job from Redis and runs the full generate_resume() pipeline.
+    /// Keep low (2) — each job already saturates LLM concurrency internally.
+    /// Env: GENERATION_WORKER_COUNT  |  Default: 2
+    pub generation_worker_count: usize,
+
     // ── Ingestion tunables ───────────────────────────────────────────────────
 
     /// Estimated token budget per Phase-B bullet-extraction chunk.
@@ -200,6 +208,11 @@ impl Config {
                 "RENDER_WORKER_COUNT",
                 toml.concurrency.render_worker_count,
                 4,
+            ),
+            generation_worker_count: env_or(
+                "GENERATION_WORKER_COUNT",
+                toml.concurrency.generation_worker_count,
+                2,
             ),
 
             // Ingestion tunables

@@ -11,3 +11,4 @@ pub mod hash_utils;
 pub mod jd_parser;
 pub mod prompts;
 pub mod tone;
+pub mod worker;
