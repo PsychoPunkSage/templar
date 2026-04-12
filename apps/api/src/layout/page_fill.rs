@@ -209,9 +209,18 @@ fn keyword_match_score(
 // Page fill remediation pass
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Runs one page fill remediation pass after the simulation loop.
-/// Analyzes overall whitespace/overflow and executes the recommended action.
-/// Max 1 pass — does not recurse.
+/// Maximum number of page fill remediation passes before flagging for human review.
+const MAX_FILL_PASSES: u8 = 3;
+
+/// Runs iterative page fill remediation after the simulation loop (up to MAX_FILL_PASSES).
+///
+/// Each pass analyzes overall whitespace/overflow and executes the recommended action:
+/// - TooMuchWhitespace → promote best 1-line bullet to 2-line (LLM expand)
+/// - MinorOverflow     → compress lowest-scoring bullet (LLM compress)
+/// - MajorOverflow     → remove lowest-scoring bullet (no LLM)
+///
+/// Loops until Acceptable or no further action is possible.
+/// After MAX_FILL_PASSES, sets `result.page_fill_flagged = true` for human review.
 pub async fn run_page_fill_pass(
     mut result: crate::layout::simulator::SimulationResult,
     config: &crate::layout::font_metrics::PageConfig,
@@ -222,69 +231,101 @@ pub async fn run_page_fill_pass(
     use crate::layout::font_metrics::get_metrics;
     use crate::layout::simulator::{compress_bullet, estimate_char_budget, expand_bullet};
 
-    let analysis = analyze_page_fill(&result.bullets, config);
-    if matches!(analysis.verdict, PageFillVerdict::Acceptable) {
-        return Ok(result);
-    }
-
-    let action = recommend_fill_action(&analysis, &result.bullets, parsed_jd);
-
-    // Estimate char budget for a 1-line bullet at this page config
     let metrics = get_metrics(&config.font);
     let char_budget = estimate_char_budget(config);
+    let mut fill_passes = 0u8;
 
-    match action {
-        FillAction::PromoteBullet { bullet_index } => {
-            if bullet_index < result.bullets.len() {
-                let two_line_budget = char_budget * 2;
-                let new_text = expand_bullet(
-                    &result.bullets[bullet_index].text,
-                    analysis.whitespace_fraction,
-                    two_line_budget,
-                    parsed_jd,
-                    llm,
-                    None,
-                )
-                .await
-                .unwrap_or_else(|_| result.bullets[bullet_index].text.clone());
-                result.bullets[bullet_index].text = new_text;
-                result.bullets[bullet_index].was_adjusted = true;
-                result.llm_calls_made += 1;
-                let (new_count, _) =
-                    simulate_lines(&result.bullets[bullet_index].text, metrics, config);
-                result.bullets[bullet_index].verified_line_count = new_count.max(1);
+    loop {
+        let analysis = analyze_page_fill(&result.bullets, config);
+
+        if matches!(analysis.verdict, PageFillVerdict::Acceptable) {
+            break;
+        }
+
+        if fill_passes >= MAX_FILL_PASSES {
+            result.page_fill_flagged = true;
+            tracing::warn!(
+                passes = MAX_FILL_PASSES,
+                verdict = ?analysis.verdict,
+                whitespace_pct = analysis.whitespace_fraction * 100.0,
+                overflow_pct = analysis.overflow_fraction * 100.0,
+                "page fill: still violating after max passes — flagged for human review"
+            );
+            break;
+        }
+
+        let action = recommend_fill_action(&analysis, &result.bullets, parsed_jd);
+
+        match action {
+            FillAction::PromoteBullet { bullet_index } => {
+                if bullet_index < result.bullets.len() {
+                    let two_line_budget = char_budget * 2;
+                    let new_text = expand_bullet(
+                        &result.bullets[bullet_index].text,
+                        analysis.whitespace_fraction,
+                        two_line_budget,
+                        parsed_jd,
+                        llm,
+                        None,
+                    )
+                    .await
+                    .unwrap_or_else(|_| result.bullets[bullet_index].text.clone());
+                    result.bullets[bullet_index].text = new_text;
+                    result.bullets[bullet_index].was_adjusted = true;
+                    result.llm_calls_made += 1;
+                    let (new_count, _) =
+                        simulate_lines(&result.bullets[bullet_index].text, metrics, config);
+                    result.bullets[bullet_index].verified_line_count = new_count.max(1);
+                }
+            }
+            FillAction::CompressBullet { bullet_index } => {
+                if bullet_index < result.bullets.len() {
+                    let actual_lines = result.bullets[bullet_index].verified_line_count;
+                    let new_text = compress_bullet(
+                        &result.bullets[bullet_index].text,
+                        actual_lines,
+                        char_budget,
+                        parsed_jd,
+                        llm,
+                        None,
+                    )
+                    .await
+                    .unwrap_or_else(|_| result.bullets[bullet_index].text.clone());
+                    result.bullets[bullet_index].text = new_text;
+                    result.bullets[bullet_index].was_adjusted = true;
+                    result.llm_calls_made += 1;
+                    let (new_count, _) =
+                        simulate_lines(&result.bullets[bullet_index].text, metrics, config);
+                    result.bullets[bullet_index].verified_line_count = new_count.max(1);
+                }
+            }
+            FillAction::RemoveBullet { bullet_index } => {
+                if bullet_index < result.bullets.len() {
+                    let removed_entry_id = result.bullets[bullet_index].source_entry_id;
+                    result.bullets.remove(bullet_index);
+
+                    // If this was the last content bullet for the entry, remove the header
+                    // placeholder to prevent a dangling header (label with no bullets) in
+                    // the rendered PDF.
+                    let has_remaining_content = result.bullets.iter()
+                        .any(|b| b.source_entry_id == removed_entry_id && !b.text.is_empty());
+                    if !has_remaining_content {
+                        result.bullets.retain(|b| {
+                            !(b.source_entry_id == removed_entry_id && b.text.is_empty())
+                        });
+                    }
+                }
+            }
+            FillAction::TightenSpacing => {
+                result.tighten_spacing = true;
+                break; // spacing is a one-time hint, not an iterative action
+            }
+            FillAction::NoAction => {
+                break; // nothing left to do
             }
         }
-        FillAction::CompressBullet { bullet_index } => {
-            if bullet_index < result.bullets.len() {
-                let actual_lines = result.bullets[bullet_index].verified_line_count;
-                let new_text = compress_bullet(
-                    &result.bullets[bullet_index].text,
-                    actual_lines,
-                    char_budget,
-                    parsed_jd,
-                    llm,
-                    None,
-                )
-                .await
-                .unwrap_or_else(|_| result.bullets[bullet_index].text.clone());
-                result.bullets[bullet_index].text = new_text;
-                result.bullets[bullet_index].was_adjusted = true;
-                result.llm_calls_made += 1;
-                let (new_count, _) =
-                    simulate_lines(&result.bullets[bullet_index].text, metrics, config);
-                result.bullets[bullet_index].verified_line_count = new_count.max(1);
-            }
-        }
-        FillAction::RemoveBullet { bullet_index } => {
-            if bullet_index < result.bullets.len() {
-                result.bullets.remove(bullet_index);
-            }
-        }
-        FillAction::TightenSpacing => {
-            result.tighten_spacing = true;
-        }
-        FillAction::NoAction => {}
+
+        fill_passes += 1;
     }
 
     Ok(result)
@@ -498,6 +539,167 @@ mod tests {
             idx,
             Some(2),
             "best 1-line candidate should have most keywords"
+        );
+    }
+
+    // ── MAX_FILL_PASSES constant ─────────────────────────────────────────────
+
+    #[test]
+    fn test_max_fill_passes_is_three() {
+        assert_eq!(MAX_FILL_PASSES, 3, "spec requires exactly 3 max fill passes");
+    }
+
+    #[test]
+    fn test_major_overflow_removes_bullets_iteratively() {
+        let config = make_config(); // 45 usable lines
+        // Create 50 bullets (111% fill — MajorOverflow)
+        // After 3 removals (MAX_FILL_PASSES), still 47 bullets (104% fill — MinorOverflow).
+        // page_fill_flagged should be true since 47 > 45.
+        // Note: only page fill logic tested here (no LLM), so bullets have 0 jd_keywords.
+        let bullets: Vec<SimulatedBullet> = (0..50)
+            .map(|_| make_bullet(1, vec![], false))
+            .collect();
+
+        let analysis = analyze_page_fill(&bullets, &config);
+        assert_eq!(analysis.verdict, PageFillVerdict::MajorOverflow);
+        // Removing 3 bullets leaves 47 — still overflowing (104.4%), so page_fill_flagged
+        // would be set after MAX_FILL_PASSES. This test validates the analysis side only
+        // (the async run_page_fill_pass requires tokio runtime — covered by e2e test).
+        let after_3 = &bullets[..47];
+        let after_analysis = analyze_page_fill(after_3, &config);
+        assert_eq!(
+            after_analysis.verdict,
+            PageFillVerdict::MinorOverflow,
+            "47/45 = 104.4% → MinorOverflow after 3 removals"
+        );
+    }
+
+    // ── orphan header cleanup ────────────────────────────────────────────────
+
+    #[test]
+    fn test_remove_bullet_cleans_up_orphaned_header() {
+        let entry_a = Uuid::new_v4();
+
+        // Build a SimulationResult with a header placeholder (empty text) and one content
+        // bullet for the same entry.
+        let mut result = crate::layout::simulator::SimulationResult {
+            bullets: vec![
+                SimulatedBullet {
+                    text: String::new(), // header placeholder
+                    source_entry_id: entry_a,
+                    entry_header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
+                    section: "experience".to_string(),
+                    verified_line_count: 0,
+                    jd_keywords_used: vec![],
+                    was_adjusted: false,
+                    flagged_for_review: false,
+                },
+                SimulatedBullet {
+                    text: "Built distributed cache reducing p99 latency by 40%".to_string(),
+                    source_entry_id: entry_a,
+                    entry_header_latex: None,
+                    section: "experience".to_string(),
+                    verified_line_count: 1,
+                    jd_keywords_used: vec![],
+                    was_adjusted: false,
+                    flagged_for_review: false,
+                },
+            ],
+            total_passes: 0,
+            violations_remaining: 0,
+            flagged_count: 0,
+            llm_calls_made: 0,
+            tighten_spacing: false,
+            page_fill_flagged: false,
+        };
+
+        // Simulate the RemoveBullet handler logic for index 1 (the only content bullet).
+        let content_idx = 1;
+        let removed_entry_id = result.bullets[content_idx].source_entry_id;
+        result.bullets.remove(content_idx);
+        let has_remaining_content = result.bullets.iter()
+            .any(|b| b.source_entry_id == removed_entry_id && !b.text.is_empty());
+        if !has_remaining_content {
+            result.bullets.retain(|b| {
+                !(b.source_entry_id == removed_entry_id && b.text.is_empty())
+            });
+        }
+
+        assert!(
+            result.bullets.is_empty(),
+            "after removing the only content bullet, the orphaned header must also be removed"
+        );
+    }
+
+    #[test]
+    fn test_remove_bullet_keeps_header_when_siblings_remain() {
+        let entry_a = Uuid::new_v4();
+
+        let mut result = crate::layout::simulator::SimulationResult {
+            bullets: vec![
+                SimulatedBullet {
+                    text: String::new(), // header placeholder
+                    source_entry_id: entry_a,
+                    entry_header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
+                    section: "experience".to_string(),
+                    verified_line_count: 0,
+                    jd_keywords_used: vec![],
+                    was_adjusted: false,
+                    flagged_for_review: false,
+                },
+                SimulatedBullet {
+                    text: "Built distributed cache reducing p99 latency by 40%".to_string(),
+                    source_entry_id: entry_a,
+                    entry_header_latex: None,
+                    section: "experience".to_string(),
+                    verified_line_count: 1,
+                    jd_keywords_used: vec![],
+                    was_adjusted: false,
+                    flagged_for_review: false,
+                },
+                SimulatedBullet {
+                    text: "Reduced infrastructure costs by 30%".to_string(),
+                    source_entry_id: entry_a,
+                    entry_header_latex: None,
+                    section: "experience".to_string(),
+                    verified_line_count: 1,
+                    jd_keywords_used: vec![],
+                    was_adjusted: false,
+                    flagged_for_review: false,
+                },
+            ],
+            total_passes: 0,
+            violations_remaining: 0,
+            flagged_count: 0,
+            llm_calls_made: 0,
+            tighten_spacing: false,
+            page_fill_flagged: false,
+        };
+
+        // Remove one of the two content bullets (index 1) — a sibling content bullet remains.
+        let content_idx = 1;
+        let removed_entry_id = result.bullets[content_idx].source_entry_id;
+        result.bullets.remove(content_idx);
+        let has_remaining_content = result.bullets.iter()
+            .any(|b| b.source_entry_id == removed_entry_id && !b.text.is_empty());
+        if !has_remaining_content {
+            result.bullets.retain(|b| {
+                !(b.source_entry_id == removed_entry_id && b.text.is_empty())
+            });
+        }
+
+        assert_eq!(
+            result.bullets.len(),
+            2,
+            "header and remaining content bullet must both be kept"
+        );
+        assert!(
+            result.bullets.iter().any(|b| b.text.is_empty()),
+            "header placeholder must be kept since a sibling content bullet remains"
+        );
+        assert!(
+            result.bullets.iter().any(|b| b.text.contains("infrastructure")),
+            "remaining content bullet must be kept"
         );
     }
 }

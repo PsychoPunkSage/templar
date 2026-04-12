@@ -12,7 +12,10 @@
 //! tokio scheduler unblocked. `run_single_pass_sync` accepts owned data (required for
 //! 'static closure bounds) and returns only the violating indices + results.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -62,6 +65,10 @@ pub struct SimulationResult {
     pub llm_calls_made: u32,
     /// Set by the page fill pass when minor overflow is best resolved by tightening spacing.
     pub tighten_spacing: bool,
+    /// Set by the page fill pass when overflow/whitespace is not resolved after MAX_FILL_PASSES.
+    /// Surface this in the UI as a layout warning banner.
+    #[serde(default)]
+    pub page_fill_flagged: bool,
 }
 
 /// Intermediate type for deserializing the LLM's adjust response.
@@ -89,6 +96,7 @@ pub async fn run_simulation_loop(
     config: &PageConfig,
     parsed_jd: &ParsedJD,
     llm: &LlmClient,
+    layout_llm_concurrency: usize,
 ) -> Result<SimulationResult, AppError> {
     let mut sim_bullets = init_simulated(bullets);
     let config_clone = config.clone();
@@ -114,61 +122,82 @@ pub async fn run_simulation_loop(
             break;
         }
 
-        // Fix violations with LLM calls (async, not blocking).
+        // Fix violations with LLM calls — run all fixes concurrently within this pass.
+        let char_budget = estimate_char_budget(config);
+        let sem = Arc::new(Semaphore::new(layout_llm_concurrency));
+        let mut join_set: tokio::task::JoinSet<Result<(usize, String), AppError>> =
+            tokio::task::JoinSet::new();
+
         for (idx, coverage_result) in &violations {
-            let bullet = &mut sim_bullets[*idx];
-            let char_budget = estimate_char_budget(config);
-            // On pass > 0, pass the current text as the failed previous attempt so the
-            // LLM can see what it tried before and correct its approach.
-            let prev = if pass == 0 {
+            let idx = *idx;
+            let bullet_text = sim_bullets[idx].text.clone();
+            // On pass > 0, pass the current text as the failed previous attempt.
+            let prev: Option<String> = if pass == 0 {
                 None
             } else {
-                Some(bullet.text.as_str())
+                Some(bullet_text.clone())
             };
+            let verdict = coverage_result.verdict.clone();
+            let parsed_jd = parsed_jd.clone();
+            let llm = llm.clone();
+            let sem = Arc::clone(&sem);
 
-            let adjusted_text = match &coverage_result.verdict {
-                LineCoverageVerdict::TooShort { fill_ratio, .. } => {
-                    llm_calls_made += 1;
-                    expand_bullet(&bullet.text, *fill_ratio, char_budget, parsed_jd, llm, prev)
+            join_set.spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore closed");
+                let new_text = match &verdict {
+                    LineCoverageVerdict::TooShort { fill_ratio, .. } => {
+                        expand_bullet(
+                            &bullet_text,
+                            *fill_ratio,
+                            char_budget,
+                            &parsed_jd,
+                            &llm,
+                            prev.as_deref(),
+                        )
                         .await
-                        .unwrap_or_else(|_| bullet.text.clone())
-                }
+                        .unwrap_or(bullet_text)
+                    }
+                    LineCoverageVerdict::TooLong { actual_lines } => {
+                        compress_bullet(
+                            &bullet_text,
+                            *actual_lines,
+                            char_budget,
+                            &parsed_jd,
+                            &llm,
+                            prev.as_deref(),
+                        )
+                        .await
+                        .unwrap_or(bullet_text)
+                    }
+                    LineCoverageVerdict::SecondLineTooShort { fill_ratio } => {
+                        expand_bullet(
+                            &bullet_text,
+                            *fill_ratio,
+                            char_budget * 2,
+                            &parsed_jd,
+                            &llm,
+                            prev.as_deref(),
+                        )
+                        .await
+                        .unwrap_or(bullet_text)
+                    }
+                    LineCoverageVerdict::Satisfies => bullet_text,
+                };
+                Ok((idx, new_text))
+            });
+        }
 
-                LineCoverageVerdict::TooLong { actual_lines } => {
+        while let Some(res) = join_set.join_next().await {
+            match res {
+                Ok(Ok((idx, new_text))) => {
+                    if new_text != sim_bullets[idx].text {
+                        sim_bullets[idx].text = new_text;
+                        sim_bullets[idx].was_adjusted = true;
+                    }
                     llm_calls_made += 1;
-                    compress_bullet(
-                        &bullet.text,
-                        *actual_lines,
-                        char_budget,
-                        parsed_jd,
-                        llm,
-                        prev,
-                    )
-                    .await
-                    .unwrap_or_else(|_| bullet.text.clone())
                 }
-
-                LineCoverageVerdict::SecondLineTooShort { fill_ratio } => {
-                    // Line 2 is too short — try expanding to fill it more.
-                    llm_calls_made += 1;
-                    expand_bullet(
-                        &bullet.text,
-                        *fill_ratio,
-                        char_budget * 2, // 2-line budget
-                        parsed_jd,
-                        llm,
-                        prev,
-                    )
-                    .await
-                    .unwrap_or_else(|_| bullet.text.clone())
-                }
-
-                LineCoverageVerdict::Satisfies => bullet.text.clone(),
-            };
-
-            if adjusted_text != bullet.text {
-                bullet.text = adjusted_text;
-                bullet.was_adjusted = true;
+                Ok(Err(e)) => warn!(error = %e, "layout expand/compress failed — keeping original"),
+                Err(e) => warn!(error = %e, "layout JoinSet task panicked"),
             }
         }
     }
@@ -229,111 +258,149 @@ pub async fn run_simulation_loop(
         bullet.verified_line_count = count;
     }
 
-    // ── Enforce 2-line promotion eligibility rules ──────────────────────────
+    // ── Enforce 2-line promotion eligibility rules (concurrent) ────────────
     // Block A: If a bullet occupies 2 lines but doesn't meet promotion criteria,
-    // attempt to compress it to 1 line.
-    for bullet in &mut sim_bullets {
-        //for i in 0..sim_bullets.len() {
-        if bullet.verified_line_count != 2 {
-            continue;
-        }
-        let draft = crate::generation::generator::DraftBullet {
-            text: bullet.text.clone(),
-            source_entry_id: bullet.source_entry_id,
-            section: bullet.section.clone(),
-            entry_header_latex: None,
-            line_estimate: 2,
-            jd_keywords_used: bullet.jd_keywords_used.clone(),
-        };
-        let promo = crate::layout::contract::score_promotion(&draft, parsed_jd);
-        if !promo.eligible_for_two_lines {
-            let char_budget = estimate_char_budget(config);
-            match compress_bullet(&bullet.text, 2, char_budget, parsed_jd, llm, None).await {
-                Ok(compressed) => {
-                    bullet.text = compressed;
-                    bullet.was_adjusted = true;
-                    llm_calls_made += 1;
-                    let metrics = crate::layout::font_metrics::get_metrics(&config.font);
-                    let (new_count, _) =
-                        crate::layout::contract::simulate_lines(&bullet.text, metrics, config);
-                    bullet.verified_line_count = new_count.max(1);
-                    if bullet.verified_line_count == 2 {
-                        bullet.flagged_for_review = true;
-                    }
+    // compress it to 1 line. Collect all ineligible bullets first, then compress concurrently.
+    {
+        let ineligible: Vec<(usize, String)> = sim_bullets
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.verified_line_count == 2)
+            .filter_map(|(i, b)| {
+                let draft = crate::generation::generator::DraftBullet {
+                    text: b.text.clone(),
+                    source_entry_id: b.source_entry_id,
+                    section: b.section.clone(),
+                    entry_header_latex: None,
+                    line_estimate: 2,
+                    jd_keywords_used: b.jd_keywords_used.clone(),
+                };
+                let promo = crate::layout::contract::score_promotion(&draft, parsed_jd);
+                if !promo.eligible_for_two_lines {
+                    Some((i, b.text.clone()))
+                } else {
+                    None
                 }
-                Err(_) => {
-                    bullet.flagged_for_review = true;
+            })
+            .collect();
+
+        if !ineligible.is_empty() {
+            let char_budget = estimate_char_budget(config);
+            let sem = Arc::new(Semaphore::new(layout_llm_concurrency));
+            let mut join_set: tokio::task::JoinSet<(usize, Result<String, AppError>)> =
+                tokio::task::JoinSet::new();
+
+            for (idx, text) in ineligible {
+                let parsed_jd = parsed_jd.clone();
+                let llm = llm.clone();
+                let sem = Arc::clone(&sem);
+                join_set.spawn(async move {
+                    let _permit = sem.acquire().await.expect("semaphore closed");
+                    let result = compress_bullet(&text, 2, char_budget, &parsed_jd, &llm, None).await;
+                    (idx, result)
+                });
+            }
+
+            let metrics = crate::layout::font_metrics::get_metrics(&config.font);
+            while let Some(res) = join_set.join_next().await {
+                if let Ok((idx, compress_result)) = res {
+                    match compress_result {
+                        Ok(compressed) => {
+                            sim_bullets[idx].text = compressed;
+                            sim_bullets[idx].was_adjusted = true;
+                            llm_calls_made += 1;
+                            let (new_count, _) = crate::layout::contract::simulate_lines(
+                                &sim_bullets[idx].text,
+                                metrics,
+                                config,
+                            );
+                            sim_bullets[idx].verified_line_count = new_count.max(1);
+                            if sim_bullets[idx].verified_line_count == 2 {
+                                sim_bullets[idx].flagged_for_review = true;
+                            }
+                        }
+                        Err(_) => {
+                            sim_bullets[idx].flagged_for_review = true;
+                        }
+                    }
                 }
             }
         }
     }
 
-    // ── Enforce max 3 two-line bullets per page ──────────────────────────────
-    // Block B: If more than 3 bullets are 2-line and not flagged, compress the
-    // lowest-JD-relevance one until the cap is respected.
+    // ── Enforce max 3 two-line bullets per page (one-shot ranked batch) ──────
+    // Block B: Identify ALL excess 2-line bullets upfront, sorted ascending by JD relevance
+    // (lowest relevance first = these get compressed). Single concurrent batch, no iterative loop.
     const MAX_TWO_LINE: usize = 3;
-    loop {
-        let two_line_indices: Vec<usize> = sim_bullets
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.verified_line_count == 2 && !b.flagged_for_review)
-            .map(|(i, _)| i)
-            .collect();
-        if two_line_indices.len() <= MAX_TWO_LINE {
-            break;
-        }
+    {
         let jd_kw_set: std::collections::HashSet<String> = parsed_jd
             .keyword_inventory
             .iter()
             .map(|k| k.keyword.to_lowercase())
             .collect();
-        let target_idx = *two_line_indices
+
+        let mut two_line: Vec<(usize, usize)> = sim_bullets
             .iter()
-            .min_by(|&&a, &&b| {
-                let sa = sim_bullets[a]
+            .enumerate()
+            .filter(|(_, b)| b.verified_line_count == 2 && !b.flagged_for_review)
+            .map(|(i, b)| {
+                let score = b
                     .jd_keywords_used
                     .iter()
                     .filter(|kw| jd_kw_set.contains(&kw.to_lowercase()))
                     .count();
-                let sb = sim_bullets[b]
-                    .jd_keywords_used
-                    .iter()
-                    .filter(|kw| jd_kw_set.contains(&kw.to_lowercase()))
-                    .count();
-                sa.cmp(&sb)
+                (i, score)
             })
-            .unwrap();
-        let char_budget = estimate_char_budget(config);
-        match compress_bullet(
-            &sim_bullets[target_idx].text,
-            2,
-            char_budget,
-            parsed_jd,
-            llm,
-            None,
-        )
-        .await
-        {
-            Ok(compressed) => {
-                sim_bullets[target_idx].text = compressed;
-                sim_bullets[target_idx].was_adjusted = true;
-                llm_calls_made += 1;
-                let metrics = crate::layout::font_metrics::get_metrics(&config.font);
-                let (new_count, _) = crate::layout::contract::simulate_lines(
-                    &sim_bullets[target_idx].text,
-                    metrics,
-                    config,
-                );
-                sim_bullets[target_idx].verified_line_count = new_count.max(1);
-                if sim_bullets[target_idx].verified_line_count == 2 {
-                    // Compression failed — flag and break to prevent infinite loop
-                    sim_bullets[target_idx].flagged_for_review = true;
-                    break;
-                }
+            .collect();
+
+        if two_line.len() > MAX_TWO_LINE {
+            // Sort ascending — lowest JD relevance first (these get compressed)
+            two_line.sort_by_key(|(_, score)| *score);
+            let excess = two_line.len() - MAX_TWO_LINE;
+            let to_compress: Vec<(usize, String)> = two_line[..excess]
+                .iter()
+                .map(|(idx, _)| (*idx, sim_bullets[*idx].text.clone()))
+                .collect();
+
+            let char_budget = estimate_char_budget(config);
+            let sem = Arc::new(Semaphore::new(layout_llm_concurrency));
+            let mut join_set: tokio::task::JoinSet<(usize, Result<String, AppError>)> =
+                tokio::task::JoinSet::new();
+
+            for (idx, text) in to_compress {
+                let parsed_jd = parsed_jd.clone();
+                let llm = llm.clone();
+                let sem = Arc::clone(&sem);
+                join_set.spawn(async move {
+                    let _permit = sem.acquire().await.expect("semaphore closed");
+                    let result = compress_bullet(&text, 2, char_budget, &parsed_jd, &llm, None).await;
+                    (idx, result)
+                });
             }
-            Err(_) => {
-                sim_bullets[target_idx].flagged_for_review = true;
-                break;
+
+            let metrics = crate::layout::font_metrics::get_metrics(&config.font);
+            while let Some(res) = join_set.join_next().await {
+                if let Ok((idx, compress_result)) = res {
+                    match compress_result {
+                        Ok(compressed) => {
+                            sim_bullets[idx].text = compressed;
+                            sim_bullets[idx].was_adjusted = true;
+                            llm_calls_made += 1;
+                            let (new_count, _) = crate::layout::contract::simulate_lines(
+                                &sim_bullets[idx].text,
+                                metrics,
+                                config,
+                            );
+                            sim_bullets[idx].verified_line_count = new_count.max(1);
+                            if sim_bullets[idx].verified_line_count == 2 {
+                                sim_bullets[idx].flagged_for_review = true;
+                            }
+                        }
+                        Err(_) => {
+                            sim_bullets[idx].flagged_for_review = true;
+                        }
+                    }
+                }
             }
         }
     }
@@ -345,6 +412,7 @@ pub async fn run_simulation_loop(
         flagged_count,
         llm_calls_made,
         tighten_spacing: false,
+        page_fill_flagged: false,
     })
 }
 
@@ -428,12 +496,16 @@ pub(crate) fn build_expand_prompt(
 ) -> String {
     let jd_keywords = top_jd_keywords(parsed_jd, 5);
     let min_char_budget = ((char_budget as f32) * 0.85).max(1.0) as usize;
+    let current_chars = text.chars().count();
+    let char_delta = char_budget.saturating_sub(current_chars);
     EXPAND_PROMPT_TEMPLATE
         .replace("{bullet_text}", text)
         .replace("{fill_percent}", &format!("{:.0}", fill_ratio * 100.0))
         .replace("{required_percent}", "80")
         .replace("{char_budget}", &char_budget.to_string())
         .replace("{min_char_budget}", &min_char_budget.to_string())
+        .replace("{current_chars}", &current_chars.to_string())
+        .replace("{char_delta}", &char_delta.to_string())
         .replace("{jd_keywords}", &jd_keywords)
         .replace(
             "{previous_attempt}",
@@ -668,9 +740,29 @@ mod tests {
         );
         assert!(
             prompt.contains("45%"),
-            "prompt should contain fill percentage"
+            "prompt should contain fill percentage (secondary context)"
         );
         assert!(prompt.contains("82"), "prompt should contain char budget");
+        // New: concrete char delta as primary signal
+        let current = "Built a system".chars().count(); // 14
+        let delta = 82usize.saturating_sub(current);
+        assert!(
+            prompt.contains(&current.to_string()),
+            "prompt should contain current char count"
+        );
+        assert!(
+            prompt.contains(&delta.to_string()),
+            "prompt should contain char delta"
+        );
+        // Rules must not instruct to add new technical facts
+        assert!(
+            !prompt.contains("Add technical specificity"),
+            "expand prompt must not instruct LLM to add new technical details"
+        );
+        assert!(
+            !prompt.contains("Add quantified context if currently missing"),
+            "expand prompt must not instruct LLM to add missing quantified context"
+        );
     }
 
     #[test]
