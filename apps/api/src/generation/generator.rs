@@ -1315,8 +1315,7 @@ async fn call_llm_with_retry_entries(
 
     // Spawn parallel LLM calls — capped at generation_llm_concurrency to avoid 429 rate limiting
     let sem = Arc::new(Semaphore::new(generation_llm_concurrency));
-    let mut join_set: tokio::task::JoinSet<GenerateLlmTaskResult> =
-        tokio::task::JoinSet::new();
+    let mut join_set: tokio::task::JoinSet<GenerateLlmTaskResult> = tokio::task::JoinSet::new();
 
     for (idx, prompt, entry, header) in prompts {
         let llm = llm.clone();
