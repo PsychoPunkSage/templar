@@ -76,7 +76,9 @@ pub struct DraftBullet {
 }
 
 /// Request body for resume generation.
-#[derive(Debug, Clone, Deserialize)]
+/// Derives Serialize so the full payload can be stored as JSONB in generation_jobs.request,
+/// allowing the background worker to reconstruct the request without the HTTP connection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateRequest {
     pub user_id: Uuid,
     pub jd_text: String,
@@ -95,7 +97,9 @@ pub struct GenerateRequest {
 ///
 /// Phase 3: `bullets` now contains `SimulatedBullet` with `verified_line_count`,
 /// `was_adjusted`, and `flagged_for_review` fields populated by the simulation loop.
-#[derive(Debug, Clone, Serialize)]
+/// FIX-10: `entry_groups` provides structured entry-level grouping for the frontend editor.
+/// Derives Deserialize so the worker can round-trip it through generation_jobs.result JSONB.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateResponse {
     pub resume_id: Uuid,
     pub fit_report: FitReport,
@@ -103,6 +107,9 @@ pub struct GenerateResponse {
     pub status: String,
     /// True if the page fill pass could not resolve whitespace/overflow within MAX_FILL_PASSES.
     pub layout_flagged: bool,
+    /// Bullets grouped by source context entry, with human-readable display headers.
+    /// Populated by build_entry_groups() — empty only when generation produces 0 bullets.
+    pub entry_groups: Vec<EntryGroup>,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -451,6 +458,24 @@ pub async fn generate_resume(
         info!("Enqueued render job {} for resume {}", job_id, resume_id);
     }
 
+    // FIX-10: Build structured entry groups for the frontend editor before consuming grounding_pairs.
+    let entry_groups = build_entry_groups(&grounding_pairs, &non_skill_selection.selected_entries);
+
+    // FIX-10: Persist entry_groups to resumes table for page-reload restoration.
+    // Non-fatal on failure: the generation result is still valid; the page-reload path
+    // falls back to bulletRowsToEntryGroups which uses entry_header LaTeX as label.
+    if let Ok(eg_json) = serde_json::to_value(&entry_groups) {
+        if let Err(e) = sqlx::query("UPDATE resumes SET entry_groups = $1 WHERE id = $2")
+            .bind(&eg_json)
+            .bind(resume_id)
+            .execute(pool)
+            .await
+        {
+            warn!(resume_id = %resume_id, error = %e,
+                "Failed to persist entry_groups to resumes table (non-fatal)");
+        }
+    }
+
     let final_bullets: Vec<SimulatedBullet> = grounding_pairs.into_iter().map(|(b, _)| b).collect();
 
     Ok(GenerateResponse {
@@ -459,6 +484,7 @@ pub async fn generate_resume(
         bullets: final_bullets,
         status: "draft".to_string(),
         layout_flagged: simulation.page_fill_flagged,
+        entry_groups,
     })
 }
 
@@ -1459,6 +1485,155 @@ async fn run_grounding_loop(
 
 
 // ────────────────────────────────────────────────────────────────────────────
+// FIX-10: Entry groups — structured per-entry output for the frontend editor
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Human-readable display fields for one context entry, serialized as a tagged
+/// JSON object so the frontend can switch on `type` without parsing LaTeX.
+///
+/// Mirrors the entry types in `context::models::ContextEntryData` but uses raw
+/// JSON field extraction (no typed deserialization) so it never fails on
+/// partial/malformed context data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EntryDisplayHeader {
+    Experience { company: String, role: String, date_range: String },
+    Project    { name: String, tech_stack: String, date_range: String },
+    OpenSource { project_name: String, tech_stack: String },
+    Education  { institution: String, degree: String, date_range: String },
+    Skills     { category: String },
+    Other      { label: String },
+}
+
+/// All content bullets for one context entry, with human-readable display fields
+/// for the frontend editor header row (company/role/dates above the bullet list).
+///
+/// Skills entries are excluded — they have no content bullets and are rendered
+/// directly from `entry_header_latex` by the LaTeX render pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntryGroup {
+    pub source_entry_id: Uuid,
+    pub section: String,
+    /// Parsed display fields for rendering the entry header in the editor UI.
+    pub display_header: EntryDisplayHeader,
+    /// Pre-formatted LaTeX header macro (e.g. `\job{...}{...}{...}`).
+    /// Passed through to the render pipeline unchanged.
+    pub entry_header_latex: Option<String>,
+    /// Content bullets for this entry (never empty — entries with 0 content bullets are excluded).
+    pub bullets: Vec<SimulatedBullet>,
+}
+
+/// Extracts human-readable display fields from raw entry.data JSON.
+/// Uses raw field access (not typed deserialization) so it tolerates partial data
+/// and never panics on malformed dates or missing fields.
+fn build_entry_display_header(entry: &ContextEntryRow) -> EntryDisplayHeader {
+    let d = &entry.data;
+
+    match entry.entry_type.as_str() {
+        "experience" => {
+            let company = d.get("company").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let role    = d.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let start   = d.get("date_start").and_then(|v| v.as_str()).unwrap_or("?");
+            let end     = d.get("date_end").and_then(|v| v.as_str()).unwrap_or("Present");
+            EntryDisplayHeader::Experience { company, role, date_range: format!("{start} – {end}") }
+        }
+        "open_source" => {
+            let name = d.get("project_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let tech = d.get("tech_stack").and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            EntryDisplayHeader::OpenSource { project_name: name, tech_stack: tech }
+        }
+        "project" => {
+            let name = d.get("name").or_else(|| d.get("project_name"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let tech = d.get("tech_stack").and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            let start = d.get("date_start").and_then(|v| v.as_str()).unwrap_or("");
+            let end   = d.get("date_end").and_then(|v| v.as_str()).unwrap_or("");
+            let date_range = match (start.is_empty(), end.is_empty()) {
+                (true, _)      => String::new(),
+                (false, true)  => format!("{start} – Present"),
+                (false, false) => format!("{start} – {end}"),
+            };
+            EntryDisplayHeader::Project { name, tech_stack: tech, date_range }
+        }
+        "education" => {
+            let institution = d.get("institution").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let degree      = d.get("degree").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let start = d.get("date_start").and_then(|v| v.as_str()).unwrap_or("?");
+            let end   = d.get("date_end").and_then(|v| v.as_str()).unwrap_or("Present");
+            EntryDisplayHeader::Education { institution, degree, date_range: format!("{start} – {end}") }
+        }
+        "skills" => {
+            let category = d.get("category").and_then(|v| v.as_str()).unwrap_or("Skills").to_string();
+            EntryDisplayHeader::Skills { category }
+        }
+        _ => EntryDisplayHeader::Other { label: entry.entry_type.clone() },
+    }
+}
+
+/// Groups SimulatedBullets by source_entry_id and attaches human-readable display headers.
+///
+/// Called after the grounding loop, before returning from generate_resume().
+/// Skills entries are excluded — they are header-only (empty text) with no content bullets,
+/// and are rendered directly from entry_header_latex by the LaTeX render pipeline.
+///
+/// The output preserves the original relevance-ranked insertion order from the grounding pairs.
+fn build_entry_groups(
+    grounding_pairs: &[(SimulatedBullet, GroundingResult)],
+    entries: &[crate::generation::content_selector::RankedEntry],
+) -> Vec<EntryGroup> {
+    use std::collections::HashMap;
+
+    // Build lookup: entry_id → &ContextEntryRow (non-skill entries only)
+    let entry_map: HashMap<Uuid, &ContextEntryRow> = entries.iter()
+        .map(|re| (re.entry.entry_id, &re.entry))
+        .collect();
+
+    // First pass: walk pairs in order to capture (entry_id, section, header_latex)
+    // for each entry's first occurrence, and accumulate content bullets per entry.
+    let mut seen_order: Vec<(Uuid, String, Option<String>)> = Vec::new();
+    let mut seen_ids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    let mut bullet_map: HashMap<Uuid, Vec<SimulatedBullet>> = HashMap::new();
+
+    for (sim_bullet, _grounding) in grounding_pairs {
+        let eid = sim_bullet.source_entry_id;
+
+        if sim_bullet.text.is_empty() {
+            // Header-only placeholder (including skills) — record first occurrence for ordering
+            if seen_ids.insert(eid) {
+                seen_order.push((eid, sim_bullet.section.clone(), sim_bullet.entry_header_latex.clone()));
+            }
+        } else {
+            // Content bullet — add to bucket
+            if seen_ids.insert(eid) {
+                // First time we see this entry via a content bullet (no preceding header placeholder)
+                seen_order.push((eid, sim_bullet.section.clone(), sim_bullet.entry_header_latex.clone()));
+            }
+            bullet_map.entry(eid).or_default().push(sim_bullet.clone());
+        }
+    }
+
+    // Second pass: build EntryGroup for each entry that has at least one content bullet.
+    // Entries with 0 content bullets (dangling headers, skills) are skipped.
+    seen_order.into_iter()
+        .filter_map(|(entry_id, section, header_latex)| {
+            let bullets = bullet_map.remove(&entry_id).unwrap_or_default();
+            if bullets.is_empty() {
+                return None; // skip header-only / skill entries
+            }
+            let display_header = entry_map.get(&entry_id)
+                .map(|e| build_entry_display_header(e))
+                .unwrap_or_else(|| EntryDisplayHeader::Other { label: entry_id.to_string() });
+
+            Some(EntryGroup { source_entry_id: entry_id, section, display_header, entry_header_latex: header_latex, bullets })
+        })
+        .collect()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -2236,5 +2411,318 @@ mod tests {
         assert!(result.iter().any(|b| b.source_entry_id == entry_a && b.text.is_empty()), "entry_a header kept");
         assert!(result.iter().any(|b| b.source_entry_id == entry_a && !b.text.is_empty()), "entry_a content kept");
         assert!(!result.iter().any(|b| b.source_entry_id == entry_b), "entry_b header removed");
+    }
+
+    // ── build_entry_display_header tests ─────────────────────────────────────
+
+    fn make_test_entry(entry_type: &str, data: serde_json::Value) -> crate::models::context::ContextEntryRow {
+        crate::models::context::ContextEntryRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_id: Uuid::new_v4(),
+            version: 1,
+            entry_type: entry_type.to_string(),
+            data,
+            raw_text: None,
+            recency_score: 1.0,
+            impact_score: 1.0,
+            tags: vec![],
+            flagged_evergreen: false,
+            contribution_type: "sole_author".to_string(),
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn make_test_ranked_entry(entry_id: Uuid, entry_type: &str, data: serde_json::Value)
+        -> crate::generation::content_selector::RankedEntry
+    {
+        let mut entry = make_test_entry(entry_type, data);
+        entry.entry_id = entry_id;
+        crate::generation::content_selector::RankedEntry {
+            entry,
+            combined_score: 1.0,
+            jd_relevance: 1.0,
+        }
+    }
+
+    fn make_content_sim_pair(entry_id: Uuid, section: &str, text: &str)
+        -> (SimulatedBullet, crate::grounding::GroundingResult)
+    {
+        let score = crate::grounding::GroundingScore::compute(0.9, 0.9, 0.9, 0.0);
+        (
+            SimulatedBullet {
+                text: text.to_string(),
+                source_entry_id: entry_id,
+                section: section.to_string(),
+                entry_header_latex: None,
+                verified_line_count: 1,
+                jd_keywords_used: vec![],
+                was_adjusted: false,
+                flagged_for_review: false,
+            },
+            crate::grounding::GroundingResult {
+                bullet_text: text.to_string(),
+                source_entry_id: entry_id,
+                score,
+                verdict: crate::grounding::GroundingVerdict::Pass,
+                rejection_reason: None,
+            },
+        )
+    }
+
+    fn make_header_sim_pair(entry_id: Uuid, section: &str)
+        -> (SimulatedBullet, crate::grounding::GroundingResult)
+    {
+        let score = crate::grounding::GroundingScore::compute(1.0, 1.0, 1.0, 0.0);
+        (
+            SimulatedBullet {
+                text: String::new(),
+                source_entry_id: entry_id,
+                section: section.to_string(),
+                entry_header_latex: Some(r"\skills{Languages}".to_string()),
+                verified_line_count: 1,
+                jd_keywords_used: vec![],
+                was_adjusted: false,
+                flagged_for_review: false,
+            },
+            crate::grounding::GroundingResult {
+                bullet_text: String::new(),
+                source_entry_id: entry_id,
+                score,
+                verdict: crate::grounding::GroundingVerdict::Pass,
+                rejection_reason: None,
+            },
+        )
+    }
+
+    #[test]
+    fn test_display_header_experience_full() {
+        let entry = make_test_entry("experience", serde_json::json!({
+            "company": "Acme Corp",
+            "role": "Senior Engineer",
+            "date_start": "Jan 2022",
+            "date_end": "Jun 2023"
+        }));
+        let h = build_entry_display_header(&entry);
+        if let EntryDisplayHeader::Experience { company, role, date_range } = h {
+            assert_eq!(company, "Acme Corp");
+            assert_eq!(role, "Senior Engineer");
+            assert_eq!(date_range, "Jan 2022 \u{2013} Jun 2023");
+        } else {
+            panic!("expected Experience variant");
+        }
+    }
+
+    #[test]
+    fn test_display_header_experience_missing_fields_use_defaults() {
+        // No dates, no role — must not panic; uses "?" and "Present" defaults
+        let entry = make_test_entry("experience", serde_json::json!({ "company": "Acme" }));
+        let h = build_entry_display_header(&entry);
+        if let EntryDisplayHeader::Experience { role, date_range, .. } = h {
+            assert_eq!(role, "");
+            assert!(date_range.contains('?'), "missing start should use '?': {date_range}");
+            assert!(date_range.contains("Present"), "missing end should use 'Present': {date_range}");
+        } else {
+            panic!("expected Experience variant");
+        }
+    }
+
+    #[test]
+    fn test_display_header_project_with_dates() {
+        let entry = make_test_entry("project", serde_json::json!({
+            "name": "TempDB",
+            "tech_stack": ["Rust", "Redis"],
+            "date_start": "Mar 2023",
+            "date_end": "Dec 2023"
+        }));
+        if let EntryDisplayHeader::Project { name, tech_stack, date_range } =
+            build_entry_display_header(&entry)
+        {
+            assert_eq!(name, "TempDB");
+            assert_eq!(tech_stack, "Rust, Redis");
+            assert_eq!(date_range, "Mar 2023 \u{2013} Dec 2023");
+        } else {
+            panic!("expected Project variant");
+        }
+    }
+
+    #[test]
+    fn test_display_header_project_no_dates() {
+        let entry = make_test_entry("project", serde_json::json!({
+            "name": "TempDB",
+            "tech_stack": ["Rust"]
+        }));
+        if let EntryDisplayHeader::Project { date_range, .. } = build_entry_display_header(&entry) {
+            assert!(date_range.is_empty(), "no start → empty date_range, got: {date_range}");
+        } else {
+            panic!("expected Project variant");
+        }
+    }
+
+    #[test]
+    fn test_display_header_open_source() {
+        let entry = make_test_entry("open_source", serde_json::json!({
+            "project_name": "tokio",
+            "tech_stack": ["Rust", "async"]
+        }));
+        if let EntryDisplayHeader::OpenSource { project_name, tech_stack } =
+            build_entry_display_header(&entry)
+        {
+            assert_eq!(project_name, "tokio");
+            assert_eq!(tech_stack, "Rust, async");
+        } else {
+            panic!("expected OpenSource variant");
+        }
+    }
+
+    #[test]
+    fn test_display_header_education() {
+        let entry = make_test_entry("education", serde_json::json!({
+            "institution": "MIT",
+            "degree": "BSc CS",
+            "date_start": "Sep 2018",
+            "date_end": "Jun 2022"
+        }));
+        if let EntryDisplayHeader::Education { institution, degree, date_range } =
+            build_entry_display_header(&entry)
+        {
+            assert_eq!(institution, "MIT");
+            assert_eq!(degree, "BSc CS");
+            assert_eq!(date_range, "Sep 2018 \u{2013} Jun 2022");
+        } else {
+            panic!("expected Education variant");
+        }
+    }
+
+    #[test]
+    fn test_display_header_skills() {
+        let entry = make_test_entry("skills", serde_json::json!({ "category": "Languages" }));
+        if let EntryDisplayHeader::Skills { category } = build_entry_display_header(&entry) {
+            assert_eq!(category, "Languages");
+        } else {
+            panic!("expected Skills variant");
+        }
+    }
+
+    #[test]
+    fn test_display_header_unknown_type_falls_back_to_other() {
+        let entry = make_test_entry("certification", serde_json::json!({ "name": "AWS SA" }));
+        if let EntryDisplayHeader::Other { label } = build_entry_display_header(&entry) {
+            assert_eq!(label, "certification");
+        } else {
+            panic!("expected Other fallback");
+        }
+    }
+
+    // ── build_entry_groups tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_build_entry_groups_basic_grouping() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let entries = vec![
+            make_test_ranked_entry(id1, "experience", serde_json::json!({ "company": "Co1", "role": "SWE" })),
+            make_test_ranked_entry(id2, "experience", serde_json::json!({ "company": "Co2", "role": "SRE" })),
+        ];
+        let pairs = vec![
+            make_content_sim_pair(id1, "Experience", "bullet A1"),
+            make_content_sim_pair(id1, "Experience", "bullet A2"),
+            make_content_sim_pair(id2, "Experience", "bullet B1"),
+        ];
+        let groups = build_entry_groups(&pairs, &entries);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].source_entry_id, id1);
+        assert_eq!(groups[0].bullets.len(), 2);
+        assert_eq!(groups[1].source_entry_id, id2);
+        assert_eq!(groups[1].bullets.len(), 1);
+    }
+
+    #[test]
+    fn test_build_entry_groups_skills_excluded() {
+        // Skill header (empty text) has no content bullets → must not appear in output
+        let id_exp = Uuid::new_v4();
+        let id_skill = Uuid::new_v4();
+        let entries = vec![
+            make_test_ranked_entry(id_exp, "experience", serde_json::json!({ "company": "Co", "role": "Dev" })),
+        ];
+        let pairs = vec![
+            make_content_sim_pair(id_exp, "Experience", "real bullet"),
+            make_header_sim_pair(id_skill, "Skills"), // empty text — skills header
+        ];
+        let groups = build_entry_groups(&pairs, &entries);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].source_entry_id, id_exp);
+    }
+
+    #[test]
+    fn test_build_entry_groups_preserves_relevance_order() {
+        // id2 appears first in grounding_pairs (higher ranked) → must be first in output
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let entries = vec![
+            make_test_ranked_entry(id1, "experience", serde_json::json!({ "company": "A" })),
+            make_test_ranked_entry(id2, "experience", serde_json::json!({ "company": "B" })),
+        ];
+        let pairs = vec![
+            make_content_sim_pair(id2, "Experience", "bullet from id2"),
+            make_content_sim_pair(id1, "Experience", "bullet from id1"),
+        ];
+        let groups = build_entry_groups(&pairs, &entries);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].source_entry_id, id2);
+        assert_eq!(groups[1].source_entry_id, id1);
+    }
+
+    #[test]
+    fn test_build_entry_groups_dangling_header_removed() {
+        // Header-only entry (all bullets rejected / not in pairs) → must be filtered
+        let id = Uuid::new_v4();
+        let entries = vec![
+            make_test_ranked_entry(id, "experience", serde_json::json!({ "company": "Ghost" })),
+        ];
+        let pairs = vec![make_header_sim_pair(id, "Experience")]; // no content bullets
+        let groups = build_entry_groups(&pairs, &entries);
+        assert!(groups.is_empty(), "dangling header entry must be removed from output");
+    }
+
+    #[test]
+    fn test_build_entry_groups_display_header_correctly_typed() {
+        // Verify that the display_header is correctly typed (Experience, not Other fallback)
+        let id = Uuid::new_v4();
+        let entries = vec![
+            make_test_ranked_entry(id, "experience", serde_json::json!({
+                "company": "Acme", "role": "Staff Eng", "date_start": "2020", "date_end": "2023"
+            })),
+        ];
+        let pairs = vec![make_content_sim_pair(id, "Experience", "some bullet")];
+        let groups = build_entry_groups(&pairs, &entries);
+        assert_eq!(groups.len(), 1);
+        assert!(
+            matches!(groups[0].display_header, EntryDisplayHeader::Experience { .. }),
+            "expected Experience display header, got: {:?}", groups[0].display_header
+        );
+        if let EntryDisplayHeader::Experience { company, .. } = &groups[0].display_header {
+            assert_eq!(company, "Acme");
+        }
+    }
+
+    #[test]
+    fn test_build_entry_groups_multiple_bullets_per_entry_all_included() {
+        let id = Uuid::new_v4();
+        let entries = vec![
+            make_test_ranked_entry(id, "experience", serde_json::json!({ "company": "Co" })),
+        ];
+        let pairs = vec![
+            make_content_sim_pair(id, "Experience", "bullet 1"),
+            make_content_sim_pair(id, "Experience", "bullet 2"),
+            make_content_sim_pair(id, "Experience", "bullet 3"),
+        ];
+        let groups = build_entry_groups(&pairs, &entries);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].bullets.len(), 3);
+        assert_eq!(groups[0].bullets[0].text, "bullet 1");
+        assert_eq!(groups[0].bullets[2].text, "bullet 3");
     }
 }
