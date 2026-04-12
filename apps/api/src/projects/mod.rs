@@ -31,6 +31,9 @@ pub struct CvProjectRow {
     pub template_id: String,
     pub current_resume_id: Option<Uuid>,
     pub last_jd_text: Option<String>,
+    /// Added in migration 013: tracks the most recent async generation job for this project.
+    /// On page load, the editor probes this job's status endpoint to resume polling if in-flight.
+    pub generation_job_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -55,4 +58,6 @@ pub struct UpdateProjectRequest {
     pub template_id: Option<String>,
     pub current_resume_id: Option<Uuid>,
     pub last_jd_text: Option<String>,
+    /// Set when a generation job is enqueued so polling can resume after page navigation.
+    pub generation_job_id: Option<Uuid>,
 }

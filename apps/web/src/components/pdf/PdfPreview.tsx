@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ZoomIn, ZoomOut, RefreshCw, Loader2, FileText, AlertCircle } from "lucide-react";
+import { ZoomIn, ZoomOut, RefreshCw, Loader2, FileText, AlertCircle, Download } from "lucide-react";
 import { useResumeStore } from "@/store/resumeStore";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -27,6 +27,7 @@ export function PdfPreview() {
   const [isLoading, setIsLoading] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  const [isDownloading, setIsDownloading] = useState(false);
   // Track rendered canvas dimensions so the wrapper div can reflect the scaled size,
   // giving overflow-auto a real layout size to scroll against.
   const [canvasDims, setCanvasDims] = useState({ width: 0, height: 0 });
@@ -85,6 +86,18 @@ export function PdfPreview() {
       setIsLoading(false);
     }
   }, []);
+
+  const handleDownload = useCallback(async () => {
+    if (!renderJobId) return;
+    setIsDownloading(true);
+    try {
+      await api.downloadPdf(renderJobId);
+    } catch (e) {
+      console.error("[PdfPreview] Download failed:", e);
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [renderJobId]);
 
   // Re-render (fetch + rasterize) only when a new render job completes
   useEffect(() => {
@@ -180,17 +193,32 @@ export function PdfPreview() {
             <ZoomIn className="h-3.5 w-3.5" />
           </Button>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={() => rerender()}
-          disabled={!resumeId}
-          title="Re-render PDF"
-          aria-label="Re-render PDF"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={handleDownload}
+            disabled={isDownloading || !renderJobId}
+            title="Download PDF"
+            aria-label="Download PDF"
+          >
+            {isDownloading
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Download className="h-3.5 w-3.5" />}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={() => rerender()}
+            disabled={!resumeId}
+            title="Re-render PDF"
+            aria-label="Re-render PDF"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       {/* Scrollable canvas area */}

@@ -65,52 +65,57 @@ Extract ALL meaningful technical keywords (languages, frameworks, tools, concept
 JOB DESCRIPTION:
 {jd_text}"#;
 
-/// System prompt for resume generation — enforces JSON-only output.
-pub const GENERATION_SYSTEM: &str = "You are an expert resume writer generating factual, \
-    grounded resume bullets from verified professional context. \
-    You MUST respond with valid JSON only — a JSON array of bullet objects. \
-    Do NOT include any text outside the JSON array. \
+/// System prompt for per-entry resume generation — enforces JSON-only output.
+pub const PER_ENTRY_GENERATION_SYSTEM: &str =
+    "You are an expert resume writer generating factual, \
+    grounded resume bullets from a single professional context entry. \
+    You MUST respond with valid JSON only — a JSON object with a \"bullets\" array. \
+    Do NOT include any text outside the JSON object. \
     Do NOT use markdown code fences. \
-    Do NOT invent facts not present in the context entries.";
+    Do NOT invent facts not present in the context entry. \
+    Every bullet must be traceable to a specific claim in the raw context text provided.";
 
-/// Resume generation prompt template.
-/// Replace: {grounding_instruction}, {scope_instruction}, {tone_json},
-///          {entries_json}, {keywords_json}, {jd_summary}
-pub const GENERATION_PROMPT_TEMPLATE: &str = r#"{grounding_instruction}
+/// Per-entry resume generation prompt template.
+/// Replace: {grounding_instruction}, {scope_instruction}, {entry_type}, {contribution_type},
+///          {allowed_verbs_json}, {entry_data_json}, {raw_text}, {keywords_json},
+///          {jd_context}, {entry_fit_context}
+pub const PER_ENTRY_GENERATION_PROMPT_TEMPLATE: &str = r#"{grounding_instruction}
 
 {scope_instruction}
 
-TONE CALIBRATION for this role:
-{tone_json}
+ENTRY TYPE: {entry_type}
+CONTRIBUTION TYPE: {contribution_type}
+ALLOWED VERBS for this contribution level: {allowed_verbs_json}
 
-SELECTED CONTEXT ENTRIES (source of truth — ONLY use facts from these):
-{entries_json}
+CONTEXT ENTRY DATA (structured fields):
+{entry_data_json}
+
+RAW CONTEXT TEXT (original notes — primary source of truth):
+{raw_text}
 
 JD KEYWORDS to incorporate naturally (do NOT keyword-stuff):
 {keywords_json}
 
-JOB DESCRIPTION SUMMARY:
-{jd_summary}
+FULL JD CONTEXT:
+{jd_context}
 
-Generate resume bullets for each relevant context entry. Return a JSON ARRAY:
-[
-  {
-    "text": "Architected distributed caching layer reducing p99 latency by 40% across 3 services",
-    "source_entry_id": "the-exact-entry_id-uuid-from-context",
-    "section": "experience",
-    "line_estimate": 1,
-    "jd_keywords_used": ["distributed", "latency", "caching"]
-  }
-]
+JD FIT FOR THIS ENTRY:
+{entry_fit_context}
+
+Generate resume bullets for this single context entry. Return a JSON object:
+{{
+  "bullets": [
+    {{"text": "...", "line_estimate": 1, "jd_keywords_used": ["k8s"]}}
+  ]
+}}
 
 HARD RULES:
-1. EVERY bullet MUST have `source_entry_id` matching one of the entry_id values above — no exceptions
+1. Only use facts present in the context entry data or raw text — no invention, no interpolation
 2. `line_estimate` must be 1 or 2 — NEVER 3 or more
-3. Use ONLY facts from the context entries — no interpolation, no invention
-4. Match `contribution_type` to language exactly per the scope instruction above
-5. Pack information densely — one strong bullet per entry, two if the entry is rich enough
-6. Incorporate JD keywords naturally where they appear in the context — never force-fit
-7. Do NOT include bullets for entries with no relevant content for this role"#;
+3. Match `contribution_type` to verb language per the scope instruction above
+4. If the JD FIT section above shows no strong or partial matches for this entry, return {{"bullets": []}}
+5. Generate 2–4 bullets for experience/project entries; 1–2 for awards/publications
+6. Every bullet must begin with a strong action verb from the allowed verbs list"#;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Phase 7.0 — LLM-based fit scoring
@@ -155,7 +160,8 @@ Return a JSON object with this EXACT schema:
   "gaps": [
     {"keyword": "GraphQL", "jd_frequency": 3, "suggestion": null}
   ],
-  "recommendation": "Strong fit for the infrastructure role. Missing GraphQL experience but core Rust/distributed systems background is excellent."
+  "recommendation": "Strong fit for the infrastructure role. Missing GraphQL experience but core Rust/distributed systems background is excellent.",
+  "selected_entry_indices": [0, 2]
 }
 
 Rules:
@@ -164,6 +170,7 @@ Rules:
 - partial_matches: strength 0.4–0.79 — indirect, partial, or adjacent evidence
 - gaps: all JD keywords with strength < 0.4 — nothing relevant in candidate context
 - Keep recommendation to 2 sentences maximum
+- selected_entry_indices: list of integer indices from the [N] prefix in CANDIDATE CONTEXT SUMMARY — include entries with any match; omit only entries with zero relevance
 - Do NOT include any text outside the JSON object"#;
 
 /// Reframe hint prompt template.

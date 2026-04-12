@@ -22,7 +22,7 @@ pub struct AppState {
     pub s3: S3Client,
     pub llm: LlmClient,
     pub config: Config,
-    /// Pluggable fit scorer. Default: KeywordFitScorer. Swap via ENABLE_LLM_FIT_SCORING env.
+    /// Fit scorer — always LlmFitScorer. Used for both /fit-score endpoint and generation.
     pub fit_scorer: Arc<dyn FitScorer>,
     /// Layout page config — font metrics and page dimensions for the simulation loop.
     /// Phase 3: defaults to Inter at 11pt on US letter with 1" margins.

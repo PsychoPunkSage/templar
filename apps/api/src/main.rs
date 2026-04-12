@@ -28,7 +28,8 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::context::worker::spawn_context_ingest_worker;
 use crate::db::create_pool;
-use crate::generation::fit_scoring::{KeywordFitScorer, LlmFitScorer};
+use crate::generation::fit_scoring::LlmFitScorer;
+use crate::generation::worker::spawn_generation_worker;
 use crate::layout::{default_page_config, FontFamily};
 use crate::llm_client::LlmClient;
 use crate::render::pdflatex::check_pdflatex_available;
@@ -67,18 +68,13 @@ async fn main() -> Result<()> {
     let llm = LlmClient::new(config.anthropic_api_key.clone());
     info!("LLM client initialized (model: {})", llm_client::MODEL);
 
-    // Initialize fit scorer.
-    // Default: LlmFitScorer (semantic, Claude-backed). Set FIT_SCORER_BACKEND=keyword to opt out.
-    let fit_scorer_backend =
-        std::env::var("FIT_SCORER_BACKEND").unwrap_or_else(|_| "llm".to_string());
-    let fit_scorer: Arc<dyn crate::generation::fit_scoring::FitScorer> =
-        if fit_scorer_backend == "llm" {
-            info!("Fit scorer: LlmFitScorer (semantic, Claude-backed)");
-            Arc::new(LlmFitScorer(llm.clone()))
-        } else {
-            info!("Fit scorer: KeywordFitScorer (default)");
-            Arc::new(KeywordFitScorer)
-        };
+    // Fit scorer: always LlmFitScorer (semantic, Claude-backed).
+    // KeywordFitScorer has been removed — it returned empty selected_entry_ids which
+    // disabled the entry filter in call_llm_with_retry, making JD-aware selection a no-op.
+    let fit_scorer: Arc<dyn crate::generation::fit_scoring::FitScorer> = {
+        info!("Fit scorer: LlmFitScorer (semantic, Claude-backed)");
+        Arc::new(LlmFitScorer(llm.clone()))
+    };
 
     // Initialize layout page config (Phase 3: Inter 11pt on US letter, 1" margins)
     let page_config = default_page_config(FontFamily::Inter);
@@ -151,21 +147,50 @@ async fn main() -> Result<()> {
     );
     info!("Render worker: spawned");
 
-    // Spawn N background context ingest workers (configurable via INGEST_WORKER_COUNT)
-    let ingest_worker_count: usize = std::env::var("INGEST_WORKER_COUNT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(4);
-    for _ in 0..ingest_worker_count {
+    // Spawn background generation worker (FIX-08: decouples generation from HTTP request)
+    spawn_generation_worker(
+        state.redis.clone(),
+        state.db.clone(),
+        state.llm.clone(),
+        state.fit_scorer.clone(),
+        state.page_config.clone(),
+        state.config.clone(),
+    );
+    info!(
+        generation_workers = state.config.generation_worker_count,
+        "Generation worker: spawned"
+    );
+
+    // Shared semaphore for all ingest workers — caps total concurrent LLM calls.
+    let ingest_sem = Arc::new(tokio::sync::Semaphore::new(config.ingest_llm_concurrency));
+
+    // Spawn N background context ingest workers (from config: ingest_worker_count)
+    for _ in 0..config.ingest_worker_count {
         spawn_context_ingest_worker(
             state.redis.clone(),
             state.db.clone(),
             state.llm.clone(),
             state.s3.clone(),
             state.config.s3_bucket.clone(),
+            Arc::clone(&ingest_sem),
+            config.bullet_token_budget,
         );
     }
-    info!("Context ingest workers: spawned {ingest_worker_count}");
+    info!(
+        ingest_workers = config.ingest_worker_count,
+        ingest_llm_concurrency = config.ingest_llm_concurrency,
+        generation_llm_concurrency = config.generation_llm_concurrency,
+        layout_llm_concurrency = config.layout_llm_concurrency,
+        grounding_llm_concurrency = config.grounding_llm_concurrency,
+        render_workers = config.render_worker_count,
+        generation_workers = config.generation_worker_count,
+        bullet_token_budget = config.bullet_token_budget,
+        "Concurrency config loaded"
+    );
+    info!(
+        "Context ingest workers: spawned {}",
+        config.ingest_worker_count
+    );
 
     // Build router
     let app = build_router(state)

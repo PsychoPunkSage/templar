@@ -141,6 +141,7 @@ pub async fn handle_update_project(
                template_id       = COALESCE($3, template_id),
                current_resume_id = COALESCE($4, current_resume_id),
                last_jd_text      = COALESCE($5, last_jd_text),
+               generation_job_id = COALESCE($6, generation_job_id),
                updated_at        = NOW()
            WHERE id = $1
            RETURNING *"#,
@@ -150,6 +151,7 @@ pub async fn handle_update_project(
     .bind(body.template_id.as_deref())
     .bind(body.current_resume_id)
     .bind(body.last_jd_text.as_deref())
+    .bind(body.generation_job_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound(format!("Project {} not found", id)))?;

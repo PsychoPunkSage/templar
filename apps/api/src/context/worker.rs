@@ -15,11 +15,12 @@ use std::time::Duration;
 
 use aws_sdk_s3::Client as S3Client;
 use sqlx::PgPool;
+use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::context::batch;
-use crate::context::ingest::{confirm_ingest, parse_and_validate, IngestConfirmRequest};
+use crate::context::ingest::{confirm_ingest, parse_three_phase, IngestConfirmRequest};
 use crate::llm_client::LlmClient;
 
 /// Redis list key for the context ingest job queue.
@@ -36,15 +37,30 @@ const CLEANUP_EVERY_N_JOBS: u64 = 100;
 ///
 /// The worker processes ingest items from the Redis queue indefinitely.
 /// Call this N times in main.rs to create N parallel workers.
+///
+/// `ingest_sem` is shared across ALL worker instances — it caps total concurrent
+/// LLM calls across all workers, preventing 429 rate-limit cascades.
+/// `bullet_token_budget` controls Phase B chunk size (from Config).
 pub fn spawn_context_ingest_worker(
     redis: redis::Client,
     db: PgPool,
     llm: LlmClient,
     s3: S3Client,
     s3_bucket: String,
+    ingest_sem: Arc<Semaphore>,
+    bullet_token_budget: usize,
 ) {
     tokio::spawn(async move {
-        worker_loop(redis, db, llm, s3, s3_bucket).await;
+        worker_loop(
+            redis,
+            db,
+            llm,
+            s3,
+            s3_bucket,
+            ingest_sem,
+            bullet_token_budget,
+        )
+        .await;
     });
 }
 
@@ -62,6 +78,8 @@ async fn worker_loop(
     llm: LlmClient,
     s3: S3Client,
     s3_bucket: String,
+    ingest_sem: Arc<Semaphore>,
+    bullet_token_budget: usize,
 ) {
     info!("Context ingest worker loop started");
 
@@ -93,8 +111,16 @@ async fn worker_loop(
                 match Uuid::parse_str(&item_id_str) {
                     Ok(item_id) => {
                         info!(%item_id, "Ingest worker: dequeued item");
-                        if let Err(e) =
-                            process_ingest_item(item_id, &db, &llm, &s3, &s3_bucket).await
+                        if let Err(e) = process_ingest_item(
+                            item_id,
+                            &db,
+                            &llm,
+                            &s3,
+                            &s3_bucket,
+                            &ingest_sem,
+                            bullet_token_budget,
+                        )
+                        .await
                         {
                             error!(%item_id, error = %e, "Ingest worker: item processing failed");
                             // Best-effort mark failed — if this also errors, just log it
@@ -144,7 +170,7 @@ async fn worker_loop(
 /// Steps:
 /// 1. Fetch item text and user_id from DB
 /// 2. Mark item as 'processing'
-/// 3. `parse_and_validate` — LLM parse (Phase 5.5: quality is non-blocking)
+/// 3. `parse_three_phase` — LLM parse (Phase A metadata + Phase B bullets, chunked)
 /// 4. Check for duplicate/merge via `dedup::check_and_merge`
 ///    5a. Duplicate found → `merger::merge_and_commit` → mark merged
 ///    5b. No duplicate  → `confirm_ingest` → commit to context_entries + S3 → mark succeeded
@@ -156,6 +182,8 @@ async fn process_ingest_item(
     llm: &LlmClient,
     s3: &S3Client,
     s3_bucket: &str,
+    ingest_sem: &Arc<Semaphore>,
+    bullet_token_budget: usize,
 ) -> anyhow::Result<()> {
     use crate::context::dedup::DedupResult;
     use crate::context::merger;
@@ -170,26 +198,18 @@ async fn process_ingest_item(
     // Step 2: Mark item as processing
     batch::mark_item_processing(db, item_id).await?;
 
-    // Step 3: Parse and validate via LLM (quality is non-blocking — always proceeds)
-    let preview = match parse_and_validate(&entry_text, llm, db, user_id).await {
-        Ok(p) => p,
-        Err(e) => {
-            let msg = format!("Parse failed: {e}");
-            error!(%item_id, %user_id, error = %e, "Ingest worker: parse_and_validate failed");
-            batch::mark_item_failed(db, item_id, &msg).await?;
-            return Ok(());
-        }
-    };
-
-    if preview.quality.quality_score < 1.0 {
-        info!(
-            %item_id,
-            %user_id,
-            quality_score = preview.quality.quality_score,
-            flags = ?preview.quality.flags,
-            "Ingest worker: low quality entry — storing with hints (non-blocking)"
-        );
-    }
+    // Step 3: Three-phase parse (Phase A metadata + Phase B bullets, chunked)
+    // parse_three_phase borrows &entry_text — must complete before entry_text is moved
+    let parsed_entry =
+        match parse_three_phase(&entry_text, llm, ingest_sem, bullet_token_budget).await {
+            Ok(e) => e,
+            Err(e) => {
+                let msg = format!("Parse failed: {e}");
+                error!(%item_id, %user_id, error = %e, "Ingest worker: parse_three_phase failed");
+                batch::mark_item_failed(db, item_id, &msg).await?;
+                return Ok(());
+            }
+        };
 
     // Step 4: Check for duplicate (heuristic + LLM confirm)
     let existing_entries = match get_current_entries(db, user_id).await {
@@ -200,8 +220,9 @@ async fn process_ingest_item(
         }
     };
 
+    // Clone parsed_entry before the dedup check — it's used in multiple branches
     let dedup_result =
-        crate::context::dedup::check_and_merge(&existing_entries, &preview.entry, llm).await;
+        crate::context::dedup::check_and_merge(&existing_entries, &parsed_entry, llm).await;
 
     match dedup_result {
         DedupResult::Merged(existing_entry_id) => {
@@ -214,7 +235,7 @@ async fn process_ingest_item(
                 llm,
                 user_id,
                 existing_entry_id,
-                &preview.entry,
+                &parsed_entry,
             )
             .await
             {
@@ -227,7 +248,8 @@ async fn process_ingest_item(
                     warn!(%item_id, %user_id, error = %e, "Ingest worker: merge failed, falling back to normal insert");
                     let confirm_req = IngestConfirmRequest {
                         user_id,
-                        entry: preview.entry,
+                        entry: parsed_entry.clone(),
+                        raw_text: Some(entry_text.clone()),
                         acknowledged_gaps: vec![],
                     };
                     commit_and_mark(db, s3, s3_bucket, item_id, user_id, confirm_req).await?;
@@ -241,7 +263,8 @@ async fn process_ingest_item(
             }
             let confirm_req = IngestConfirmRequest {
                 user_id,
-                entry: preview.entry,
+                entry: parsed_entry,
+                raw_text: Some(entry_text),
                 acknowledged_gaps: vec![],
             };
             commit_and_mark(db, s3, s3_bucket, item_id, user_id, confirm_req).await?;

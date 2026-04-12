@@ -72,11 +72,43 @@ pub struct RenderParams {
     pub sections: Vec<ResumeSection>,
 }
 
-/// A named resume section with its ordered bullet texts.
+/// One logical group within a section (one job, one project, one education entry, one skill category).
+#[derive(Debug, Clone)]
+pub struct ResumeSubEntry {
+    /// Pre-formatted LaTeX header using template macros, inserted verbatim.
+    /// None for legacy/test cases without sub-entry headers.
+    pub header_latex: Option<String>,
+    /// Bullet texts (raw; will be escaped by the LaTeX builder).
+    pub bullets: Vec<String>,
+}
+
+/// A named resume section containing grouped sub-entries.
 #[derive(Debug, Clone)]
 pub struct ResumeSection {
     pub name: String,
-    pub bullets: Vec<String>,
+    pub sub_entries: Vec<ResumeSubEntry>,
+}
+
+impl ResumeSection {
+    /// Constructs a flat section (single sub-entry, no header) — used in tests and
+    /// for sections that have no sub-entry grouping.
+    pub fn flat(name: impl Into<String>, bullets: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            sub_entries: vec![ResumeSubEntry {
+                header_latex: None,
+                bullets,
+            }],
+        }
+    }
+
+    /// Returns all bullet texts across all sub-entries (for hash computation).
+    pub fn all_bullets(&self) -> Vec<&str> {
+        self.sub_entries
+            .iter()
+            .flat_map(|e| e.bullets.iter().map(|b| b.as_str()))
+            .collect()
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -1,9 +1,20 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from '@/components/ui/alert-dialog'
 import { api } from '@/lib/api'
 import type { ContextEntryRow } from '@/lib/api'
 
@@ -387,6 +398,8 @@ interface ContextEntryCardProps {
   onToggle: () => void
   /** Called after a successful inline edit so the parent can re-fetch. */
   onRefresh?: () => void
+  /** Called after a successful delete with the deleted entry_id. */
+  onDelete?: (entryId: string) => void
 }
 
 export default function ContextEntryCard({
@@ -394,9 +407,11 @@ export default function ContextEntryCard({
   isExpanded,
   onToggle,
   onRefresh,
+  onDelete,
 }: ContextEntryCardProps) {
   const [evergreen, setEvergreen] = useState(entry.flagged_evergreen)
   const [evergreenLoading, setEvergreenLoading] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   const title = getTitle(entry)
   const subtitle = getSubtitle(entry)
@@ -434,6 +449,19 @@ export default function ContextEntryCard({
   function handleFieldSave() {
     if (onRefresh) {
       onRefresh()
+    }
+  }
+
+  async function handleDelete() {
+    setIsDeleting(true)
+    try {
+      await api.deleteContextEntry(entry.entry_id, MVP_USER_ID)
+      onDelete?.(entry.entry_id)
+    } catch {
+      // Fallback: refresh list on error so stale card doesn't persist
+      onRefresh?.()
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -653,6 +681,39 @@ export default function ContextEntryCard({
 
           {/* Structured data fields (remaining, not already shown inline) */}
           <DataFields data={entry.data ?? {}} />
+
+          {/* Delete entry */}
+          <div className="pt-2 border-t flex justify-end">
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="text-destructive hover:text-destructive gap-1"
+                  disabled={isDeleting}
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Delete entry
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete this entry?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently remove this{' '}
+                    {entry.entry_type.replace(/_/g, ' ')} entry and all its
+                    versions. This cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleDelete}>
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </div>
       )}
     </div>

@@ -1,8 +1,21 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ContextEntryRow, CompletenessReport } from '@/lib/api'
+import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from '@/components/ui/alert-dialog'
 import ContextHealthBar from './ContextHealthBar'
 import ContextEntryCard from './ContextEntryCard'
 
@@ -127,6 +140,8 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [filter, setFilter] = useState<string>('all')
+  const [isClearingContext, setIsClearingContext] = useState(false)
+  const [clearSuccess, setClearSuccess] = useState<string | null>(null)
 
   const fetchEntries = useCallback(async () => {
     setIsLoading(true)
@@ -154,6 +169,22 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
     }
   }, [entries, filter])
 
+  const handleClearContext = async () => {
+    setIsClearingContext(true)
+    setClearSuccess(null)
+    setError(null)
+    try {
+      const result = await api.clearAllContext(MVP_USER_ID)
+      setEntries([])
+      setClearSuccess(`Deleted ${result.deleted_count} entries.`)
+      fetchEntries()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to clear context')
+    } finally {
+      setIsClearingContext(false)
+    }
+  }
+
   const availableTypes = uniqueTypes(entries)
   const grouped = groupEntries(entries, filter)
 
@@ -166,11 +197,18 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
         <ContextHealthBar completeness={completeness} />
       )}
 
-      {/* Filter + count row */}
+      {/* Clear success message */}
+      {clearSuccess && (
+        <div className="rounded-lg border border-green-500/40 bg-green-500/5 p-2 text-xs text-green-600 dark:text-green-400">
+          {clearSuccess}
+        </div>
+      )}
+
+      {/* Filter + count row + Clear Context button */}
       {!isLoading && entries.length > 0 && (
         <div className="flex items-center gap-3">
           <span className="text-sm text-muted-foreground">Filter</span>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 flex-1">
             <button
               onClick={() => setFilter('all')}
               className={`text-xs px-3 py-1 rounded-full border transition-colors ${
@@ -198,6 +236,37 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
               )
             })}
           </div>
+
+          {/* Clear Context button — only visible when entries exist */}
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive gap-1 shrink-0"
+                disabled={isClearingContext}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Clear all
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Clear all context?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will permanently delete all {entries.length}{' '}
+                  context {entries.length === 1 ? 'entry' : 'entries'}.
+                  This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleClearContext}>
+                  Delete all
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       )}
 
@@ -257,6 +326,10 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
                       setExpandedId((prev) => (prev === entry.id ? null : entry.id))
                     }
                     onRefresh={fetchEntries}
+                    onDelete={(deletedId) => {
+                      setEntries((prev) => prev.filter((e) => e.entry_id !== deletedId))
+                      if (expandedId === entry.id) setExpandedId(null)
+                    }}
                   />
                 ))}
               </div>

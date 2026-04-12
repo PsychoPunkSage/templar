@@ -1,13 +1,45 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { UploadCloud } from 'lucide-react'
+import { Download, UploadCloud } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
 const MVP_USER_ID = '00000000-0000-0000-0000-000000000001'
+
+// ─── Context template ──────────────────────────────────────────────────────
+
+const CONTEXT_TEMPLATE = `# [Company or Project Name]
+
+**Role:** [Your Title]
+**Period:** [Month Year] – [Month Year or "Present"]
+**Type:** experience | project | education | skill
+
+## What I did
+
+- [Achievement with specific metrics — "reduced latency by 40%", "led team of 5"]
+- [Tool or technology you owned end-to-end]
+- [Technical decision and its measurable outcome]
+
+---
+
+# [Next Company or Project]
+...
+`
+
+function handleDownloadTemplate() {
+  const blob = new Blob([CONTEXT_TEMPLATE], { type: 'text/markdown' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'templar-context-template.md'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -327,6 +359,18 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
 
         {/* ── Paste Text tab ─────────────────────────────────────────── */}
         <TabsContent value="text" className="mt-2 space-y-2">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs text-muted-foreground">
+              Paste experience, projects, or skills
+            </span>
+            <button
+              type="button"
+              onClick={handleDownloadTemplate}
+              className="inline-flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+            >
+              <Download className="h-3 w-3" /> Download template
+            </button>
+          </div>
           <Textarea
             value={rawText}
             onChange={(e) => setRawText(e.target.value)}

@@ -1,0 +1,89 @@
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                   Templar Configuration                         ║
+# ║                                                                  ║
+# ║  This file provides defaults for all tunable parameters.        ║
+# ║  Environment variables ALWAYS override values here.             ║
+# ║  Override any field by setting the corresponding env var.       ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+[concurrency]
+
+# ── Context Ingestion ─────────────────────────────────────────────
+
+# ingest_worker_count: Number of background workers processing the Redis ingest queue.
+# Each worker picks one batch item, runs the 3-phase LLM parse, then stores it.
+# Higher = faster throughput for large batches but more DB connections consumed.
+# Overridden by: INGEST_WORKER_COUNT env var
+#
+# How to choose:
+#   Free Anthropic tier  (8k   output tokens/min) → 1–2
+#   Build tier           (40k  output tokens/min) → 3–4
+#   Scale tier           (80k+ output tokens/min) → 6–8
+#   Rule of thumb: never exceed (rate_limit_tpm / avg_entry_tokens / 60)
+ingest_worker_count = 2
+
+# ingest_llm_concurrency: Maximum number of concurrent LLM calls across ALL ingest
+# workers at any instant. This is the primary rate-limit guard.
+# A semaphore with this many permits is shared across all workers.
+# Overridden by: INGEST_LLM_CONCURRENCY env var
+#
+# How to choose:
+#   Each ingest item fires ~1 Phase A call (~100 output tokens) +
+#   N Phase B calls (~300-600 output tokens each, N = chunks in entry).
+#   Average total per item ≈ 500–1000 output tokens.
+#
+#   Max safe concurrency = floor(rate_limit_tpm / avg_tokens_per_call / 60)
+#   Free tier (8k TPM):  floor(8000 / 400 / 60) ≈ 0.3 → set to 1 (minimum)
+#   Build tier (40k TPM): floor(40000 / 400 / 60) ≈ 1.6 → set to 2–3
+#   Scale tier (80k TPM): → set to 4–6
+#
+#   Setting too high → 429 errors (retried but slow).
+#   Setting too low  → ingestion serialized but reliable.
+ingest_llm_concurrency = 2
+
+# ── Resume Generation ─────────────────────────────────────────────
+
+# generation_llm_concurrency: Maximum number of parallel per-entry LLM calls during
+# resume generation (the JoinSet in call_llm_with_retry).
+# Overridden by: GENERATION_LLM_CONCURRENCY env var
+#
+# How to choose:
+#   Same math as ingest_llm_concurrency but generation calls are larger
+#   (~300–500 output tokens per entry bullet set).
+#   If ingest and generation can run simultaneously, budget must cover both.
+#   Recommended: set to half of ingest_llm_concurrency when running together,
+#   or equal when generation-only workloads are expected.
+#
+#   Free tier  → 1–2
+#   Build tier → 3–4
+#   Scale tier → 5–8
+generation_llm_concurrency = 1
+
+# ── Render Pipeline ───────────────────────────────────────────────
+
+# render_worker_count: Number of parallel pdflatex render jobs.
+# CPU-bound, not LLM-bound — not rate-limited by Anthropic.
+# Set based on available CPU cores. Each job spawns a pdflatex process.
+# Overridden by: RENDER_WORKER_COUNT env var
+#
+# How to choose:
+#   Docker default (2 vCPU): 2–3
+#   4 vCPU: 4
+#   Never exceed (available_cores - 1) to keep system responsive
+render_worker_count = 4
+
+[ingestion]
+
+# bullet_token_budget: Estimated token budget per bullet-extraction LLM call chunk.
+# Tokens are estimated as: char_count / 4 (rough approximation).
+# If an entry exceeds this budget, it's split into smaller sub-chunks.
+# Overridden by: BULLET_TOKEN_BUDGET env var
+#
+# How to choose:
+#   Lower (800–1200):  More chunks, more LLM calls, each call is smaller and faster.
+#                      Better for rate-limited tiers. Slightly more overhead.
+#   Higher (1500–2500): Fewer calls, but larger prompts risk output truncation
+#                       if the entry has many detailed bullets.
+#   Recommended default: 1200 for free/build tiers, 2000 for scale tier.
+#   Never set above 3000 — approaches the MAX_TOKENS ceiling.
+bullet_token_budget = 1200

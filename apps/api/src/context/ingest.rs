@@ -1,10 +1,15 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use crate::context::completeness::compute_completeness_report;
 use crate::context::dedup::{check_for_conflicts, ConflictWarning};
-use crate::context::prompts::{CONTEXT_PARSE_PROMPT, CONTEXT_PARSE_SYSTEM};
+use crate::context::prompts::{
+    CONTEXT_BULLET_PROMPT, CONTEXT_BULLET_SYSTEM, CONTEXT_META_PROMPT, CONTEXT_META_SYSTEM,
+    CONTEXT_PARSE_PROMPT, CONTEXT_PARSE_SYSTEM,
+};
 use crate::context::scoring::compute_recency_score;
 use crate::context::validation::{validate_bullets, validate_impact, ImpactQuality};
 use crate::context::versioning::{commit_context_update, get_current_entries, CommitParams};
@@ -29,6 +34,9 @@ pub struct IngestPreviewResponse {
 pub struct IngestConfirmRequest {
     pub entry: serde_json::Value,
     pub user_id: Uuid,
+    /// Raw source text stored in DB so per-entry LLM generation has a source.
+    #[serde(default)]
+    pub raw_text: Option<String>,
     // Acknowledged gaps are accepted from the client but not yet processed server-side.
     // They are preserved for future audit logging. See Phase 5 grounding system.
     #[allow(dead_code)]
@@ -125,6 +133,15 @@ pub async fn confirm_ingest(
         .to_string();
     let data = entry.get("data").cloned().unwrap_or_default();
 
+    // Guard: never store null data — can happen if LLM parse failed silently
+    if data.is_null() {
+        return Err(AppError::Validation(
+            "Failed to extract structured data from this entry. \
+             The content may be too short or improperly formatted."
+                .into(),
+        ));
+    }
+
     let entry_id = Uuid::new_v4();
     let contribution_type = data
         .get("contribution_type")
@@ -163,7 +180,7 @@ pub async fn confirm_ingest(
             entry_id,
             entry_type: &entry_type,
             data: &data,
-            raw_text: None,
+            raw_text: request.raw_text.as_deref(),
             recency_score,
             impact_score,
             tags: &tags,
@@ -198,6 +215,178 @@ pub async fn confirm_ingest(
         improvement_hints: quality.suggestions,
     })
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Three-phase ingestion pipeline
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Splits text into chunks that fit within `budget` tokens (est. len/4).
+///
+/// Strategy (in order):
+/// 1. If whole text fits → return single chunk
+/// 2. Split on `\n\n` (paragraph boundaries), group greedily under budget
+/// 3. Add 3-line overlap between consecutive chunks
+/// 4. Fallback: 40-line chunks with 3-line overlap if paragraphs don't help
+pub(crate) fn chunk_text_for_bullets(text: &str, budget: usize) -> Vec<String> {
+    let estimated_tokens = text.len() / 4;
+
+    // Case 1: fits as-is
+    if estimated_tokens <= budget {
+        return vec![text.to_string()];
+    }
+
+    // Case 2: paragraph-boundary splitting with overlap
+    let paragraphs: Vec<&str> = text.split("\n\n").collect();
+    if paragraphs.len() > 1 {
+        let mut chunks: Vec<String> = vec![];
+        let mut current = String::new();
+        let mut overlap_lines: Vec<String> = vec![];
+
+        for para in &paragraphs {
+            let candidate = if current.is_empty() {
+                para.to_string()
+            } else {
+                format!("{current}\n\n{para}")
+            };
+
+            if candidate.len() / 4 <= budget {
+                current = candidate;
+            } else {
+                if !current.is_empty() {
+                    // Collect last 3 lines as owned Strings before moving current
+                    let mut tail: Vec<String> =
+                        current.lines().rev().take(3).map(String::from).collect();
+                    tail.reverse();
+                    overlap_lines = tail;
+                    chunks.push(current.clone());
+                }
+                // Start next chunk with overlap
+                let overlap = overlap_lines.join("\n");
+                current = if overlap.is_empty() {
+                    para.to_string()
+                } else {
+                    format!("{overlap}\n\n{para}")
+                };
+            }
+        }
+        if !current.is_empty() {
+            chunks.push(current);
+        }
+        if !chunks.is_empty() {
+            return chunks;
+        }
+    }
+
+    // Case 3/4: line-based fallback — 40-line chunks with 3-line overlap
+    let lines: Vec<&str> = text.lines().collect();
+    let chunk_size = 40;
+    let overlap = 3;
+    let mut chunks: Vec<String> = vec![];
+    let mut start = 0;
+    while start < lines.len() {
+        let end = (start + chunk_size).min(lines.len());
+        chunks.push(lines[start..end].join("\n"));
+        if end >= lines.len() {
+            break;
+        }
+        start = end.saturating_sub(overlap);
+    }
+    chunks
+}
+
+/// Three-phase LLM parse for a single context entry text.
+///
+/// Phase A: metadata extraction (1 small call — never hits token ceiling)
+/// Phase B: bullet extraction (chunked — failures are non-fatal)
+/// Phase C: assemble into `{entry_type, data}` structure (pure Rust)
+///
+/// `sem` is a shared semaphore across all ingest workers — each individual LLM call
+/// acquires one permit and releases it immediately after the call completes. This caps
+/// total concurrent LLM calls (across all workers) to `sem.available_permits()` at any
+/// instant, preventing 429 rate-limit errors.
+///
+/// `bullet_token_budget` controls the chunk size for Phase B calls (replaces the
+/// previously hardcoded 1500). Set via `Config::bullet_token_budget`.
+///
+/// Returns `Ok(assembled_entry)` or `Err` if Phase A failed.
+pub(crate) async fn parse_three_phase(
+    raw_text: &str,
+    llm: &LlmClient,
+    sem: &Arc<Semaphore>,
+    bullet_token_budget: usize,
+) -> Result<serde_json::Value, AppError> {
+    // ── Phase A: metadata ────────────────────────────────────────────────────
+    // Acquire permit → call LLM → release permit immediately (before Phase B).
+    let _permit = sem.acquire().await.expect("ingest semaphore closed");
+    let meta_prompt = CONTEXT_META_PROMPT.replace("{raw_text}", raw_text);
+    let meta: serde_json::Value = llm
+        .call_json(&meta_prompt, CONTEXT_META_SYSTEM)
+        .await
+        .map_err(|e| AppError::Llm(format!("Phase A metadata extraction failed: {e}")))?;
+    drop(_permit); // Release before Phase B calls
+
+    let entry_type = meta
+        .get("entry_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("experience")
+        .to_string();
+
+    // ── Phase B: bullet extraction (chunked, non-fatal) ───────────────────────
+    // Each chunk acquires and immediately releases the permit.
+    let chunks = chunk_text_for_bullets(raw_text, bullet_token_budget);
+    let mut all_bullets: Vec<serde_json::Value> = vec![];
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let _permit = sem.acquire().await.expect("ingest semaphore closed");
+        let prompt = CONTEXT_BULLET_PROMPT.replace("{raw_text}", chunk);
+        match llm
+            .call_json::<serde_json::Value>(&prompt, CONTEXT_BULLET_SYSTEM)
+            .await
+        {
+            Ok(v) => {
+                if let Some(bullets) = v.get("bullets").and_then(|b| b.as_array()) {
+                    all_bullets.extend(bullets.clone());
+                }
+            }
+            Err(e) => {
+                tracing::warn!(chunk = i, error = %e, "Phase B bullet chunk failed (non-fatal), skipping");
+            }
+        }
+        drop(_permit); // Release before next chunk
+    }
+
+    // Deduplicate by exact text match
+    let mut seen_texts: std::collections::HashSet<String> = std::collections::HashSet::new();
+    all_bullets.retain(|b| {
+        let text = b
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        seen_texts.insert(text)
+    });
+
+    // ── Phase C: assemble (pure Rust) ────────────────────────────────────────
+    let mut data = meta.as_object().cloned().unwrap_or_default();
+
+    // Remove entry_type from data (it belongs at the top level)
+    data.remove("entry_type");
+
+    // Drop null values to keep data clean
+    data.retain(|_, v| !v.is_null());
+
+    // Attach bullets to bullet-bearing entry types
+    let bullet_types = ["experience", "project", "open_source", "extracurricular"];
+    if bullet_types.contains(&entry_type.as_str()) && !all_bullets.is_empty() {
+        data.insert("bullets".into(), serde_json::Value::Array(all_bullets));
+    }
+
+    Ok(serde_json::json!({ "entry_type": entry_type, "data": data }))
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Private helpers
+// ────────────────────────────────────────────────────────────────────────────
 
 fn extract_bullets(entry: &serde_json::Value) -> Vec<String> {
     entry

@@ -221,6 +221,8 @@ mod tests {
                 is_user_edited: false,
                 line_count: 1,
                 rejection_reason: None,
+                entry_header: None,
+                order_idx: 0,
                 created_at: now,
             },
             ResumeBulletRow {
@@ -233,6 +235,8 @@ mod tests {
                 is_user_edited: false,
                 line_count: 1,
                 rejection_reason: None,
+                entry_header: None,
+                order_idx: 1,
                 created_at: now,
             },
             ResumeBulletRow {
@@ -245,6 +249,8 @@ mod tests {
                 is_user_edited: false,
                 line_count: 1,
                 rejection_reason: None,
+                entry_header: None,
+                order_idx: 2,
                 created_at: now,
             },
         ];

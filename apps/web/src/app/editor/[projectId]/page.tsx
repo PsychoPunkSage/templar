@@ -6,7 +6,7 @@
 //   [Action bar: project name | template badge | Analyze Fit | Generate Resume]
 //   ┌──────────────────────┬─────────────────────────────────────┐
 //   │ Left pane (50%)      │ Right pane (50%)                    │
-//   │ Tabs:                │ IF bullets.length === 0:            │
+//   │ Tabs:                │ IF entryGroups.length === 0:        │
 //   │  [Job & Fit]         │   <TemplateThumbnailPreview>        │
 //   │  [Bullets (N)]       │ ELSE:                               │
 //   │                      │   <PdfPreview> (PDF.js)             │
@@ -14,17 +14,18 @@
 //
 // Two-step JD workflow:
 //   1. "Analyze Fit" → runs LlmFitScorer (with hash-based server cache)
-//   2. "Generate Resume" → full pipeline (generate + render)
+//   2. "Generate Resume" → async job enqueue + poll (FIX-08)
 //
 // Auto-behaviours:
 //   - Navigating to a new projectId resets all project-scoped store state immediately
 //   - JD text is re-populated from project.last_jd_text after project data loads
+//   - On load: if project.generation_job_id is set and job is in-flight, polling resumes
 //   - After generation, left tab auto-switches to "Bullets"
 //   - "Analyze Fit" button label changes to "Re-analyze Fit" when context has changed
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, X, Download, Loader2 } from "lucide-react";
 import { JdInput } from "@/components/editor/JdInput";
 import { BulletList } from "@/components/editor/BulletList";
 import { FitReportPanel } from "@/components/editor/FitReportPanel";
@@ -54,6 +55,7 @@ export default function ProjectEditorPage() {
     analyzeFit,
     autoLoadCachedFitScore,
     loadResume,
+    pollGenerationStatus,
     isGenerating,
     fitScoreLoading,
     fitScoreCacheHit,
@@ -61,17 +63,36 @@ export default function ProjectEditorPage() {
     fitReport,
     error,
     clearError,
-    bullets,
+    entryGroups,
     resumeId,
     jdText,
     setJdText,
     resetForProject,
     renderStatus,
     rerender,
+    renderJobId,
+    generationStatus,
   } = useResumeStore();
   const { currentProject, loadProject, loadTemplates } = useProjectStore();
 
   const [leftTab, setLeftTab] = useState<"jd" | "bullets">("jd");
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  // Total bullet count across all entry groups
+  const bulletCount = entryGroups.reduce((acc, g) => acc + g.bullets.length, 0);
+  const hasBullets = bulletCount > 0;
+
+  const handleDownload = async () => {
+    if (!renderJobId) return;
+    setIsDownloading(true);
+    try {
+      await api.downloadPdf(renderJobId);
+    } catch (e) {
+      console.error("[Editor] Download failed:", e);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   // Effect 1: Reset all project-scoped state immediately on project navigation.
   // This prevents state bleed-through when switching between projects.
@@ -97,27 +118,67 @@ export default function ProjectEditorPage() {
       autoLoadCachedFitScore(currentProject.last_jd_text);
     }
 
-    // Restore previously-generated bullets from DB if the store is empty.
-    // This handles page refresh — bullets are in resume_bullets, not just memory.
-    if (currentProject.current_resume_id && !resumeId) {
-      loadResume(currentProject.current_resume_id);
+    const genJobId = currentProject.generation_job_id;
+    const savedResumeId = currentProject.current_resume_id;
+
+    if (genJobId && !resumeId) {
+      // FIX-10: Prefer the status endpoint when a generation_job_id exists.
+      // It carries full typed EntryGroup display headers (company/role/dates).
+      // Only fall back to loadResume() if the status endpoint fails or has no entry_groups.
+      api.getGenerationStatus(genJobId).then((status) => {
+        if (status.status === "done" && status.entry_groups?.length) {
+          // Full typed display headers available — populate directly, no loadResume needed
+          useResumeStore.setState({
+            generationJobId: genJobId,
+            resumeId: status.resume_id ?? null,
+            entryGroups: status.entry_groups,
+            fitReport: status.fit_report ?? null,
+            generationStatus: "done",
+            isGenerating: false,
+          });
+          console.log("[Editor] Restored generation from job (full headers)", genJobId);
+        } else if (status.status === "done" && savedResumeId) {
+          // Status done but no entry_groups in result JSONB — fall back to loadResume.
+          // loadResume uses resumes.entry_groups (post-migration 014) or entry_header labels.
+          loadResume(savedResumeId);
+        } else if (status.status === "queued" || status.status === "processing") {
+          // Job still running — resume the polling loop
+          useResumeStore.setState({
+            generationJobId: genJobId,
+            generationStatus: status.status as "queued" | "processing",
+            isGenerating: true,
+          });
+          useResumeStore.getState().pollGenerationStatus();
+          console.log("[Editor] Resumed generation polling for job", genJobId, status.status);
+        } else if (savedResumeId) {
+          // Failed or unknown — restore bullets from DB
+          loadResume(savedResumeId);
+        }
+      }).catch(() => {
+        // Network error or job not found — try to restore from DB
+        if (savedResumeId && !resumeId) loadResume(savedResumeId);
+      });
+    } else if (savedResumeId && !resumeId) {
+      // No generation_job_id (old resume) — only path is loadResume
+      loadResume(savedResumeId);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentProject?.id, currentProject?.last_jd_text, currentProject?.current_resume_id, projectId]);
+  }, [currentProject?.id, currentProject?.last_jd_text, currentProject?.current_resume_id,
+      currentProject?.generation_job_id, projectId]);
 
   // Effect 3: Auto-switch to bullets tab after generation completes.
   useEffect(() => {
-    if (bullets.length > 0) setLeftTab("bullets");
-  }, [bullets.length]);
+    if (hasBullets) setLeftTab("bullets");
+  }, [hasBullets]);
 
   // We only need the template id slug to build the render-pdf URL.
   const templateId = currentProject?.template_id ?? null;
 
   // Debug: log which right-pane scenario is active.
   useEffect(() => {
-    if (bullets.length > 0) {
+    if (hasBullets) {
       console.log("[Editor] Right pane → Scenario A: PdfPreview (live render)", {
-        bullets: bullets.length,
+        bullets: bulletCount,
         templateId,
       });
     } else if (templateId) {
@@ -131,14 +192,21 @@ export default function ProjectEditorPage() {
         templateId,
       });
     }
-  }, [bullets.length, templateId, currentProject]);
+  }, [hasBullets, bulletCount, templateId, currentProject]);
 
-  // Derive "Analyze Fit" button label based on current state
+  // Derive button labels based on current state
   const analyzeFitLabel = fitScoreLoading
     ? "Analyzing..."
     : contextChangedSinceAnalysis && fitReport
     ? "Re-analyze Fit"
     : "Analyze Fit";
+
+  // FIX-08: Show generation phase in button label
+  const generateLabel = isGenerating
+    ? generationStatus === "queued"
+      ? "Queued..."
+      : "Generating..."
+    : "Generate Resume";
 
   return (
     <div className="flex flex-col h-[calc(100vh-53px)] bg-background">
@@ -166,9 +234,9 @@ export default function ProjectEditorPage() {
 
         {/* Two-step action bar */}
         <div className="flex items-center gap-2">
-          {bullets.length > 0 && (
+          {hasBullets && (
             <span className="text-xs text-muted-foreground shrink-0">
-              {bullets.length} bullets
+              {bulletCount} bullets
             </span>
           )}
           <Button
@@ -179,7 +247,7 @@ export default function ProjectEditorPage() {
           >
             {analyzeFitLabel}
           </Button>
-          {bullets.length > 0 && (
+          {hasBullets && (
             <Button
               variant="outline"
               size="sm"
@@ -195,12 +263,27 @@ export default function ProjectEditorPage() {
                 : "Render PDF"}
             </Button>
           )}
+          {renderStatus === "done" && renderJobId && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleDownload}
+              disabled={isDownloading}
+              className="gap-1.5"
+            >
+              {isDownloading
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <Download className="h-3.5 w-3.5" />}
+              {isDownloading ? "Downloading..." : "Download PDF"}
+            </Button>
+          )}
           <Button
             size="sm"
             onClick={() => generate(projectId)}
             disabled={isGenerating || fitScoreLoading || !jdText.trim()}
           >
-            {isGenerating ? "Generating..." : "Generate Resume"}
+            {isGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+            {generateLabel}
           </Button>
         </div>
       </div>
@@ -238,10 +321,13 @@ export default function ProjectEditorPage() {
                 </TabsTrigger>
                 <TabsTrigger value="bullets" className="flex-1">
                   Bullets
-                  {bullets.length > 0 && (
+                  {hasBullets && (
                     <span className="ml-1.5 text-xs text-muted-foreground">
-                      ({bullets.length})
+                      ({bulletCount})
                     </span>
+                  )}
+                  {isGenerating && !hasBullets && (
+                    <Loader2 className="ml-1.5 h-3 w-3 animate-spin text-muted-foreground" />
                   )}
                 </TabsTrigger>
               </TabsList>
@@ -268,7 +354,7 @@ export default function ProjectEditorPage() {
 
         {/* Right: template PDF preview (pre-generation) or PDF.js live preview (post-generation) */}
         <div className="w-1/2 bg-muted/30 relative overflow-hidden">
-          {bullets.length > 0 ? (
+          {hasBullets ? (
             // Post-generation: PDF.js live preview (debounced at 300ms)
             <PdfPreview />
           ) : templateId ? (

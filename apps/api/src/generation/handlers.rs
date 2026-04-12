@@ -11,11 +11,11 @@ use crate::context::versioning::get_current_entries;
 use crate::errors::AppError;
 use crate::generation::fit_cache;
 use crate::generation::fit_scoring::{FitReport, /* FitScorer,*/ LlmFitScorer};
-use crate::generation::generator::{generate_resume, GenerateRequest};
+use crate::generation::generator::{EntryGroup, GenerateRequest, GenerateResponse};
 use crate::generation::hash_utils;
 use crate::generation::jd_parser::{parse_jd, ParsedJD};
-use crate::layout::SimulatedBullet;
-use crate::models::resume::{ResumeBulletRow, ResumeRow};
+use crate::generation::worker::enqueue_generation_job;
+use crate::models::resume::{GenerationJobRow, ResumeBulletRow, ResumeRow};
 use crate::state::AppState;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -49,20 +49,41 @@ pub struct FitScoreResponse {
     pub context_hash: String,
 }
 
+/// Response from POST /api/v1/resumes/generate (FIX-08).
+/// Returns immediately with a job_id — the actual generation runs in the background.
+/// The frontend polls GET /api/v1/generation/jobs/:id/status every 3 seconds.
 #[derive(Debug, Serialize)]
-pub struct GenerateResponse {
-    pub resume_id: Uuid,
-    pub fit_report: FitReport,
-    /// Phase 3: bullets are now `SimulatedBullet` with `verified_line_count`,
-    /// `was_adjusted`, and `flagged_for_review` populated by the simulation loop.
-    pub bullets: Vec<SimulatedBullet>,
+pub struct GenerateJobResponse {
+    pub job_id: Uuid,
+    /// Always "queued" on a successful enqueue.
     pub status: String,
+}
+
+/// Response from GET /api/v1/generation/jobs/:id/status (FIX-08 + FIX-10).
+///
+/// - `status` = queued | processing | done | failed
+/// - `entry_groups` is populated on status='done'; contains structured per-entry grouping (FIX-10)
+/// - `fit_report` and `layout_flagged` are populated on status='done'
+/// - `error` is populated on status='failed'
+#[derive(Debug, Serialize)]
+pub struct GenerationStatusResponse {
+    pub job_id: Uuid,
+    pub status: String,
+    pub error: Option<String>,
+    pub resume_id: Option<Uuid>,
+    pub fit_report: Option<FitReport>,
+    pub entry_groups: Option<Vec<EntryGroup>>,
+    pub layout_flagged: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ResumeDetailResponse {
     pub resume: ResumeRow,
     pub bullets: Vec<ResumeBulletRow>,
+    /// Typed display headers for the frontend editor — populated for resumes generated
+    /// post-migration 014. Null for legacy resumes; frontend falls back to
+    /// bulletRowsToEntryGroups() which uses entry_header LaTeX as label.
+    pub entry_groups: Option<Vec<EntryGroup>>,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -141,8 +162,8 @@ pub async fn handle_fit_score(
     }
 
     // Step 4: Cache miss or force_refresh — run LlmFitScorer directly
-    // We bypass `state.fit_scorer` (which may be KeywordFitScorer for generation)
-    // and always use the LLM scorer for the explicit fit-analysis step.
+    // We bypass `state.fit_scorer` here and use a fresh LlmFitScorer directly,
+    // invoking score_full() which passes the complete untruncated raw_text to Claude.
     let scorer = LlmFitScorer(state.llm.clone());
     // DIAGNOSTIC: using score_full() — passes complete raw_text + raw JD to Claude.
     // Switch back to scorer.score() once score variation is confirmed working.
@@ -172,34 +193,106 @@ pub async fn handle_fit_score(
     }))
 }
 
-/// POST /api/v1/resumes/generate
+/// POST /api/v1/resumes/generate  (FIX-08)
 ///
-/// Full generation pipeline: JD parse → fit score → content select → tone → LLM generate
-/// → layout simulation → persist. Phase 3: returns `SimulatedBullet` with layout metadata.
+/// Enqueues an async generation job and returns immediately with { job_id, status: "queued" }.
+/// The actual pipeline (JD parse → fit score → LLM generate → layout simulation → grounding →
+/// persist) runs in the background generation worker.
+///
+/// The frontend polls GET /api/v1/generation/jobs/:id/status every 3 seconds until done/failed.
 pub async fn handle_generate(
     State(state): State<AppState>,
     Json(request): Json<GenerateRequest>,
-) -> Result<Json<GenerateResponse>, AppError> {
+) -> Result<Json<GenerateJobResponse>, AppError> {
     if request.jd_text.trim().is_empty() {
         return Err(AppError::Validation("jd_text cannot be empty".to_string()));
     }
 
-    let response = generate_resume(
-        &state.db,
-        &state.llm,
-        state.fit_scorer.as_ref(),
-        &state.page_config,
-        Some(&state.redis),
-        true, // grounding_enabled: Phase 5 — real grounding scores
-        request,
+    let user_id = request.user_id;
+    let job_id = Uuid::new_v4();
+
+    let request_json = serde_json::to_value(&request)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {e}")))?;
+
+    // Insert job row with status='queued'
+    sqlx::query(
+        "INSERT INTO generation_jobs (id, user_id, request, status) VALUES ($1, $2, $3, 'queued')",
     )
+    .bind(job_id)
+    .bind(user_id)
+    .bind(request_json)
+    .execute(&state.db)
     .await?;
 
-    Ok(Json(GenerateResponse {
-        resume_id: response.resume_id,
-        fit_report: response.fit_report,
-        bullets: response.bullets,
-        status: response.status,
+    // Enqueue job_id to Redis via spawn_blocking (enqueue_generation_job is synchronous)
+    let redis = state.redis.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = enqueue_generation_job(&redis, job_id) {
+            tracing::warn!("Failed to enqueue generation job {job_id}: {e}");
+        }
+    });
+
+    tracing::info!(job_id = %job_id, user_id = %user_id, "Generation job enqueued");
+
+    Ok(Json(GenerateJobResponse {
+        job_id,
+        status: "queued".to_string(),
+    }))
+}
+
+/// GET /api/v1/generation/jobs/:id/status  (FIX-08 + FIX-10)
+///
+/// Returns the current status of an async generation job.
+/// When status='done': also returns entry_groups, fit_report, and layout_flagged
+/// from the stored result JSONB so the frontend can populate its editor state immediately.
+pub async fn handle_generation_status(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<GenerationStatusResponse>, AppError> {
+    let row = sqlx::query_as::<_, GenerationJobRow>("SELECT * FROM generation_jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Generation job {job_id} not found")))?;
+
+    // For non-terminal states, return status only — no result data yet
+    if row.status != "done" {
+        return Ok(Json(GenerationStatusResponse {
+            job_id,
+            status: row.status,
+            error: row.error,
+            resume_id: row.resume_id,
+            fit_report: None,
+            entry_groups: None,
+            layout_flagged: None,
+        }));
+    }
+
+    // status='done': deserialize the stored GenerateResponse from result JSONB
+    let result: Option<GenerateResponse> = row.result.and_then(|v| serde_json::from_value(v).ok());
+
+    let (fit_report, entry_groups, layout_flagged) = match result {
+        Some(r) => (
+            Some(r.fit_report),
+            Some(r.entry_groups),
+            Some(r.layout_flagged),
+        ),
+        None => {
+            // result JSONB missing or malformed — return done status with null fields.
+            // This is non-fatal: the frontend can still render from resume_bullets.
+            tracing::warn!(job_id = %job_id, "Generation job done but result JSONB missing or invalid");
+            (None, None, None)
+        }
+    };
+
+    Ok(Json(GenerationStatusResponse {
+        job_id,
+        status: "done".to_string(),
+        error: None,
+        resume_id: row.resume_id,
+        fit_report,
+        entry_groups,
+        layout_flagged,
     }))
 }
 
@@ -280,11 +373,22 @@ pub async fn handle_get_resume(
         .ok_or_else(|| AppError::NotFound(format!("Resume {resume_id} not found")))?;
 
     let bullets = sqlx::query_as::<_, ResumeBulletRow>(
-        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, id",
+        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, order_idx, id",
     )
     .bind(resume_id)
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(ResumeDetailResponse { resume, bullets }))
+    // Deserialize stored entry_groups (None for legacy resumes pre-migration 014).
+    // Deserialization failure is treated as None so old resumes don't error.
+    let entry_groups: Option<Vec<EntryGroup>> = resume
+        .entry_groups
+        .as_ref()
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+    Ok(Json(ResumeDetailResponse {
+        resume,
+        bullets,
+        entry_groups,
+    }))
 }

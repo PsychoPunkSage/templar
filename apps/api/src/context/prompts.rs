@@ -84,6 +84,86 @@ Rules:
 
 Return the merged entry as a single JSON object with the same schema as the inputs."#;
 
+// ────────────────────────────────────────────────────────────────────────────
+// Three-phase ingestion prompts
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Phase A — metadata extraction (small call, never hits token ceiling).
+pub const CONTEXT_META_SYSTEM: &str = "\
+You are extracting structured metadata from a professional context entry. \
+You MUST respond with valid JSON only — no markdown fences, no explanations. \
+Focus only on header-level fields: entry type, names, dates, URLs, tech stack. \
+Do NOT extract bullet points or narrative achievements.";
+
+pub const CONTEXT_META_PROMPT: &str = r#"Extract structured metadata from the following professional context entry.
+
+INPUT TEXT:
+{raw_text}
+
+Return a flat JSON object (NOT nested under "data"):
+{
+  "entry_type": "experience|education|project|skill|publication|open_source|award|certification|extracurricular",
+  "company": "string or null",
+  "institution": "string or null",
+  "name": "string or null",
+  "organization": "string or null",
+  "role": "string or null",
+  "degree": "string or null",
+  "field": "string or null",
+  "category": "string or null",
+  "date_start": "YYYY-MM-DD or null",
+  "date_end": "YYYY-MM-DD or null",
+  "contribution_type": "sole_author|primary_contributor|team_member|reviewer or null",
+  "tech_stack": [],
+  "items": [],
+  "proficiency": "expert|proficient|familiar or null",
+  "url": "string or null",
+  "team_size": null,
+  "location": "string or null",
+  "venue": "string or null",
+  "authors": [],
+  "issuer": "string or null",
+  "title": "string or null",
+  "description": "string or null",
+  "gpa": null,
+  "honors": [],
+  "relevant_courses": []
+}
+
+Rules:
+- Use null for missing fields — never omit a key
+- Dates must be YYYY-MM-DD format; use YYYY-01-01 if only year is known
+- contribution_type must be honest: "team_member" if they said "we" or "team"
+- Return ONLY the JSON object — nothing else, no code fences"#;
+
+/// Phase B — achievement bullet extraction (chunked, non-fatal failures).
+pub const CONTEXT_BULLET_SYSTEM: &str = "\
+You are extracting achievement bullet points from professional experience text. \
+You MUST respond with valid JSON only — no markdown fences, no explanations. \
+Extract ALL quantified achievements, responsibilities, and outcomes.";
+
+pub const CONTEXT_BULLET_PROMPT: &str = r#"Extract all achievement bullet points from the following professional experience text.
+
+INPUT TEXT:
+{raw_text}
+
+Return JSON:
+{
+  "bullets": [
+    {
+      "text": "Full text of the achievement",
+      "impact_markers": ["50%", "$2M", "3x"],
+      "confidence_marker": null
+    }
+  ]
+}
+
+Rules:
+- Set confidence_marker to "[LOW_METRICS]" if the bullet has no numbers or metrics
+- Return {"bullets": []} if no achievements are found
+- Extract ALL bullets — do not summarize or truncate
+- Return ONLY the JSON object — nothing else, no code fences"#;
+
 pub const CONTEXT_PARSE_SYSTEM: &str = "\
 You are a precise resume data extractor. \
 Parse natural language professional experience into structured JSON. \

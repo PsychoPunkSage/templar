@@ -1,5 +1,6 @@
 import type {
-  GenerateResponse,
+  GenerateJobResponse,
+  GenerationStatusResponse,
   ResumeDetailResponse,
   AuditManifest,
   TemplateListResponse,
@@ -81,14 +82,25 @@ export const api = {
   },
 
   /**
-   * POST /api/v1/resumes/generate
-   * Generates a resume from context entries + job description.
+   * POST /api/v1/resumes/generate  (FIX-08)
+   * Enqueues an async generation job and returns immediately with { job_id, status: "queued" }.
+   * The actual pipeline runs in the background worker.
+   * Poll GET /api/v1/generation/jobs/:id/status to track progress.
    */
   generateResume: (userId: string, jdText: string) =>
-    apiFetch<GenerateResponse>("/api/v1/resumes/generate", {
+    apiFetch<GenerateJobResponse>("/api/v1/resumes/generate", {
       method: "POST",
       body: JSON.stringify({ user_id: userId, jd_text: jdText }),
     }),
+
+  /**
+   * GET /api/v1/generation/jobs/:id/status  (FIX-08 + FIX-10)
+   * Polls the status of an async generation job.
+   * On status='done': entry_groups, fit_report, and layout_flagged are populated.
+   * On status='failed': error is populated.
+   */
+  getGenerationStatus: (jobId: string) =>
+    apiFetch<GenerationStatusResponse>(`/api/v1/generation/jobs/${jobId}/status`),
 
   /**
    * GET /api/v1/resumes/:id
@@ -142,6 +154,33 @@ export const api = {
    * GET /api/v1/render/:job_id
    */
   getPdfUrl: (jobId: string) => `${API_BASE}/api/v1/render/${jobId}`,
+
+  /**
+   * Downloads the rendered PDF for a job via a Blob URL.
+   * Uses fetch() + createObjectURL so the browser download dialog
+   * works cross-origin (a.download is silently ignored for cross-origin URLs).
+   * Revokes the blob URL immediately after the click — safe because the browser
+   * keeps the Blob alive until the download starts.
+   */
+  downloadPdf: async (jobId: string, filename?: string): Promise<void> => {
+    const res = await fetch(`${API_BASE}/api/v1/render/${jobId}`, {
+      headers: { Accept: "application/pdf" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as Record<string, unknown>;
+      const msg = (err?.error as Record<string, unknown>)?.message ?? `HTTP ${res.status}`;
+      throw new Error(String(msg));
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename ?? `templar-resume-${new Date().toISOString().split("T")[0]}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
 
   // ── Templates API ──────────────────────────────────────────────────────────
 
@@ -251,6 +290,29 @@ export const api = {
     apiFetch<void>(`/api/v1/context/entries/${entryId}`, {
       method: "PATCH",
       body: JSON.stringify({ user_id: userId, patch }),
+    }),
+
+  /**
+   * DELETE /api/v1/context/entries/:entryId?user_id={uuid}
+   * Hard-deletes all versions of a context entry for the given user.
+   * Returns 204 No Content on success.
+   */
+  deleteContextEntry: async (entryId: string, userId: string): Promise<void> => {
+    const res = await fetch(
+      `${API_BASE}/api/v1/context/entries/${entryId}?user_id=${userId}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+  },
+
+  /**
+   * DELETE /api/v1/context?user_id={uuid}
+   * Hard-deletes ALL context entries for the given user.
+   * Returns the count of deleted entries.
+   */
+  clearAllContext: async (userId: string): Promise<{ deleted_count: number }> =>
+    apiFetch<{ deleted_count: number }>(`/api/v1/context?user_id=${userId}`, {
+      method: "DELETE",
     }),
 
   getProfile: (userId: string) =>

@@ -64,6 +64,11 @@ export interface ResumeBulletRow {
   grounding_score: number
   is_user_edited: boolean
   line_count: number
+  /** Added in migration 010: pre-formatted LaTeX entry header (e.g. `\job{Co}{Role}{Date}`).
+   *  Non-null only for the first bullet of each source_entry_id group. */
+  entry_header: string | null
+  /** Added in migration 011: insertion rank (0-based) for render ordering. */
+  order_idx: number
   created_at: string
   /** Set when grounding score failed — from migration 007. */
   rejection_reason: string | null
@@ -184,14 +189,91 @@ export interface AuditManifest {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Response from POST /api/v1/resumes/generate.
- * Mirrors: apps/api/src/generation/handlers.rs — GenerateResponse
+ * Response from POST /api/v1/resumes/generate (FIX-08).
+ * Returns immediately — the actual pipeline runs in the background worker.
+ * Mirrors: apps/api/src/generation/handlers.rs — GenerateJobResponse
+ */
+export interface GenerateJobResponse {
+  job_id: string
+  /** Always "queued" on a successful enqueue. */
+  status: string
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX-10: Entry group types (structured per-entry output for the frontend editor)
+// Mirrors: apps/api/src/generation/generator.rs — EntryDisplayHeader / EntryGroup
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface EntryDisplayHeaderExperience {
+  type: 'experience'; company: string; role: string; date_range: string;
+}
+export interface EntryDisplayHeaderProject {
+  type: 'project'; name: string; tech_stack: string; date_range: string;
+}
+export interface EntryDisplayHeaderOpenSource {
+  type: 'open_source'; project_name: string; tech_stack: string;
+}
+export interface EntryDisplayHeaderEducation {
+  type: 'education'; institution: string; degree: string; date_range: string;
+}
+export interface EntryDisplayHeaderSkills {
+  type: 'skills'; category: string;
+}
+export interface EntryDisplayHeaderOther {
+  type: 'other'; label: string;
+}
+
+export type EntryDisplayHeader =
+  | EntryDisplayHeaderExperience
+  | EntryDisplayHeaderProject
+  | EntryDisplayHeaderOpenSource
+  | EntryDisplayHeaderEducation
+  | EntryDisplayHeaderSkills
+  | EntryDisplayHeaderOther;
+
+/**
+ * All content bullets for one context entry, with human-readable display fields
+ * for the editor header row (company / role / dates above the bullet list).
+ * Mirrors: apps/api/src/generation/generator.rs — EntryGroup
+ */
+export interface EntryGroup {
+  source_entry_id: string
+  section: string
+  /** Typed display fields for the editor UI — no LaTeX parsing needed. */
+  display_header: EntryDisplayHeader
+  /** Pre-formatted LaTeX header macro — passed to render pipeline unchanged. */
+  entry_header_latex: string | null
+  bullets: SimulatedBullet[]
+}
+
+/**
+ * Response from GET /api/v1/generation/jobs/:id/status (FIX-08 + FIX-10).
+ * - queued | processing: no result fields populated
+ * - done: entry_groups, fit_report, layout_flagged populated
+ * - failed: error populated
+ * Mirrors: apps/api/src/generation/handlers.rs — GenerationStatusResponse
+ */
+export interface GenerationStatusResponse {
+  job_id: string
+  status: 'queued' | 'processing' | 'done' | 'failed'
+  error?: string | null
+  resume_id?: string | null
+  fit_report?: FitReport | null
+  entry_groups?: EntryGroup[] | null
+  layout_flagged?: boolean | null
+}
+
+/**
+ * @deprecated Use GenerationStatusResponse + GenerateJobResponse instead (FIX-08).
+ * Kept for reference; no longer returned by the generate endpoint.
+ * Mirrors: apps/api/src/generation/generator.rs — GenerateResponse
  */
 export interface GenerateResponse {
   resume_id: string
   fit_report: FitReport
   bullets: SimulatedBullet[]
   status: string
+  entry_groups: EntryGroup[]
 }
 
 /**
@@ -213,6 +295,12 @@ export interface FitScoreResponse {
 export interface ResumeDetailResponse {
   resume: ResumeRow
   bullets: ResumeBulletRow[]
+  /**
+   * Populated for resumes generated post-migration 014 — typed display headers for
+   * the frontend editor (company/role/dates). Null for legacy resumes; frontend falls
+   * back to bulletRowsToEntryGroups() which uses entry_header LaTeX as label.
+   */
+  entry_groups: EntryGroup[] | null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -253,6 +341,11 @@ export interface CvProject {
   current_resume_id: string | null
   /** Last job description text entered for this project. Null until first JD is typed. */
   last_jd_text: string | null
+  /**
+   * Set when a generation job is enqueued (FIX-08).
+   * On page load, the editor probes this job's status to resume polling if in-flight.
+   */
+  generation_job_id: string | null
   created_at: string
   updated_at: string
 }
@@ -272,6 +365,8 @@ export interface UpdateProjectRequest {
   template_id?: string
   current_resume_id?: string
   last_jd_text?: string
+  /** Set when a generation job is enqueued — persists job_id for page-reload polling (FIX-08). */
+  generation_job_id?: string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
