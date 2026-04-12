@@ -27,7 +27,9 @@ use crate::errors::AppError;
 use crate::generation::content_selector::{select_content, SelectionResult};
 use crate::generation::fit_scoring::{FitReport, FitScorer};
 use crate::generation::jd_parser::parse_jd;
-use crate::generation::prompts::{PER_ENTRY_GENERATION_PROMPT_TEMPLATE, PER_ENTRY_GENERATION_SYSTEM};
+use crate::generation::prompts::{
+    PER_ENTRY_GENERATION_PROMPT_TEMPLATE, PER_ENTRY_GENERATION_SYSTEM,
+};
 use crate::generation::tone::{get_tone_examples, ToneExamples};
 use crate::generation::{fit_cache, hash_utils};
 use crate::grounding::scorer::{regenerate_single_bullet, score_bullet};
@@ -173,7 +175,15 @@ pub async fn generate_resume(
                     // Force a fresh score so entry filtering works correctly.
                     tracing::info!(user_id = %request.user_id, "fit score cache hit but selected_entry_ids empty — forcing fresh score");
                     let fresh = fit_scorer.score(&entries, &parsed_jd).await?;
-                    if let Err(e) = fit_cache::upsert_cache(pool, request.user_id, &jd_hash, &context_hash, &fresh).await {
+                    if let Err(e) = fit_cache::upsert_cache(
+                        pool,
+                        request.user_id,
+                        &jd_hash,
+                        &context_hash,
+                        &fresh,
+                    )
+                    .await
+                    {
                         tracing::warn!(error = %e, "fit-score cache upsert failed after refresh (non-fatal)");
                     }
                     fresh
@@ -291,7 +301,14 @@ pub async fn generate_resume(
 
     // Step 7: Layout simulation — enforces Line Coverage Contract (non-skill bullets only).
     // Skill headers have empty text and would falsely trigger TooShort violations.
-    let simulation = run_simulation_loop(draft_bullets, page_config, &parsed_jd, llm, config.layout_llm_concurrency).await?;
+    let simulation = run_simulation_loop(
+        draft_bullets,
+        page_config,
+        &parsed_jd,
+        llm,
+        config.layout_llm_concurrency,
+    )
+    .await?;
 
     // Page fill remediation pass — runs after simulation loop to fix whitespace/overflow.
     let simulation =
@@ -311,7 +328,14 @@ pub async fn generate_resume(
     // Step 7b: Grounding loop (Phase 5) — non-skill bullets only.
     // Skill headers are self-grounding (category + items directly from context).
     let content_grounding_pairs: Vec<(SimulatedBullet, GroundingResult)> = if grounding_enabled {
-        run_grounding_loop(&simulation.bullets, &non_skill_selection.selected_entries, llm, config.grounding_llm_concurrency, &parsed_jd).await?
+        run_grounding_loop(
+            &simulation.bullets,
+            &non_skill_selection.selected_entries,
+            llm,
+            config.grounding_llm_concurrency,
+            &parsed_jd,
+        )
+        .await?
     } else {
         // Grounding disabled (unit tests): assign placeholder score 0.0 to all bullets.
         simulation
@@ -671,7 +695,10 @@ fn build_entry_header_latex_fallback(entry: &ContextEntryRow) -> Option<String> 
         "experience" => {
             let company = data.get("company").and_then(|v| v.as_str()).unwrap_or("");
             let role = data.get("role").and_then(|v| v.as_str()).unwrap_or("");
-            let start = data.get("date_start").and_then(|v| v.as_str()).unwrap_or("?");
+            let start = data
+                .get("date_start")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let end = data
                 .get("date_end")
                 .and_then(|v| v.as_str())
@@ -731,10 +758,7 @@ fn build_entry_header_latex_fallback(entry: &ContextEntryRow) -> Option<String> 
                 .get("date_start")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let end = data
-                .get("date_end")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let end = data.get("date_end").and_then(|v| v.as_str()).unwrap_or("");
             let dates = if start.is_empty() {
                 String::new()
             } else if end.is_empty() {
@@ -809,7 +833,10 @@ fn build_per_entry_prompt(
     let entry_data_json = serde_json::to_string_pretty(&data_for_prompt)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize entry data: {e}")))?;
 
-    let raw_text = entry.raw_text.as_deref().unwrap_or("(no raw text provided)");
+    let raw_text = entry
+        .raw_text
+        .as_deref()
+        .unwrap_or("(no raw text provided)");
 
     let keywords_json = serde_json::to_string(
         &parsed_jd
@@ -824,16 +851,38 @@ fn build_per_entry_prompt(
     let hard_reqs_text = if parsed_jd.hard_requirements.is_empty() {
         "  none".to_string()
     } else {
-        parsed_jd.hard_requirements.iter()
-            .map(|r| format!("  - [{}] {}", if r.is_required { "REQUIRED" } else { "preferred" }, r.text))
-            .collect::<Vec<_>>().join("\n")
+        parsed_jd
+            .hard_requirements
+            .iter()
+            .map(|r| {
+                format!(
+                    "  - [{}] {}",
+                    if r.is_required {
+                        "REQUIRED"
+                    } else {
+                        "preferred"
+                    },
+                    r.text
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let keywords_text = if parsed_jd.keyword_inventory.is_empty() {
         "  none".to_string()
     } else {
-        parsed_jd.keyword_inventory.iter().take(15)
-            .map(|k| format!("  - {} (freq={}, weight={:.1})", k.keyword, k.frequency, k.position_weight))
-            .collect::<Vec<_>>().join("\n")
+        parsed_jd
+            .keyword_inventory
+            .iter()
+            .take(15)
+            .map(|k| {
+                format!(
+                    "  - {} (freq={}, weight={:.1})",
+                    k.keyword, k.frequency, k.position_weight
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let jd_context = format!(
         "TONE: {:?}  |  SENIORITY: {}  |  STARTUP: {}  |  IC_FOCUSED: {}\n\
@@ -845,8 +894,11 @@ fn build_per_entry_prompt(
         parsed_jd.role_signals.is_startup,
         parsed_jd.role_signals.is_ic_focused,
         hard_reqs_text,
-        if parsed_jd.soft_signals.is_empty() { "none".to_string() }
-        else { parsed_jd.soft_signals.join("; ") },
+        if parsed_jd.soft_signals.is_empty() {
+            "none".to_string()
+        } else {
+            parsed_jd.soft_signals.join("; ")
+        },
         keywords_text,
     );
 
@@ -880,26 +932,42 @@ fn build_entry_fit_context(entry_id: uuid::Uuid, fit_report: &FitReport) -> Stri
     // Gate: if the scorer returned entry IDs and this entry is not among them, tell the
     // LLM it was not selected — it should produce minimal/no bullets.
     let scorer_has_selection = !fit_report.selected_entry_ids.is_empty();
-    let is_selected = fit_report.selected_entry_ids.iter().any(|id| *id == entry_id);
+    let is_selected = fit_report
+        .selected_entry_ids
+        .iter()
+        .any(|id| *id == entry_id);
 
     if scorer_has_selection && !is_selected {
         return "This entry was NOT selected as a strong JD match. \
                 Only generate bullets if JD overlap is clearly evident from the entry data above. \
-                Prefer returning an empty bullets list.".to_string();
+                Prefer returning an empty bullets list."
+            .to_string();
     }
 
     // Show the JD requirements from the overall fit report as role context.
-    let strong: Vec<&str> = fit_report.strong_matches.iter()
+    let strong: Vec<&str> = fit_report
+        .strong_matches
+        .iter()
         .map(|m| m.jd_requirement.as_str())
         .collect();
-    let partial: Vec<&str> = fit_report.partial_matches.iter()
+    let partial: Vec<&str> = fit_report
+        .partial_matches
+        .iter()
         .map(|m| m.jd_requirement.as_str())
         .collect();
 
     format!(
         "Strong JD matches (user profile vs JD): {}\nPartial JD matches: {}",
-        if strong.is_empty() { "none".to_string() } else { strong.join(", ") },
-        if partial.is_empty() { "none".to_string() } else { partial.join(", ") },
+        if strong.is_empty() {
+            "none".to_string()
+        } else {
+            strong.join(", ")
+        },
+        if partial.is_empty() {
+            "none".to_string()
+        } else {
+            partial.join(", ")
+        },
     )
 }
 
@@ -947,7 +1015,10 @@ fn dedup_bullets(bullets: Vec<DraftBullet>) -> Vec<DraftBullet> {
     }
 
     if !to_remove.is_empty() {
-        info!(dropped = to_remove.len(), "dedup: removed near-duplicate bullets");
+        info!(
+            dropped = to_remove.len(),
+            "dedup: removed near-duplicate bullets"
+        );
     }
 
     bullets
@@ -963,11 +1034,13 @@ fn dedup_bullets(bullets: Vec<DraftBullet>) -> Vec<DraftBullet> {
 /// would render as a floating company/project label with no bullets under it in the PDF.
 fn remove_dangling_headers(bullets: Vec<DraftBullet>) -> Vec<DraftBullet> {
     use std::collections::HashSet;
-    let entries_with_content: HashSet<uuid::Uuid> = bullets.iter()
+    let entries_with_content: HashSet<uuid::Uuid> = bullets
+        .iter()
         .filter(|b| !b.text.is_empty())
         .map(|b| b.source_entry_id)
         .collect();
-    bullets.into_iter()
+    bullets
+        .into_iter()
         .filter(|b| {
             // Keep all content bullets unconditionally.
             // Keep header-only bullets ONLY if the entry has at least one content bullet.
@@ -1108,11 +1181,7 @@ fn skills_phase(
         .collect();
 
     // Sort: high-priority categories first, then by relevance score descending
-    scored.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
-            .then(b.score.cmp(&a.score))
-    });
+    scored.sort_by(|a, b| a.priority.cmp(&b.priority).then(b.score.cmp(&a.score)));
 
     let scored_count = scored.len();
     let relevant_count = scored.iter().filter(|s| s.score > 0).count();
@@ -1201,11 +1270,27 @@ async fn call_llm_with_retry(
         warn!("call_llm_with_retry: no entries after filtering by selected_entry_ids — using all selected entries");
         let all: Vec<&crate::generation::content_selector::RankedEntry> =
             selection.selected_entries.iter().collect();
-        return call_llm_with_retry_entries(llm, parsed_jd, &all, tone_examples, fit_report, generation_llm_concurrency).await;
+        return call_llm_with_retry_entries(
+            llm,
+            parsed_jd,
+            &all,
+            tone_examples,
+            fit_report,
+            generation_llm_concurrency,
+        )
+        .await;
     }
 
     info!("Per-entry generation: {} entries to process", entries.len());
-    call_llm_with_retry_entries(llm, parsed_jd, &entries, tone_examples, fit_report, generation_llm_concurrency).await
+    call_llm_with_retry_entries(
+        llm,
+        parsed_jd,
+        &entries,
+        tone_examples,
+        fit_report,
+        generation_llm_concurrency,
+    )
+    .await
 }
 
 async fn call_llm_with_retry_entries(
@@ -1229,8 +1314,9 @@ async fn call_llm_with_retry_entries(
 
     // Spawn parallel LLM calls — capped at generation_llm_concurrency to avoid 429 rate limiting
     let sem = Arc::new(Semaphore::new(generation_llm_concurrency));
-    let mut join_set: tokio::task::JoinSet<Result<(usize, PerEntryLlmResponse, ContextEntryRow, Option<String>), AppError>> =
-        tokio::task::JoinSet::new();
+    let mut join_set: tokio::task::JoinSet<
+        Result<(usize, PerEntryLlmResponse, ContextEntryRow, Option<String>), AppError>,
+    > = tokio::task::JoinSet::new();
 
     for (idx, prompt, entry, header) in prompts {
         let llm = llm.clone();
@@ -1240,7 +1326,9 @@ async fn call_llm_with_retry_entries(
             llm.call_json::<PerEntryLlmResponse>(&prompt, PER_ENTRY_GENERATION_SYSTEM)
                 .await
                 .map(|r| (idx, r, entry, header))
-                .map_err(|e| AppError::Llm(format!("Per-entry LLM call failed for entry {idx}: {e}")))
+                .map_err(|e| {
+                    AppError::Llm(format!("Per-entry LLM call failed for entry {idx}: {e}"))
+                })
         });
     }
 
@@ -1350,8 +1438,7 @@ async fn run_grounding_loop(
 
     // ── Phase A: Score all bullets concurrently ──────────────────────────────
     let sem = Arc::new(Semaphore::new(grounding_llm_concurrency));
-    let mut join_set: tokio::task::JoinSet<(usize, GroundingResult)> =
-        tokio::task::JoinSet::new();
+    let mut join_set: tokio::task::JoinSet<(usize, GroundingResult)> = tokio::task::JoinSet::new();
 
     for (i, (bullet, entry_opt)) in owned_bullets.iter().zip(owned_entries.iter()).enumerate() {
         let bullet = bullet.clone();
@@ -1429,9 +1516,10 @@ async fn run_grounding_loop(
             let parsed_jd = parsed_jd.clone();
             rewrite_set.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore closed");
-                let rewritten = regenerate_single_bullet(&bullet, &entry, &reason, &parsed_jd, &llm)
-                    .await
-                    .unwrap_or(bullet);
+                let rewritten =
+                    regenerate_single_bullet(&bullet, &entry, &reason, &parsed_jd, &llm)
+                        .await
+                        .unwrap_or(bullet);
                 let rescore = score_bullet(&rewritten, &entry, &llm, true)
                     .await
                     .unwrap_or_else(|_| {
@@ -1483,7 +1571,6 @@ async fn run_grounding_loop(
     Ok(pairs)
 }
 
-
 // ────────────────────────────────────────────────────────────────────────────
 // FIX-10: Entry groups — structured per-entry output for the frontend editor
 // ────────────────────────────────────────────────────────────────────────────
@@ -1497,12 +1584,31 @@ async fn run_grounding_loop(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EntryDisplayHeader {
-    Experience { company: String, role: String, date_range: String },
-    Project    { name: String, tech_stack: String, date_range: String },
-    OpenSource { project_name: String, tech_stack: String },
-    Education  { institution: String, degree: String, date_range: String },
-    Skills     { category: String },
-    Other      { label: String },
+    Experience {
+        company: String,
+        role: String,
+        date_range: String,
+    },
+    Project {
+        name: String,
+        tech_stack: String,
+        date_range: String,
+    },
+    OpenSource {
+        project_name: String,
+        tech_stack: String,
+    },
+    Education {
+        institution: String,
+        degree: String,
+        date_range: String,
+    },
+    Skills {
+        category: String,
+    },
+    Other {
+        label: String,
+    },
 }
 
 /// All content bullets for one context entry, with human-readable display fields
@@ -1531,46 +1637,111 @@ fn build_entry_display_header(entry: &ContextEntryRow) -> EntryDisplayHeader {
 
     match entry.entry_type.as_str() {
         "experience" => {
-            let company = d.get("company").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let role    = d.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let start   = d.get("date_start").and_then(|v| v.as_str()).unwrap_or("?");
-            let end     = d.get("date_end").and_then(|v| v.as_str()).unwrap_or("Present");
-            EntryDisplayHeader::Experience { company, role, date_range: format!("{start} – {end}") }
+            let company = d
+                .get("company")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let role = d
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let start = d.get("date_start").and_then(|v| v.as_str()).unwrap_or("?");
+            let end = d
+                .get("date_end")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Present");
+            EntryDisplayHeader::Experience {
+                company,
+                role,
+                date_range: format!("{start} – {end}"),
+            }
         }
         "open_source" => {
-            let name = d.get("project_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let tech = d.get("tech_stack").and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+            let name = d
+                .get("project_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let tech = d
+                .get("tech_stack")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
                 .unwrap_or_default();
-            EntryDisplayHeader::OpenSource { project_name: name, tech_stack: tech }
+            EntryDisplayHeader::OpenSource {
+                project_name: name,
+                tech_stack: tech,
+            }
         }
         "project" => {
-            let name = d.get("name").or_else(|| d.get("project_name"))
-                .and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let tech = d.get("tech_stack").and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+            let name = d
+                .get("name")
+                .or_else(|| d.get("project_name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let tech = d
+                .get("tech_stack")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
                 .unwrap_or_default();
             let start = d.get("date_start").and_then(|v| v.as_str()).unwrap_or("");
-            let end   = d.get("date_end").and_then(|v| v.as_str()).unwrap_or("");
+            let end = d.get("date_end").and_then(|v| v.as_str()).unwrap_or("");
             let date_range = match (start.is_empty(), end.is_empty()) {
-                (true, _)      => String::new(),
-                (false, true)  => format!("{start} – Present"),
+                (true, _) => String::new(),
+                (false, true) => format!("{start} – Present"),
                 (false, false) => format!("{start} – {end}"),
             };
-            EntryDisplayHeader::Project { name, tech_stack: tech, date_range }
+            EntryDisplayHeader::Project {
+                name,
+                tech_stack: tech,
+                date_range,
+            }
         }
         "education" => {
-            let institution = d.get("institution").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let degree      = d.get("degree").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let institution = d
+                .get("institution")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let degree = d
+                .get("degree")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let start = d.get("date_start").and_then(|v| v.as_str()).unwrap_or("?");
-            let end   = d.get("date_end").and_then(|v| v.as_str()).unwrap_or("Present");
-            EntryDisplayHeader::Education { institution, degree, date_range: format!("{start} – {end}") }
+            let end = d
+                .get("date_end")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Present");
+            EntryDisplayHeader::Education {
+                institution,
+                degree,
+                date_range: format!("{start} – {end}"),
+            }
         }
         "skills" => {
-            let category = d.get("category").and_then(|v| v.as_str()).unwrap_or("Skills").to_string();
+            let category = d
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Skills")
+                .to_string();
             EntryDisplayHeader::Skills { category }
         }
-        _ => EntryDisplayHeader::Other { label: entry.entry_type.clone() },
+        _ => EntryDisplayHeader::Other {
+            label: entry.entry_type.clone(),
+        },
     }
 }
 
@@ -1588,7 +1759,8 @@ fn build_entry_groups(
     use std::collections::HashMap;
 
     // Build lookup: entry_id → &ContextEntryRow (non-skill entries only)
-    let entry_map: HashMap<Uuid, &ContextEntryRow> = entries.iter()
+    let entry_map: HashMap<Uuid, &ContextEntryRow> = entries
+        .iter()
         .map(|re| (re.entry.entry_id, &re.entry))
         .collect();
 
@@ -1604,13 +1776,21 @@ fn build_entry_groups(
         if sim_bullet.text.is_empty() {
             // Header-only placeholder (including skills) — record first occurrence for ordering
             if seen_ids.insert(eid) {
-                seen_order.push((eid, sim_bullet.section.clone(), sim_bullet.entry_header_latex.clone()));
+                seen_order.push((
+                    eid,
+                    sim_bullet.section.clone(),
+                    sim_bullet.entry_header_latex.clone(),
+                ));
             }
         } else {
             // Content bullet — add to bucket
             if seen_ids.insert(eid) {
                 // First time we see this entry via a content bullet (no preceding header placeholder)
-                seen_order.push((eid, sim_bullet.section.clone(), sim_bullet.entry_header_latex.clone()));
+                seen_order.push((
+                    eid,
+                    sim_bullet.section.clone(),
+                    sim_bullet.entry_header_latex.clone(),
+                ));
             }
             bullet_map.entry(eid).or_default().push(sim_bullet.clone());
         }
@@ -1618,17 +1798,27 @@ fn build_entry_groups(
 
     // Second pass: build EntryGroup for each entry that has at least one content bullet.
     // Entries with 0 content bullets (dangling headers, skills) are skipped.
-    seen_order.into_iter()
+    seen_order
+        .into_iter()
         .filter_map(|(entry_id, section, header_latex)| {
             let bullets = bullet_map.remove(&entry_id).unwrap_or_default();
             if bullets.is_empty() {
                 return None; // skip header-only / skill entries
             }
-            let display_header = entry_map.get(&entry_id)
+            let display_header = entry_map
+                .get(&entry_id)
                 .map(|e| build_entry_display_header(e))
-                .unwrap_or_else(|| EntryDisplayHeader::Other { label: entry_id.to_string() });
+                .unwrap_or_else(|| EntryDisplayHeader::Other {
+                    label: entry_id.to_string(),
+                });
 
-            Some(EntryGroup { source_entry_id: entry_id, section, display_header, entry_header_latex: header_latex, bullets })
+            Some(EntryGroup {
+                source_entry_id: entry_id,
+                section,
+                display_header,
+                entry_header_latex: header_latex,
+                bullets,
+            })
         })
         .collect()
 }
@@ -1767,7 +1957,10 @@ mod tests {
         let header = build_entry_header_latex(&entry);
         assert!(header.is_some(), "experience entry must produce a header");
         let h = header.unwrap();
-        assert!(h.contains(r"\job"), "experience header must use \\job macro");
+        assert!(
+            h.contains(r"\job"),
+            "experience header must use \\job macro"
+        );
         assert!(h.contains("Acme Corp"), "must contain company name");
         assert!(h.contains("Backend Engineer"), "must contain role");
         assert!(h.contains("Jan 2022"), "must contain start date");
@@ -1780,7 +1973,10 @@ mod tests {
         let header = build_entry_header_latex(&entry);
         assert!(header.is_some(), "skill entry must produce a header");
         let h = header.unwrap();
-        assert!(h.contains(r"\skillcat"), "skill header must use \\skillcat macro");
+        assert!(
+            h.contains(r"\skillcat"),
+            "skill header must use \\skillcat macro"
+        );
         assert!(h.contains("Languages"), "must contain category");
         assert!(h.contains("Rust"), "must contain items");
     }
@@ -1823,7 +2019,10 @@ mod tests {
             "fallback should return Some for experience with company+role"
         );
         let latex = result.unwrap();
-        assert!(latex.contains("Acme Corp"), "fallback must include company name");
+        assert!(
+            latex.contains("Acme Corp"),
+            "fallback must include company name"
+        );
         assert!(
             latex.contains("Senior Engineer"),
             "fallback must include role"
@@ -1864,7 +2063,10 @@ mod tests {
             "fallback should return Some for open_source with project_name"
         );
         let latex = result.unwrap();
-        assert!(latex.contains("MyLib"), "fallback must include project name");
+        assert!(
+            latex.contains("MyLib"),
+            "fallback must include project name"
+        );
         assert!(latex.contains("Rust"), "fallback must include tech stack");
     }
 
@@ -1905,7 +2107,10 @@ mod tests {
         }"#;
         let resp: PerEntryLlmResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.bullets.len(), 2);
-        assert_eq!(resp.bullets[0].text, "Architected distributed caching layer");
+        assert_eq!(
+            resp.bullets[0].text,
+            "Architected distributed caching layer"
+        );
         assert_eq!(resp.bullets[0].line_estimate, 1);
         assert_eq!(resp.bullets[0].jd_keywords_used, vec!["distributed"]);
     }
@@ -1934,7 +2139,10 @@ mod tests {
         use chrono::NaiveDate;
         let s = NaiveDate::from_ymd_opt(2022, 1, 1).unwrap();
         let e = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
-        assert_eq!(format_date_range_opt(Some(s), Some(e)), "Jan 2022 -- Jun 2024");
+        assert_eq!(
+            format_date_range_opt(Some(s), Some(e)),
+            "Jan 2022 -- Jun 2024"
+        );
         assert_eq!(format_date_range_opt(Some(s), None), "Jan 2022 -- Present");
         assert_eq!(format_date_range_opt(None, None), "");
     }
@@ -1993,15 +2201,27 @@ mod tests {
     #[test]
     fn test_dedup_removes_near_duplicate() {
         let id = Uuid::new_v4();
-        let b1 = make_draft_bullet("Architected distributed caching layer using Redis and Rust", id);
+        let b1 = make_draft_bullet(
+            "Architected distributed caching layer using Redis and Rust",
+            id,
+        );
         // Slight rewording — high Jaccard overlap
-        let b2 = make_draft_bullet("Architected distributed caching layer using Redis and Rust system", id);
+        let b2 = make_draft_bullet(
+            "Architected distributed caching layer using Redis and Rust system",
+            id,
+        );
         let b3 = make_draft_bullet("Reduced p99 latency by 40% via query optimisation", id);
 
         let result = dedup_bullets(vec![b1, b2, b3]);
         assert_eq!(result.len(), 2, "near-duplicate should be removed");
-        assert_eq!(result[0].text, "Architected distributed caching layer using Redis and Rust");
-        assert_eq!(result[1].text, "Reduced p99 latency by 40% via query optimisation");
+        assert_eq!(
+            result[0].text,
+            "Architected distributed caching layer using Redis and Rust"
+        );
+        assert_eq!(
+            result[1].text,
+            "Reduced p99 latency by 40% via query optimisation"
+        );
     }
 
     #[test]
@@ -2028,7 +2248,9 @@ mod tests {
 
     // ── skills_phase ─────────────────────────────────────────────────────────
 
-    fn make_ranked_entry(entry: ContextEntryRow) -> crate::generation::content_selector::RankedEntry {
+    fn make_ranked_entry(
+        entry: ContextEntryRow,
+    ) -> crate::generation::content_selector::RankedEntry {
         crate::generation::content_selector::RankedEntry {
             entry,
             combined_score: 0.8,
@@ -2037,7 +2259,9 @@ mod tests {
     }
 
     fn make_jd_with_keywords(keywords: &[&str]) -> crate::generation::jd_parser::ParsedJD {
-        use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals};
+        use crate::generation::jd_parser::{
+            JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals,
+        };
         ParsedJD {
             hard_requirements: vec![],
             soft_signals: vec![],
@@ -2047,17 +2271,23 @@ mod tests {
                 is_research: false,
                 seniority: "senior".to_string(),
             },
-            keyword_inventory: keywords.iter().map(|k| KeywordEntry {
-                keyword: k.to_string(),
-                frequency: 2,
-                position_weight: 0.8,
-                weighted_score: 1.6,
-            }).collect(),
+            keyword_inventory: keywords
+                .iter()
+                .map(|k| KeywordEntry {
+                    keyword: k.to_string(),
+                    frequency: 2,
+                    position_weight: 0.8,
+                    weighted_score: 1.6,
+                })
+                .collect(),
             detected_tone: JDTone::CollaborativeEnterprise,
         }
     }
 
-    fn make_skill_ranked_entry(category: &str, items: &[&str]) -> crate::generation::content_selector::RankedEntry {
+    fn make_skill_ranked_entry(
+        category: &str,
+        items: &[&str],
+    ) -> crate::generation::content_selector::RankedEntry {
         let entry_id = Uuid::new_v4();
         let entry = ContextEntryRow {
             id: Uuid::new_v4(),
@@ -2100,7 +2330,10 @@ mod tests {
         assert!(header.contains("Rust"), "Rust is JD-relevant");
         assert!(header.contains("Go"), "Go is JD-relevant");
         assert!(!header.contains("COBOL"), "COBOL is not JD-relevant");
-        assert!(bullets[0].text.is_empty(), "skill bullet text must be empty");
+        assert!(
+            bullets[0].text.is_empty(),
+            "skill bullet text must be empty"
+        );
         assert_eq!(bullets[0].section, "Skills");
     }
 
@@ -2144,7 +2377,9 @@ mod tests {
 
     #[test]
     fn test_build_per_entry_prompt_contains_full_jd_context() {
-        use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals};
+        use crate::generation::jd_parser::{
+            JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals,
+        };
         use crate::generation::tone::get_tone_examples;
 
         let entry = ContextEntryRow {
@@ -2172,7 +2407,10 @@ mod tests {
 
         let parsed_jd = ParsedJD {
             detected_tone: JDTone::AggressiveStartup,
-            soft_signals: vec!["cross-functional".to_string(), "ownership mindset".to_string()],
+            soft_signals: vec![
+                "cross-functional".to_string(),
+                "ownership mindset".to_string(),
+            ],
             hard_requirements: (0..10)
                 .map(|i| Requirement {
                     text: format!("requirement_{}", i),
@@ -2196,13 +2434,26 @@ mod tests {
         let tone_examples = get_tone_examples(&JDTone::AggressiveStartup);
         let fit_report = make_fit_report_empty();
 
-        let prompt = build_per_entry_prompt(&entry, &parsed_jd, &tone_examples, &fit_report).unwrap();
+        let prompt =
+            build_per_entry_prompt(&entry, &parsed_jd, &tone_examples, &fit_report).unwrap();
 
-        assert!(prompt.contains("requirement_0"), "prompt must contain first requirement");
-        assert!(prompt.contains("requirement_9"), "prompt must contain 10th requirement");
-        assert!(prompt.contains("cross-functional"), "prompt must contain soft signal");
+        assert!(
+            prompt.contains("requirement_0"),
+            "prompt must contain first requirement"
+        );
+        assert!(
+            prompt.contains("requirement_9"),
+            "prompt must contain 10th requirement"
+        );
+        assert!(
+            prompt.contains("cross-functional"),
+            "prompt must contain soft signal"
+        );
         assert!(prompt.contains("rust"), "prompt must contain keyword");
-        assert!(prompt.contains("FULL JD CONTEXT"), "prompt must use new placeholder name");
+        assert!(
+            prompt.contains("FULL JD CONTEXT"),
+            "prompt must use new placeholder name"
+        );
     }
 
     #[test]
@@ -2248,14 +2499,24 @@ mod tests {
         let tone_examples = get_tone_examples(&JDTone::AggressiveStartup);
         let fit_report = make_fit_report_empty();
 
-        let prompt = build_per_entry_prompt(&entry, &parsed_jd, &tone_examples, &fit_report).unwrap();
+        let prompt =
+            build_per_entry_prompt(&entry, &parsed_jd, &tone_examples, &fit_report).unwrap();
 
-        assert!(!prompt.contains("pre-written bullet"), "prompt must not contain pre-written bullets");
+        assert!(
+            !prompt.contains("pre-written bullet"),
+            "prompt must not contain pre-written bullets"
+        );
         // The entry_data section must not include the bullets array values.
         // Note: "bullets" appears in the prompt template schema example, but the raw
         // bullet content ("pre-written bullet 1", etc.) must not appear.
-        assert!(!prompt.contains("pre-written bullet 1"), "first pre-written bullet must be stripped");
-        assert!(!prompt.contains("pre-written bullet 2"), "second pre-written bullet must be stripped");
+        assert!(
+            !prompt.contains("pre-written bullet 1"),
+            "first pre-written bullet must be stripped"
+        );
+        assert!(
+            !prompt.contains("pre-written bullet 2"),
+            "second pre-written bullet must be stripped"
+        );
     }
 
     #[test]
@@ -2281,8 +2542,14 @@ mod tests {
         };
 
         let result = build_entry_fit_context(entry_id, &fit_report);
-        assert!(result.contains("5+ years Rust experience"), "selected entry must see strong match requirements");
-        assert!(result.contains("Strong JD matches"), "must use 'Strong JD matches' label");
+        assert!(
+            result.contains("5+ years Rust experience"),
+            "selected entry must see strong match requirements"
+        );
+        assert!(
+            result.contains("Strong JD matches"),
+            "must use 'Strong JD matches' label"
+        );
     }
 
     #[test]
@@ -2309,7 +2576,10 @@ mod tests {
 
         let result = build_entry_fit_context(entry_id, &fit_report);
         // Should return the "not selected" directive so LLM minimises output
-        assert!(result.contains("NOT selected"), "non-selected entry must get the 'NOT selected' directive");
+        assert!(
+            result.contains("NOT selected"),
+            "non-selected entry must get the 'NOT selected' directive"
+        );
     }
 
     #[test]
@@ -2320,8 +2590,14 @@ mod tests {
         let fit_report = make_fit_report_empty(); // selected_entry_ids = []
 
         let result = build_entry_fit_context(entry_id, &fit_report);
-        assert!(result.contains("none"), "when no matches in empty report, should say 'none'");
-        assert!(!result.contains("NOT selected"), "empty selected_entry_ids must not trigger 'NOT selected' directive");
+        assert!(
+            result.contains("none"),
+            "when no matches in empty report, should say 'none'"
+        );
+        assert!(
+            !result.contains("NOT selected"),
+            "empty selected_entry_ids must not trigger 'NOT selected' directive"
+        );
     }
 
     // ── remove_dangling_headers ──────────────────────────────────────────────
@@ -2329,18 +2605,19 @@ mod tests {
     #[test]
     fn test_remove_dangling_headers_removes_zero_bullet_entry() {
         let entry_a = Uuid::new_v4();
-        let bullets = vec![
-            DraftBullet {
-                text: String::new(), // header-only
-                source_entry_id: entry_a,
-                entry_header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
-                section: "experience".to_string(),
-                line_estimate: 1,
-                jd_keywords_used: vec![],
-            },
-        ];
+        let bullets = vec![DraftBullet {
+            text: String::new(), // header-only
+            source_entry_id: entry_a,
+            entry_header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
+            section: "experience".to_string(),
+            line_estimate: 1,
+            jd_keywords_used: vec![],
+        }];
         let result = remove_dangling_headers(bullets);
-        assert!(result.is_empty(), "header-only entry with no content bullets should be removed");
+        assert!(
+            result.is_empty(),
+            "header-only entry with no content bullets should be removed"
+        );
     }
 
     #[test]
@@ -2373,7 +2650,11 @@ mod tests {
             },
         ];
         let result = remove_dangling_headers(bullets);
-        assert_eq!(result.len(), 3, "all 3 bullets (header + 2 content) should be kept");
+        assert_eq!(
+            result.len(),
+            3,
+            "all 3 bullets (header + 2 content) should be kept"
+        );
     }
 
     #[test]
@@ -2407,15 +2688,35 @@ mod tests {
             },
         ];
         let result = remove_dangling_headers(bullets);
-        assert_eq!(result.len(), 2, "entry_a header + content kept; entry_b header removed");
-        assert!(result.iter().any(|b| b.source_entry_id == entry_a && b.text.is_empty()), "entry_a header kept");
-        assert!(result.iter().any(|b| b.source_entry_id == entry_a && !b.text.is_empty()), "entry_a content kept");
-        assert!(!result.iter().any(|b| b.source_entry_id == entry_b), "entry_b header removed");
+        assert_eq!(
+            result.len(),
+            2,
+            "entry_a header + content kept; entry_b header removed"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|b| b.source_entry_id == entry_a && b.text.is_empty()),
+            "entry_a header kept"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|b| b.source_entry_id == entry_a && !b.text.is_empty()),
+            "entry_a content kept"
+        );
+        assert!(
+            !result.iter().any(|b| b.source_entry_id == entry_b),
+            "entry_b header removed"
+        );
     }
 
     // ── build_entry_display_header tests ─────────────────────────────────────
 
-    fn make_test_entry(entry_type: &str, data: serde_json::Value) -> crate::models::context::ContextEntryRow {
+    fn make_test_entry(
+        entry_type: &str,
+        data: serde_json::Value,
+    ) -> crate::models::context::ContextEntryRow {
         crate::models::context::ContextEntryRow {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
@@ -2435,9 +2736,11 @@ mod tests {
         }
     }
 
-    fn make_test_ranked_entry(entry_id: Uuid, entry_type: &str, data: serde_json::Value)
-        -> crate::generation::content_selector::RankedEntry
-    {
+    fn make_test_ranked_entry(
+        entry_id: Uuid,
+        entry_type: &str,
+        data: serde_json::Value,
+    ) -> crate::generation::content_selector::RankedEntry {
         let mut entry = make_test_entry(entry_type, data);
         entry.entry_id = entry_id;
         crate::generation::content_selector::RankedEntry {
@@ -2447,9 +2750,11 @@ mod tests {
         }
     }
 
-    fn make_content_sim_pair(entry_id: Uuid, section: &str, text: &str)
-        -> (SimulatedBullet, crate::grounding::GroundingResult)
-    {
+    fn make_content_sim_pair(
+        entry_id: Uuid,
+        section: &str,
+        text: &str,
+    ) -> (SimulatedBullet, crate::grounding::GroundingResult) {
         let score = crate::grounding::GroundingScore::compute(0.9, 0.9, 0.9, 0.0);
         (
             SimulatedBullet {
@@ -2472,9 +2777,10 @@ mod tests {
         )
     }
 
-    fn make_header_sim_pair(entry_id: Uuid, section: &str)
-        -> (SimulatedBullet, crate::grounding::GroundingResult)
-    {
+    fn make_header_sim_pair(
+        entry_id: Uuid,
+        section: &str,
+    ) -> (SimulatedBullet, crate::grounding::GroundingResult) {
         let score = crate::grounding::GroundingScore::compute(1.0, 1.0, 1.0, 0.0);
         (
             SimulatedBullet {
@@ -2499,14 +2805,22 @@ mod tests {
 
     #[test]
     fn test_display_header_experience_full() {
-        let entry = make_test_entry("experience", serde_json::json!({
-            "company": "Acme Corp",
-            "role": "Senior Engineer",
-            "date_start": "Jan 2022",
-            "date_end": "Jun 2023"
-        }));
+        let entry = make_test_entry(
+            "experience",
+            serde_json::json!({
+                "company": "Acme Corp",
+                "role": "Senior Engineer",
+                "date_start": "Jan 2022",
+                "date_end": "Jun 2023"
+            }),
+        );
         let h = build_entry_display_header(&entry);
-        if let EntryDisplayHeader::Experience { company, role, date_range } = h {
+        if let EntryDisplayHeader::Experience {
+            company,
+            role,
+            date_range,
+        } = h
+        {
             assert_eq!(company, "Acme Corp");
             assert_eq!(role, "Senior Engineer");
             assert_eq!(date_range, "Jan 2022 \u{2013} Jun 2023");
@@ -2520,10 +2834,19 @@ mod tests {
         // No dates, no role — must not panic; uses "?" and "Present" defaults
         let entry = make_test_entry("experience", serde_json::json!({ "company": "Acme" }));
         let h = build_entry_display_header(&entry);
-        if let EntryDisplayHeader::Experience { role, date_range, .. } = h {
+        if let EntryDisplayHeader::Experience {
+            role, date_range, ..
+        } = h
+        {
             assert_eq!(role, "");
-            assert!(date_range.contains('?'), "missing start should use '?': {date_range}");
-            assert!(date_range.contains("Present"), "missing end should use 'Present': {date_range}");
+            assert!(
+                date_range.contains('?'),
+                "missing start should use '?': {date_range}"
+            );
+            assert!(
+                date_range.contains("Present"),
+                "missing end should use 'Present': {date_range}"
+            );
         } else {
             panic!("expected Experience variant");
         }
@@ -2531,14 +2854,20 @@ mod tests {
 
     #[test]
     fn test_display_header_project_with_dates() {
-        let entry = make_test_entry("project", serde_json::json!({
-            "name": "TempDB",
-            "tech_stack": ["Rust", "Redis"],
-            "date_start": "Mar 2023",
-            "date_end": "Dec 2023"
-        }));
-        if let EntryDisplayHeader::Project { name, tech_stack, date_range } =
-            build_entry_display_header(&entry)
+        let entry = make_test_entry(
+            "project",
+            serde_json::json!({
+                "name": "TempDB",
+                "tech_stack": ["Rust", "Redis"],
+                "date_start": "Mar 2023",
+                "date_end": "Dec 2023"
+            }),
+        );
+        if let EntryDisplayHeader::Project {
+            name,
+            tech_stack,
+            date_range,
+        } = build_entry_display_header(&entry)
         {
             assert_eq!(name, "TempDB");
             assert_eq!(tech_stack, "Rust, Redis");
@@ -2550,12 +2879,18 @@ mod tests {
 
     #[test]
     fn test_display_header_project_no_dates() {
-        let entry = make_test_entry("project", serde_json::json!({
-            "name": "TempDB",
-            "tech_stack": ["Rust"]
-        }));
+        let entry = make_test_entry(
+            "project",
+            serde_json::json!({
+                "name": "TempDB",
+                "tech_stack": ["Rust"]
+            }),
+        );
         if let EntryDisplayHeader::Project { date_range, .. } = build_entry_display_header(&entry) {
-            assert!(date_range.is_empty(), "no start → empty date_range, got: {date_range}");
+            assert!(
+                date_range.is_empty(),
+                "no start → empty date_range, got: {date_range}"
+            );
         } else {
             panic!("expected Project variant");
         }
@@ -2563,12 +2898,17 @@ mod tests {
 
     #[test]
     fn test_display_header_open_source() {
-        let entry = make_test_entry("open_source", serde_json::json!({
-            "project_name": "tokio",
-            "tech_stack": ["Rust", "async"]
-        }));
-        if let EntryDisplayHeader::OpenSource { project_name, tech_stack } =
-            build_entry_display_header(&entry)
+        let entry = make_test_entry(
+            "open_source",
+            serde_json::json!({
+                "project_name": "tokio",
+                "tech_stack": ["Rust", "async"]
+            }),
+        );
+        if let EntryDisplayHeader::OpenSource {
+            project_name,
+            tech_stack,
+        } = build_entry_display_header(&entry)
         {
             assert_eq!(project_name, "tokio");
             assert_eq!(tech_stack, "Rust, async");
@@ -2579,14 +2919,20 @@ mod tests {
 
     #[test]
     fn test_display_header_education() {
-        let entry = make_test_entry("education", serde_json::json!({
-            "institution": "MIT",
-            "degree": "BSc CS",
-            "date_start": "Sep 2018",
-            "date_end": "Jun 2022"
-        }));
-        if let EntryDisplayHeader::Education { institution, degree, date_range } =
-            build_entry_display_header(&entry)
+        let entry = make_test_entry(
+            "education",
+            serde_json::json!({
+                "institution": "MIT",
+                "degree": "BSc CS",
+                "date_start": "Sep 2018",
+                "date_end": "Jun 2022"
+            }),
+        );
+        if let EntryDisplayHeader::Education {
+            institution,
+            degree,
+            date_range,
+        } = build_entry_display_header(&entry)
         {
             assert_eq!(institution, "MIT");
             assert_eq!(degree, "BSc CS");
@@ -2623,8 +2969,16 @@ mod tests {
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
         let entries = vec![
-            make_test_ranked_entry(id1, "experience", serde_json::json!({ "company": "Co1", "role": "SWE" })),
-            make_test_ranked_entry(id2, "experience", serde_json::json!({ "company": "Co2", "role": "SRE" })),
+            make_test_ranked_entry(
+                id1,
+                "experience",
+                serde_json::json!({ "company": "Co1", "role": "SWE" }),
+            ),
+            make_test_ranked_entry(
+                id2,
+                "experience",
+                serde_json::json!({ "company": "Co2", "role": "SRE" }),
+            ),
         ];
         let pairs = vec![
             make_content_sim_pair(id1, "Experience", "bullet A1"),
@@ -2644,9 +2998,11 @@ mod tests {
         // Skill header (empty text) has no content bullets → must not appear in output
         let id_exp = Uuid::new_v4();
         let id_skill = Uuid::new_v4();
-        let entries = vec![
-            make_test_ranked_entry(id_exp, "experience", serde_json::json!({ "company": "Co", "role": "Dev" })),
-        ];
+        let entries = vec![make_test_ranked_entry(
+            id_exp,
+            "experience",
+            serde_json::json!({ "company": "Co", "role": "Dev" }),
+        )];
         let pairs = vec![
             make_content_sim_pair(id_exp, "Experience", "real bullet"),
             make_header_sim_pair(id_skill, "Skills"), // empty text — skills header
@@ -2679,29 +3035,40 @@ mod tests {
     fn test_build_entry_groups_dangling_header_removed() {
         // Header-only entry (all bullets rejected / not in pairs) → must be filtered
         let id = Uuid::new_v4();
-        let entries = vec![
-            make_test_ranked_entry(id, "experience", serde_json::json!({ "company": "Ghost" })),
-        ];
+        let entries = vec![make_test_ranked_entry(
+            id,
+            "experience",
+            serde_json::json!({ "company": "Ghost" }),
+        )];
         let pairs = vec![make_header_sim_pair(id, "Experience")]; // no content bullets
         let groups = build_entry_groups(&pairs, &entries);
-        assert!(groups.is_empty(), "dangling header entry must be removed from output");
+        assert!(
+            groups.is_empty(),
+            "dangling header entry must be removed from output"
+        );
     }
 
     #[test]
     fn test_build_entry_groups_display_header_correctly_typed() {
         // Verify that the display_header is correctly typed (Experience, not Other fallback)
         let id = Uuid::new_v4();
-        let entries = vec![
-            make_test_ranked_entry(id, "experience", serde_json::json!({
+        let entries = vec![make_test_ranked_entry(
+            id,
+            "experience",
+            serde_json::json!({
                 "company": "Acme", "role": "Staff Eng", "date_start": "2020", "date_end": "2023"
-            })),
-        ];
+            }),
+        )];
         let pairs = vec![make_content_sim_pair(id, "Experience", "some bullet")];
         let groups = build_entry_groups(&pairs, &entries);
         assert_eq!(groups.len(), 1);
         assert!(
-            matches!(groups[0].display_header, EntryDisplayHeader::Experience { .. }),
-            "expected Experience display header, got: {:?}", groups[0].display_header
+            matches!(
+                groups[0].display_header,
+                EntryDisplayHeader::Experience { .. }
+            ),
+            "expected Experience display header, got: {:?}",
+            groups[0].display_header
         );
         if let EntryDisplayHeader::Experience { company, .. } = &groups[0].display_header {
             assert_eq!(company, "Acme");
@@ -2711,9 +3078,11 @@ mod tests {
     #[test]
     fn test_build_entry_groups_multiple_bullets_per_entry_all_included() {
         let id = Uuid::new_v4();
-        let entries = vec![
-            make_test_ranked_entry(id, "experience", serde_json::json!({ "company": "Co" })),
-        ];
+        let entries = vec![make_test_ranked_entry(
+            id,
+            "experience",
+            serde_json::json!({ "company": "Co" }),
+        )];
         let pairs = vec![
             make_content_sim_pair(id, "Experience", "bullet 1"),
             make_content_sim_pair(id, "Experience", "bullet 2"),

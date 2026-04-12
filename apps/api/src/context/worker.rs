@@ -51,7 +51,16 @@ pub fn spawn_context_ingest_worker(
     bullet_token_budget: usize,
 ) {
     tokio::spawn(async move {
-        worker_loop(redis, db, llm, s3, s3_bucket, ingest_sem, bullet_token_budget).await;
+        worker_loop(
+            redis,
+            db,
+            llm,
+            s3,
+            s3_bucket,
+            ingest_sem,
+            bullet_token_budget,
+        )
+        .await;
     });
 }
 
@@ -191,15 +200,16 @@ async fn process_ingest_item(
 
     // Step 3: Three-phase parse (Phase A metadata + Phase B bullets, chunked)
     // parse_three_phase borrows &entry_text — must complete before entry_text is moved
-    let parsed_entry = match parse_three_phase(&entry_text, llm, ingest_sem, bullet_token_budget).await {
-        Ok(e) => e,
-        Err(e) => {
-            let msg = format!("Parse failed: {e}");
-            error!(%item_id, %user_id, error = %e, "Ingest worker: parse_three_phase failed");
-            batch::mark_item_failed(db, item_id, &msg).await?;
-            return Ok(());
-        }
-    };
+    let parsed_entry =
+        match parse_three_phase(&entry_text, llm, ingest_sem, bullet_token_budget).await {
+            Ok(e) => e,
+            Err(e) => {
+                let msg = format!("Parse failed: {e}");
+                error!(%item_id, %user_id, error = %e, "Ingest worker: parse_three_phase failed");
+                batch::mark_item_failed(db, item_id, &msg).await?;
+                return Ok(());
+            }
+        };
 
     // Step 4: Check for duplicate (heuristic + LLM confirm)
     let existing_entries = match get_current_entries(db, user_id).await {

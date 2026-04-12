@@ -384,13 +384,11 @@ pub async fn handle_delete_entry(
     Path(id): Path<Uuid>,
     Query(params): Query<UserIdQuery>,
 ) -> Result<StatusCode, AppError> {
-    let result = sqlx::query(
-        "DELETE FROM context_entries WHERE entry_id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(params.user_id)
-    .execute(&state.db)
-    .await?;
+    let result = sqlx::query("DELETE FROM context_entries WHERE entry_id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(params.user_id)
+        .execute(&state.db)
+        .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(format!(

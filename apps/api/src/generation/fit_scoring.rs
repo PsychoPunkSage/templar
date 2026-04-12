@@ -155,17 +155,15 @@ impl FitScorer for LlmFitScorer {
                 let selected_entry_ids: Vec<Uuid> = resp
                     .selected_entry_indices
                     .iter()
-                    .filter_map(|&idx| {
-                        match entries.get(idx) {
-                            Some(e) => Some(e.entry_id),
-                            None => {
-                                tracing::warn!(
-                                    idx = idx,
-                                    total = entries.len(),
-                                    "LlmFitScorer: selected_entry_indices out of range — skipping"
-                                );
-                                None
-                            }
+                    .filter_map(|&idx| match entries.get(idx) {
+                        Some(e) => Some(e.entry_id),
+                        None => {
+                            tracing::warn!(
+                                idx = idx,
+                                total = entries.len(),
+                                "LlmFitScorer: selected_entry_indices out of range — skipping"
+                            );
+                            None
                         }
                     })
                     .collect();
@@ -368,7 +366,10 @@ fn build_entries_summary_full(entries: &[ContextEntryRow]) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let header = format!("[{}] [{}] {} — {}", idx, e.entry_type, company_or_name, role);
+            let header = format!(
+                "[{}] [{}] {} — {}",
+                idx, e.entry_type, company_or_name, role
+            );
             let meta = format!(
                 "  Skills: {}\n  Contribution: {} | Impact: {:.2} | Recency: {:.2}",
                 skills, e.contribution_type, e.impact_score, e.recency_score
@@ -418,7 +419,10 @@ fn build_entries_summary(entries: &[ContextEntryRow]) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let header = format!("[{}] [{}] {} — {}", idx, e.entry_type, company_or_name, role);
+            let header = format!(
+                "[{}] [{}] {} — {}",
+                idx, e.entry_type, company_or_name, role
+            );
             let meta = format!(
                 "  Skills: {}\n  Contribution: {} | Impact: {:.2} | Recency: {:.2}",
                 skills, e.contribution_type, e.impact_score, e.recency_score

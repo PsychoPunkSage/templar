@@ -432,10 +432,7 @@ fn build_sections_latex(sections: &[SampleSection], fmt: &SectionFormatting) -> 
 
     for section in sections {
         let total_bullets: usize = section.sub_entries.iter().map(|e| e.bullets.len()).sum();
-        let has_headers = section
-            .sub_entries
-            .iter()
-            .any(|e| e.header_latex.is_some());
+        let has_headers = section.sub_entries.iter().any(|e| e.header_latex.is_some());
 
         // Skip entirely empty sections (no headers, no bullets)
         if total_bullets == 0 && !has_headers {
@@ -695,10 +692,7 @@ mod tests {
                     "Reduced P99 latency by 40% via caching".to_string(),
                 ],
             ),
-            SampleSection::flat(
-                "Skills",
-                vec!["Rust, Python, TypeScript".to_string()],
-            ),
+            SampleSection::flat("Skills", vec!["Rust, Python, TypeScript".to_string()]),
             SampleSection::flat("Empty Section", vec![]), // should be skipped
         ]
     }
@@ -754,10 +748,7 @@ mod tests {
 
     #[test]
     fn test_build_sections_latex_escapes_dollars() {
-        let sections = vec![SampleSection::flat(
-            "Wins",
-            vec!["Saved $50k".to_string()],
-        )];
+        let sections = vec![SampleSection::flat("Wins", vec!["Saved $50k".to_string()])];
         let latex = build_sections_latex(&sections, &SectionFormatting::default());
         assert!(
             latex.contains(r"\$50k"),
@@ -814,17 +805,21 @@ mod tests {
         // rendering it would produce a floating bold label with no content below it.
         let section = SampleSection {
             name: "Experience".to_string(),
-            sub_entries: vec![
-                SampleSubEntry {
-                    header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
-                    bullets: vec![], // no bullets — should be skipped
-                },
-            ],
+            sub_entries: vec![SampleSubEntry {
+                header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
+                bullets: vec![], // no bullets — should be skipped
+            }],
         };
         let output = build_sections_latex(&[section], &SectionFormatting::default());
         // The header should NOT appear in the output
-        assert!(!output.contains("Acme"), "header-only sub-entry must be skipped in output");
-        assert!(!output.contains(r"\job"), "\\job macro must not appear for empty sub-entry");
+        assert!(
+            !output.contains("Acme"),
+            "header-only sub-entry must be skipped in output"
+        );
+        assert!(
+            !output.contains(r"\job"),
+            "\\job macro must not appear for empty sub-entry"
+        );
     }
 
     #[test]

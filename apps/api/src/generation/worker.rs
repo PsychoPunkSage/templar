@@ -122,12 +122,16 @@ async fn worker_loop(
 
                     tokio::spawn(async move {
                         let _permit = permit; // holds the slot for this job's lifetime
-                        process_generation_job(job_id, &db2, &llm2, fs2, &pc2, &cfg2, &redis2).await;
+                        process_generation_job(job_id, &db2, &llm2, fs2, &pc2, &cfg2, &redis2)
+                            .await;
                     });
                 }
                 Err(e) => {
                     drop(permit);
-                    error!("Generation worker: invalid UUID in queue '{}': {e}", job_id_str);
+                    error!(
+                        "Generation worker: invalid UUID in queue '{}': {e}",
+                        job_id_str
+                    );
                 }
             },
             Err(e) => {
@@ -181,14 +185,26 @@ async fn process_generation_job(
         Ok(Some(v)) => v,
         Ok(None) => {
             error!(job_id = %job_id, "Generation job row not found — marking failed");
-            let _ = update_job_status(db, job_id, "failed", None,
-                Some("Generation job row not found in database")).await;
+            let _ = update_job_status(
+                db,
+                job_id,
+                "failed",
+                None,
+                Some("Generation job row not found in database"),
+            )
+            .await;
             return;
         }
         Err(e) => {
             error!(job_id = %job_id, error = %e, "DB error fetching generation job — marking failed");
-            let _ = update_job_status(db, job_id, "failed", None,
-                Some(&format!("DB error fetching job: {e}"))).await;
+            let _ = update_job_status(
+                db,
+                job_id,
+                "failed",
+                None,
+                Some(&format!("DB error fetching job: {e}")),
+            )
+            .await;
             return;
         }
     };
@@ -198,8 +214,14 @@ async fn process_generation_job(
         Ok(r) => r,
         Err(e) => {
             error!(job_id = %job_id, error = %e, "Failed to deserialize GenerateRequest — marking failed");
-            let _ = update_job_status(db, job_id, "failed", None,
-                Some(&format!("Failed to deserialize request: {e}"))).await;
+            let _ = update_job_status(
+                db,
+                job_id,
+                "failed",
+                None,
+                Some(&format!("Failed to deserialize request: {e}")),
+            )
+            .await;
             return;
         }
     };
@@ -227,8 +249,14 @@ async fn process_generation_job(
                 Err(e) => {
                     error!(job_id = %job_id, resume_id = %resume_id, error = %e,
                         "Failed to serialize GenerateResponse — marking failed");
-                    let _ = update_job_status(db, job_id, "failed", None,
-                        Some(&format!("Failed to serialize result: {e}"))).await;
+                    let _ = update_job_status(
+                        db,
+                        job_id,
+                        "failed",
+                        None,
+                        Some(&format!("Failed to serialize result: {e}")),
+                    )
+                    .await;
                     return;
                 }
             };
@@ -237,13 +265,11 @@ async fn process_generation_job(
                 error!(job_id = %job_id, error = %e, "Failed to mark generation job done");
             }
             // Store result JSONB separately (update_job_status handles status+resume_id)
-            if let Err(e) = sqlx::query(
-                "UPDATE generation_jobs SET result = $1 WHERE id = $2"
-            )
-            .bind(result_json)
-            .bind(job_id)
-            .execute(db)
-            .await
+            if let Err(e) = sqlx::query("UPDATE generation_jobs SET result = $1 WHERE id = $2")
+                .bind(result_json)
+                .bind(job_id)
+                .execute(db)
+                .await
             {
                 // Non-fatal: job is already marked done. The status endpoint will
                 // return done with null entry_groups, which the frontend handles gracefully.
@@ -255,8 +281,14 @@ async fn process_generation_job(
         }
         Err(e) => {
             error!(job_id = %job_id, error = %e, "Generation pipeline failed — marking job failed");
-            let _ = update_job_status(db, job_id, "failed", None,
-                Some(&format!("Generation failed: {e}"))).await;
+            let _ = update_job_status(
+                db,
+                job_id,
+                "failed",
+                None,
+                Some(&format!("Generation failed: {e}")),
+            )
+            .await;
         }
     }
 }

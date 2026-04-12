@@ -66,7 +66,8 @@ JOB DESCRIPTION:
 {jd_text}"#;
 
 /// System prompt for per-entry resume generation — enforces JSON-only output.
-pub const PER_ENTRY_GENERATION_SYSTEM: &str = "You are an expert resume writer generating factual, \
+pub const PER_ENTRY_GENERATION_SYSTEM: &str =
+    "You are an expert resume writer generating factual, \
     grounded resume bullets from a single professional context entry. \
     You MUST respond with valid JSON only — a JSON object with a \"bullets\" array. \
     Do NOT include any text outside the JSON object. \

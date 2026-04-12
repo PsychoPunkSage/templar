@@ -145,42 +145,36 @@ pub async fn run_simulation_loop(
             join_set.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore closed");
                 let new_text = match &verdict {
-                    LineCoverageVerdict::TooShort { fill_ratio, .. } => {
-                        expand_bullet(
-                            &bullet_text,
-                            *fill_ratio,
-                            char_budget,
-                            &parsed_jd,
-                            &llm,
-                            prev.as_deref(),
-                        )
-                        .await
-                        .unwrap_or(bullet_text)
-                    }
-                    LineCoverageVerdict::TooLong { actual_lines } => {
-                        compress_bullet(
-                            &bullet_text,
-                            *actual_lines,
-                            char_budget,
-                            &parsed_jd,
-                            &llm,
-                            prev.as_deref(),
-                        )
-                        .await
-                        .unwrap_or(bullet_text)
-                    }
-                    LineCoverageVerdict::SecondLineTooShort { fill_ratio } => {
-                        expand_bullet(
-                            &bullet_text,
-                            *fill_ratio,
-                            char_budget * 2,
-                            &parsed_jd,
-                            &llm,
-                            prev.as_deref(),
-                        )
-                        .await
-                        .unwrap_or(bullet_text)
-                    }
+                    LineCoverageVerdict::TooShort { fill_ratio, .. } => expand_bullet(
+                        &bullet_text,
+                        *fill_ratio,
+                        char_budget,
+                        &parsed_jd,
+                        &llm,
+                        prev.as_deref(),
+                    )
+                    .await
+                    .unwrap_or(bullet_text),
+                    LineCoverageVerdict::TooLong { actual_lines } => compress_bullet(
+                        &bullet_text,
+                        *actual_lines,
+                        char_budget,
+                        &parsed_jd,
+                        &llm,
+                        prev.as_deref(),
+                    )
+                    .await
+                    .unwrap_or(bullet_text),
+                    LineCoverageVerdict::SecondLineTooShort { fill_ratio } => expand_bullet(
+                        &bullet_text,
+                        *fill_ratio,
+                        char_budget * 2,
+                        &parsed_jd,
+                        &llm,
+                        prev.as_deref(),
+                    )
+                    .await
+                    .unwrap_or(bullet_text),
                     LineCoverageVerdict::Satisfies => bullet_text,
                 };
                 Ok((idx, new_text))
@@ -296,7 +290,8 @@ pub async fn run_simulation_loop(
                 let sem = Arc::clone(&sem);
                 join_set.spawn(async move {
                     let _permit = sem.acquire().await.expect("semaphore closed");
-                    let result = compress_bullet(&text, 2, char_budget, &parsed_jd, &llm, None).await;
+                    let result =
+                        compress_bullet(&text, 2, char_budget, &parsed_jd, &llm, None).await;
                     (idx, result)
                 });
             }
@@ -373,7 +368,8 @@ pub async fn run_simulation_loop(
                 let sem = Arc::clone(&sem);
                 join_set.spawn(async move {
                     let _permit = sem.acquire().await.expect("semaphore closed");
-                    let result = compress_bullet(&text, 2, char_budget, &parsed_jd, &llm, None).await;
+                    let result =
+                        compress_bullet(&text, 2, char_budget, &parsed_jd, &llm, None).await;
                     (idx, result)
                 });
             }

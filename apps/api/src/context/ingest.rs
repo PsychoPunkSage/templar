@@ -254,12 +254,8 @@ pub(crate) fn chunk_text_for_bullets(text: &str, budget: usize) -> Vec<String> {
             } else {
                 if !current.is_empty() {
                     // Collect last 3 lines as owned Strings before moving current
-                    let mut tail: Vec<String> = current
-                        .lines()
-                        .rev()
-                        .take(3)
-                        .map(String::from)
-                        .collect();
+                    let mut tail: Vec<String> =
+                        current.lines().rev().take(3).map(String::from).collect();
                     tail.reverse();
                     overlap_lines = tail;
                     chunks.push(current.clone());
@@ -362,7 +358,11 @@ pub(crate) async fn parse_three_phase(
     // Deduplicate by exact text match
     let mut seen_texts: std::collections::HashSet<String> = std::collections::HashSet::new();
     all_bullets.retain(|b| {
-        let text = b.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let text = b
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         seen_texts.insert(text)
     });
 

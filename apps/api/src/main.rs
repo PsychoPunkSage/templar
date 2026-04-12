@@ -29,10 +29,10 @@ use crate::config::Config;
 use crate::context::worker::spawn_context_ingest_worker;
 use crate::db::create_pool;
 use crate::generation::fit_scoring::LlmFitScorer;
+use crate::generation::worker::spawn_generation_worker;
 use crate::layout::{default_page_config, FontFamily};
 use crate::llm_client::LlmClient;
 use crate::render::pdflatex::check_pdflatex_available;
-use crate::generation::worker::spawn_generation_worker;
 use crate::render::worker::spawn_render_worker;
 use crate::routes::build_router;
 use crate::state::AppState;
@@ -187,7 +187,10 @@ async fn main() -> Result<()> {
         bullet_token_budget = config.bullet_token_budget,
         "Concurrency config loaded"
     );
-    info!("Context ingest workers: spawned {}", config.ingest_worker_count);
+    info!(
+        "Context ingest workers: spawned {}",
+        config.ingest_worker_count
+    );
 
     // Build router
     let app = build_router(state)

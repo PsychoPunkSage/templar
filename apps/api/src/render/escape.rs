@@ -21,8 +21,8 @@ pub fn escape_latex(text: &str) -> String {
             '^' => result.push_str(r"\textasciicircum{}"),
             // En-dash / em-dash: replace with human-looking alternatives
             // (pdflatex can't render raw Unicode, and these read as AI-generated anyway)
-            '\u{2013}' => result.push('-'),        // en-dash → hyphen (ranges: 5-10ms)
-            '\u{2014}' => result.push_str(", "),   // em-dash → comma (sentence breaks)
+            '\u{2013}' => result.push('-'), // en-dash → hyphen (ranges: 5-10ms)
+            '\u{2014}' => result.push_str(", "), // em-dash → comma (sentence breaks)
             // Greek letters (math mode)
             '\u{03BC}' => result.push_str(r"$\mu$"),
             '\u{03B1}' => result.push_str(r"$\alpha$"),
@@ -54,10 +54,10 @@ pub fn escape_latex(text: &str) -> String {
             '\u{00B7}' => result.push_str(r"\textperiodcentered{}"),
             '\u{2022}' => result.push_str(r"\textbullet{}"),
             // Smart quotes → proper LaTeX quotes
-            '\u{2018}' => result.push_str(r"`"),    // ' → `
-            '\u{2019}' => result.push_str(r"'"),    // ' → '
-            '\u{201C}' => result.push_str(r"``"),   // " → ``
-            '\u{201D}' => result.push_str(r"''"),   // " → ''
+            '\u{2018}' => result.push_str(r"`"),  // ' → `
+            '\u{2019}' => result.push_str(r"'"),  // ' → '
+            '\u{201C}' => result.push_str(r"``"), // " → ``
+            '\u{201D}' => result.push_str(r"''"), // " → ''
             // Ellipsis
             '\u{2026}' => result.push_str(r"\ldots{}"),
             // Non-breaking space → regular space

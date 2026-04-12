@@ -524,14 +524,19 @@ async fn fetch_render_data(
 
     // Derive page config from the template's declared layout physics when available;
     // fall back to default Inter 11pt, 1" margins for resumes without a template.
-    let page_config = resume_template_id.as_deref()
+    let page_config = resume_template_id
+        .as_deref()
         .and_then(|id| {
-            template_cache.try_read().ok()
+            template_cache
+                .try_read()
+                .ok()
                 .and_then(|cache| cache.get(id).map(|t| t.metadata.page_config()))
         })
-        .unwrap_or_else(|| crate::layout::font_metrics::default_page_config(
-            crate::layout::font_metrics::FontFamily::Inter
-        ));
+        .unwrap_or_else(|| {
+            crate::layout::font_metrics::default_page_config(
+                crate::layout::font_metrics::FontFamily::Inter,
+            )
+        });
 
     Ok((
         RenderParams {
@@ -677,10 +682,7 @@ fn build_minimal_pdflatex_document(params: &RenderParams) -> String {
     );
 
     for section in &params.sections {
-        doc.push_str(&format!(
-            "\n\\section{{{}}}\n",
-            escape_latex(&section.name)
-        ));
+        doc.push_str(&format!("\n\\section{{{}}}\n", escape_latex(&section.name)));
         for sub in &section.sub_entries {
             if let Some(h) = &sub.header_latex {
                 doc.push_str(h);

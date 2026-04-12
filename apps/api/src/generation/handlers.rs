@@ -249,13 +249,11 @@ pub async fn handle_generation_status(
     State(state): State<AppState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<Json<GenerationStatusResponse>, AppError> {
-    let row = sqlx::query_as::<_, GenerationJobRow>(
-        "SELECT * FROM generation_jobs WHERE id = $1",
-    )
-    .bind(job_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("Generation job {job_id} not found")))?;
+    let row = sqlx::query_as::<_, GenerationJobRow>("SELECT * FROM generation_jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Generation job {job_id} not found")))?;
 
     // For non-terminal states, return status only — no result data yet
     if row.status != "done" {
@@ -271,12 +269,14 @@ pub async fn handle_generation_status(
     }
 
     // status='done': deserialize the stored GenerateResponse from result JSONB
-    let result: Option<GenerateResponse> = row
-        .result
-        .and_then(|v| serde_json::from_value(v).ok());
+    let result: Option<GenerateResponse> = row.result.and_then(|v| serde_json::from_value(v).ok());
 
     let (fit_report, entry_groups, layout_flagged) = match result {
-        Some(r) => (Some(r.fit_report), Some(r.entry_groups), Some(r.layout_flagged)),
+        Some(r) => (
+            Some(r.fit_report),
+            Some(r.entry_groups),
+            Some(r.layout_flagged),
+        ),
         None => {
             // result JSONB missing or malformed — return done status with null fields.
             // This is non-fatal: the frontend can still render from resume_bullets.
@@ -386,5 +386,9 @@ pub async fn handle_get_resume(
         .as_ref()
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-    Ok(Json(ResumeDetailResponse { resume, bullets, entry_groups }))
+    Ok(Json(ResumeDetailResponse {
+        resume,
+        bullets,
+        entry_groups,
+    }))
 }

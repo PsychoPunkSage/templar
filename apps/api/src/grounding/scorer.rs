@@ -287,7 +287,10 @@ mod tests {
             "rust, async, tokio, distributed-systems, kubernetes",
             "StartupEnergetic",
         );
-        assert!(prompt.contains("rust"), "prompt must include jd keyword 'rust'");
+        assert!(
+            prompt.contains("rust"),
+            "prompt must include jd keyword 'rust'"
+        );
         assert!(
             prompt.contains("distributed-systems"),
             "prompt must include 'distributed-systems'"

@@ -307,7 +307,9 @@ pub async fn run_page_fill_pass(
                     // If this was the last content bullet for the entry, remove the header
                     // placeholder to prevent a dangling header (label with no bullets) in
                     // the rendered PDF.
-                    let has_remaining_content = result.bullets.iter()
+                    let has_remaining_content = result
+                        .bullets
+                        .iter()
                         .any(|b| b.source_entry_id == removed_entry_id && !b.text.is_empty());
                     if !has_remaining_content {
                         result.bullets.retain(|b| {
@@ -546,19 +548,21 @@ mod tests {
 
     #[test]
     fn test_max_fill_passes_is_three() {
-        assert_eq!(MAX_FILL_PASSES, 3, "spec requires exactly 3 max fill passes");
+        assert_eq!(
+            MAX_FILL_PASSES, 3,
+            "spec requires exactly 3 max fill passes"
+        );
     }
 
     #[test]
     fn test_major_overflow_removes_bullets_iteratively() {
         let config = make_config(); // 45 usable lines
-        // Create 50 bullets (111% fill — MajorOverflow)
-        // After 3 removals (MAX_FILL_PASSES), still 47 bullets (104% fill — MinorOverflow).
-        // page_fill_flagged should be true since 47 > 45.
-        // Note: only page fill logic tested here (no LLM), so bullets have 0 jd_keywords.
-        let bullets: Vec<SimulatedBullet> = (0..50)
-            .map(|_| make_bullet(1, vec![], false))
-            .collect();
+                                    // Create 50 bullets (111% fill — MajorOverflow)
+                                    // After 3 removals (MAX_FILL_PASSES), still 47 bullets (104% fill — MinorOverflow).
+                                    // page_fill_flagged should be true since 47 > 45.
+                                    // Note: only page fill logic tested here (no LLM), so bullets have 0 jd_keywords.
+        let bullets: Vec<SimulatedBullet> =
+            (0..50).map(|_| make_bullet(1, vec![], false)).collect();
 
         let analysis = analyze_page_fill(&bullets, &config);
         assert_eq!(analysis.verdict, PageFillVerdict::MajorOverflow);
@@ -617,12 +621,14 @@ mod tests {
         let content_idx = 1;
         let removed_entry_id = result.bullets[content_idx].source_entry_id;
         result.bullets.remove(content_idx);
-        let has_remaining_content = result.bullets.iter()
+        let has_remaining_content = result
+            .bullets
+            .iter()
             .any(|b| b.source_entry_id == removed_entry_id && !b.text.is_empty());
         if !has_remaining_content {
-            result.bullets.retain(|b| {
-                !(b.source_entry_id == removed_entry_id && b.text.is_empty())
-            });
+            result
+                .bullets
+                .retain(|b| !(b.source_entry_id == removed_entry_id && b.text.is_empty()));
         }
 
         assert!(
@@ -680,12 +686,14 @@ mod tests {
         let content_idx = 1;
         let removed_entry_id = result.bullets[content_idx].source_entry_id;
         result.bullets.remove(content_idx);
-        let has_remaining_content = result.bullets.iter()
+        let has_remaining_content = result
+            .bullets
+            .iter()
             .any(|b| b.source_entry_id == removed_entry_id && !b.text.is_empty());
         if !has_remaining_content {
-            result.bullets.retain(|b| {
-                !(b.source_entry_id == removed_entry_id && b.text.is_empty())
-            });
+            result
+                .bullets
+                .retain(|b| !(b.source_entry_id == removed_entry_id && b.text.is_empty()));
         }
 
         assert_eq!(
@@ -698,7 +706,10 @@ mod tests {
             "header placeholder must be kept since a sibling content bullet remains"
         );
         assert!(
-            result.bullets.iter().any(|b| b.text.contains("infrastructure")),
+            result
+                .bullets
+                .iter()
+                .any(|b| b.text.contains("infrastructure")),
             "remaining content bullet must be kept"
         );
     }

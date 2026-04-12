@@ -111,7 +111,6 @@ pub struct Config {
     pub rust_log: String,
 
     // ── Concurrency tunables (env var > toml > default) ──────────────────────
-
     /// Number of background Redis ingest workers.
     /// Env: INGEST_WORKER_COUNT  |  Default: 2
     pub ingest_worker_count: usize,
@@ -143,7 +142,6 @@ pub struct Config {
     pub generation_worker_count: usize,
 
     // ── Ingestion tunables ───────────────────────────────────────────────────
-
     /// Estimated token budget per Phase-B bullet-extraction chunk.
     /// Env: BULLET_TOKEN_BUDGET  |  Default: 1200
     pub bullet_token_budget: usize,
