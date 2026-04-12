@@ -19,6 +19,8 @@ struct TomlConcurrencyConfig {
     ingest_worker_count: Option<usize>,
     ingest_llm_concurrency: Option<usize>,
     generation_llm_concurrency: Option<usize>,
+    layout_llm_concurrency: Option<usize>,
+    grounding_llm_concurrency: Option<usize>,
     render_worker_count: Option<usize>,
 }
 
@@ -28,6 +30,8 @@ impl Default for TomlConcurrencyConfig {
             ingest_worker_count: None,
             ingest_llm_concurrency: None,
             generation_llm_concurrency: None,
+            layout_llm_concurrency: None,
+            grounding_llm_concurrency: None,
             render_worker_count: None,
         }
     }
@@ -118,6 +122,14 @@ pub struct Config {
     /// Env: GENERATION_LLM_CONCURRENCY  |  Default: 3
     pub generation_llm_concurrency: usize,
 
+    /// Max concurrent LLM calls during layout simulation (expand/compress per pass).
+    /// Env: LAYOUT_LLM_CONCURRENCY  |  Default: 4
+    pub layout_llm_concurrency: usize,
+
+    /// Max concurrent LLM calls during grounding scoring loop.
+    /// Env: GROUNDING_LLM_CONCURRENCY  |  Default: 4
+    pub grounding_llm_concurrency: usize,
+
     /// Number of parallel pdflatex render workers.
     /// Env: RENDER_WORKER_COUNT  |  Default: 4
     pub render_worker_count: usize,
@@ -173,6 +185,16 @@ impl Config {
                 "GENERATION_LLM_CONCURRENCY",
                 toml.concurrency.generation_llm_concurrency,
                 3,
+            ),
+            layout_llm_concurrency: env_or(
+                "LAYOUT_LLM_CONCURRENCY",
+                toml.concurrency.layout_llm_concurrency,
+                4,
+            ),
+            grounding_llm_concurrency: env_or(
+                "GROUNDING_LLM_CONCURRENCY",
+                toml.concurrency.grounding_llm_concurrency,
+                4,
             ),
             render_worker_count: env_or(
                 "RENDER_WORKER_COUNT",
