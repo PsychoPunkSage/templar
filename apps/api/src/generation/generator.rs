@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::context::models::ContextEntryData;
@@ -31,7 +31,7 @@ use crate::generation::prompts::{PER_ENTRY_GENERATION_PROMPT_TEMPLATE, PER_ENTRY
 use crate::generation::tone::{get_tone_examples, ToneExamples};
 use crate::generation::{fit_cache, hash_utils};
 use crate::grounding::scorer::{regenerate_single_bullet, score_bullet};
-use crate::grounding::types::{GroundingResult, GroundingVerdict};
+use crate::grounding::types::{GroundingResult, GroundingScore, GroundingVerdict};
 use crate::layout::{run_simulation_loop, PageConfig, SimulatedBullet};
 use crate::llm_client::prompts::{GROUNDING_INSTRUCTION, SCOPE_INSTRUCTION};
 use crate::llm_client::LlmClient;
@@ -101,6 +101,8 @@ pub struct GenerateResponse {
     pub fit_report: FitReport,
     pub bullets: Vec<SimulatedBullet>,
     pub status: String,
+    /// True if the page fill pass could not resolve whitespace/overflow within MAX_FILL_PASSES.
+    pub layout_flagged: bool,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -125,6 +127,7 @@ pub struct GenerateResponse {
 ///
 /// `grounding_enabled` controls whether step 7b runs. Pass `true` in production,
 /// `false` in unit tests to skip LLM grounding calls.
+/// `config` provides concurrency tunables (generation_llm_concurrency).
 pub async fn generate_resume(
     pool: &PgPool,
     llm: &LlmClient,
@@ -133,6 +136,7 @@ pub async fn generate_resume(
     redis: Option<&redis::Client>,
     grounding_enabled: bool,
     request: GenerateRequest,
+    config: &crate::config::Config,
 ) -> Result<GenerateResponse, AppError> {
     // Step 1: Parse JD
     info!("Parsing JD for user {}", request.user_id);
@@ -157,8 +161,19 @@ pub async fn generate_resume(
     let fit_report = if !request.force_refresh {
         match fit_cache::lookup_cache(pool, request.user_id, &jd_hash, &context_hash).await {
             Ok(Some(cached)) => {
-                tracing::info!(user_id = %request.user_id, "fit score cache hit in generate_resume");
-                cached
+                if cached.selected_entry_ids.is_empty() {
+                    // Cache predates selected_entry_ids (written before LlmFitScorer was wired in).
+                    // Force a fresh score so entry filtering works correctly.
+                    tracing::info!(user_id = %request.user_id, "fit score cache hit but selected_entry_ids empty — forcing fresh score");
+                    let fresh = fit_scorer.score(&entries, &parsed_jd).await?;
+                    if let Err(e) = fit_cache::upsert_cache(pool, request.user_id, &jd_hash, &context_hash, &fresh).await {
+                        tracing::warn!(error = %e, "fit-score cache upsert failed after refresh (non-fatal)");
+                    }
+                    fresh
+                } else {
+                    tracing::info!(user_id = %request.user_id, "fit score cache hit in generate_resume");
+                    cached
+                }
             }
             Ok(None) => {
                 let report = fit_scorer.score(&entries, &parsed_jd).await?;
@@ -209,13 +224,67 @@ pub async fn generate_resume(
     // Step 5: Tone calibration
     let tone_examples = get_tone_examples(&parsed_jd.detected_tone);
 
-    // Step 6: LLM generation — parallel per-entry calls; entry selection filtered by fit_report
-    let draft_bullets = call_llm_with_retry(llm, &parsed_jd, &selection, &tone_examples, &fit_report).await?;
+    // Step 5b: Separate skill entries — they bypass LLM generation, simulation, and grounding.
+    // Skill headers are built in a dedicated pure-Rust phase after bullet generation.
+    let (skill_ranked, non_skill_ranked): (Vec<_>, Vec<_>) = selection
+        .selected_entries
+        .iter()
+        .partition(|re| re.entry.entry_type == "skill");
 
-    // Step 7: Layout simulation — enforces Line Coverage Contract.
-    // Replaces LLM's line_estimate with simulation-verified line counts.
-    // Bullets that fail after max passes are flagged for human review (not rejected).
-    let simulation = run_simulation_loop(draft_bullets, page_config, &parsed_jd, llm).await?;
+    let non_skill_selection = SelectionResult {
+        selected_entries: non_skill_ranked.into_iter().cloned().collect(),
+        excluded_entries: selection.excluded_entries.clone(),
+        section_weights: selection.section_weights.clone(),
+        reframe_hints: selection.reframe_hints.clone(),
+    };
+
+    // Step 6: LLM generation — parallel per-entry calls (non-skill entries only).
+    let draft_bullets = call_llm_with_retry(
+        llm,
+        &parsed_jd,
+        &non_skill_selection,
+        &tone_examples,
+        &fit_report,
+        config.generation_llm_concurrency,
+    )
+    .await?;
+
+    // Step 6b: Dedup pass — remove near-duplicate bullets (Jaccard > 0.75).
+    let draft_bullets = dedup_bullets(draft_bullets);
+    // Step 6b-2: Remove header-only placeholders for entries that produced zero bullets.
+    // When the LLM returns {"bullets": []} for an entry, a header-only DraftBullet (text="")
+    // is still emitted. Without this pass it would render as a floating bold label in the PDF.
+    let draft_bullets = remove_dangling_headers(draft_bullets);
+
+    // Step 6c: Skills phase — JD-filtered skill headers (pure Rust, no LLM).
+    let skill_ranked_refs: Vec<&crate::generation::content_selector::RankedEntry> =
+        skill_ranked.iter().map(|re| *re).collect();
+    debug!(
+        skill_entry_count = skill_ranked_refs.len(),
+        total_selected = selection.selected_entries.len(),
+        "Skills phase: entries from selection"
+    );
+    let skill_draft_bullets = skills_phase(
+        &draft_bullets,
+        &skill_ranked_refs,
+        &non_skill_selection.selected_entries,
+        &parsed_jd,
+    );
+    info!(
+        bullets = skill_draft_bullets.len(),
+        input_entries = skill_ranked_refs.len(),
+        "Skills phase complete"
+    );
+    if !skill_ranked_refs.is_empty() && skill_draft_bullets.is_empty() {
+        warn!(
+            input_entries = skill_ranked_refs.len(),
+            "Skills phase: had skill entries but produced 0 bullets — check WARN logs above for deserialization failures"
+        );
+    }
+
+    // Step 7: Layout simulation — enforces Line Coverage Contract (non-skill bullets only).
+    // Skill headers have empty text and would falsely trigger TooShort violations.
+    let simulation = run_simulation_loop(draft_bullets, page_config, &parsed_jd, llm, config.layout_llm_concurrency).await?;
 
     // Page fill remediation pass — runs after simulation loop to fix whitespace/overflow.
     let simulation =
@@ -232,19 +301,17 @@ pub async fn generate_resume(
         );
     }
 
-    // Step 7b: Grounding loop (Phase 5).
-    // Score each simulated bullet against its source context entry.
-    // Fail verdict → attempt one LLM rewrite → re-score → if still Fail, keep with flag.
-    // grounding_enabled=false in unit tests skips all LLM grounding calls.
-    let grounding_pairs: Vec<(SimulatedBullet, GroundingResult)> = if grounding_enabled {
-        run_grounding_loop(&simulation.bullets, &selection.selected_entries, llm).await?
+    // Step 7b: Grounding loop (Phase 5) — non-skill bullets only.
+    // Skill headers are self-grounding (category + items directly from context).
+    let content_grounding_pairs: Vec<(SimulatedBullet, GroundingResult)> = if grounding_enabled {
+        run_grounding_loop(&simulation.bullets, &non_skill_selection.selected_entries, llm, config.grounding_llm_concurrency, &parsed_jd).await?
     } else {
         // Grounding disabled (unit tests): assign placeholder score 0.0 to all bullets.
         simulation
             .bullets
             .iter()
             .map(|b| {
-                let score = crate::grounding::types::GroundingScore::compute(0.0, 0.0, 0.0, 0.0);
+                let score = GroundingScore::compute(0.0, 0.0, 0.0, 0.0);
                 (
                     b.clone(),
                     GroundingResult {
@@ -258,6 +325,38 @@ pub async fn generate_resume(
             })
             .collect()
     };
+
+    // Step 7c: Convert skill header bullets to SimulatedBullet + Pass grounding result.
+    let skill_pairs: Vec<(SimulatedBullet, GroundingResult)> = skill_draft_bullets
+        .into_iter()
+        .map(|b| {
+            let sim = SimulatedBullet {
+                text: b.text,
+                source_entry_id: b.source_entry_id,
+                section: b.section,
+                entry_header_latex: b.entry_header_latex,
+                verified_line_count: 1,
+                jd_keywords_used: vec![],
+                was_adjusted: false,
+                flagged_for_review: false,
+            };
+            let score = GroundingScore::compute(1.0, 1.0, 1.0, 0.0);
+            let result = GroundingResult {
+                bullet_text: sim.text.clone(),
+                source_entry_id: sim.source_entry_id,
+                score,
+                verdict: GroundingVerdict::Pass,
+                rejection_reason: None,
+            };
+            (sim, result)
+        })
+        .collect();
+
+    // Merge: content bullets first (preserve section ordering), skill headers appended at end.
+    let grounding_pairs: Vec<(SimulatedBullet, GroundingResult)> = content_grounding_pairs
+        .into_iter()
+        .chain(skill_pairs)
+        .collect();
 
     // Step 8: Persist resume row
     let resume_id = Uuid::new_v4();
@@ -282,12 +381,15 @@ pub async fn generate_resume(
     // Step 9: Persist simulated bullets with real grounding scores.
     // Uses sim_bullet.text (post-adjustment), sim_bullet.verified_line_count,
     // and the actual composite grounding score from step 7b.
-    for (sim_bullet, grounding_result) in &grounding_pairs {
+    // order_idx = rank_idx preserves the relevance-ranked order from SelectionResult.
+    // This replaces ORDER BY source_entry_id (random UUID) in the render query.
+    for (rank_idx, (sim_bullet, grounding_result)) in grounding_pairs.iter().enumerate() {
         sqlx::query(
             r#"
             INSERT INTO resume_bullets
-                (resume_id, section, bullet_text, source_entry_id, grounding_score, line_count, rejection_reason, entry_header)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                (resume_id, section, bullet_text, source_entry_id,
+                 grounding_score, line_count, rejection_reason, entry_header, order_idx)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
         )
         .bind(resume_id)
@@ -298,6 +400,7 @@ pub async fn generate_resume(
         .bind(sim_bullet.verified_line_count as i16)
         .bind(grounding_result.rejection_reason.as_deref())
         .bind(sim_bullet.entry_header_latex.as_deref())
+        .bind(rank_idx as i32)
         .execute(pool)
         .await?;
     }
@@ -355,6 +458,7 @@ pub async fn generate_resume(
         fit_report,
         bullets: final_bullets,
         status: "draft".to_string(),
+        layout_flagged: simulation.page_fill_flagged,
     })
 }
 
@@ -440,9 +544,9 @@ fn build_entry_header_latex(entry: &ContextEntryRow) -> Option<String> {
                 entry_id = %entry.entry_id,
                 entry_type = %entry.entry_type,
                 error = %e,
-                "build_entry_header_latex: failed to deserialize ContextEntryData"
+                "build_entry_header_latex: deserialization failed — trying raw fallback"
             );
-            return None;
+            return build_entry_header_latex_fallback(entry);
         }
     };
 
@@ -532,11 +636,137 @@ fn build_entry_header_latex(entry: &ContextEntryRow) -> Option<String> {
     })
 }
 
+/// Raw-JSON fallback for building entry header LaTeX when typed deserialization fails.
+/// Reads fields directly from `entry.data` (serde_json::Value) without requiring
+/// a fully valid typed struct — tolerates missing/null fields gracefully.
+fn build_entry_header_latex_fallback(entry: &ContextEntryRow) -> Option<String> {
+    let data = &entry.data;
+    match entry.entry_type.as_str() {
+        "experience" => {
+            let company = data.get("company").and_then(|v| v.as_str()).unwrap_or("");
+            let role = data.get("role").and_then(|v| v.as_str()).unwrap_or("");
+            let start = data.get("date_start").and_then(|v| v.as_str()).unwrap_or("?");
+            let end = data
+                .get("date_end")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Present");
+            if company.is_empty() && role.is_empty() {
+                return None;
+            }
+            Some(format!(
+                r#"\job{{{}}}{{{}}}{{{} -- {}}}"#,
+                escape_header_latex(company),
+                escape_header_latex(role),
+                start,
+                end
+            ))
+        }
+        "open_source" => {
+            let name = data
+                .get("project_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let tech = data
+                .get("tech_stack")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            if name.is_empty() {
+                return None;
+            }
+            Some(format!(
+                r#"\project{{{}}}{{{}}}{{}}"#,
+                escape_header_latex(name),
+                escape_header_latex(&tech)
+            ))
+        }
+        "project" => {
+            let name = data
+                .get("name")
+                .or_else(|| data.get("project_name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let tech = data
+                .get("tech_stack")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let start = data
+                .get("date_start")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let end = data
+                .get("date_end")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let dates = if start.is_empty() {
+                String::new()
+            } else if end.is_empty() {
+                format!("{} -- Present", start)
+            } else {
+                format!("{} -- {}", start, end)
+            };
+            if name.is_empty() {
+                return None;
+            }
+            Some(format!(
+                r#"\project{{{}}}{{{}}}{{{}}}"#,
+                escape_header_latex(name),
+                escape_header_latex(&tech),
+                dates
+            ))
+        }
+        "education" => {
+            let institution = data
+                .get("institution")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let degree = data.get("degree").and_then(|v| v.as_str()).unwrap_or("");
+            let start = data
+                .get("date_start")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let end = data
+                .get("date_end")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Present");
+            let gpa = data
+                .get("gpa")
+                .and_then(|v| v.as_f64())
+                .map(|g| format!("{:.2}", g))
+                .unwrap_or_default();
+            if institution.is_empty() && degree.is_empty() {
+                return None;
+            }
+            Some(format!(
+                r#"\education{{{} -- {}}}{{{}}}{{{}}}{{{}}}"#,
+                start,
+                end,
+                escape_header_latex(degree),
+                escape_header_latex(institution),
+                gpa
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Builds the per-entry generation prompt for a single context entry.
 fn build_per_entry_prompt(
     entry: &ContextEntryRow,
     parsed_jd: &crate::generation::jd_parser::ParsedJD,
     tone_examples: &ToneExamples,
+    fit_report: &FitReport,
 ) -> Result<String, AppError> {
     let allowed_verbs = crate::generation::tone::filter_verbs_for_contribution(
         &tone_examples.strong_verbs,
@@ -545,7 +775,12 @@ fn build_per_entry_prompt(
     let allowed_verbs_json = serde_json::to_string(&allowed_verbs)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize verbs: {e}")))?;
 
-    let entry_data_json = serde_json::to_string_pretty(&entry.data)
+    // FIX-04: strip pre-written bullets from entry data to prevent LLM paraphrasing
+    let mut data_for_prompt = entry.data.clone();
+    if let Some(obj) = data_for_prompt.as_object_mut() {
+        obj.remove("bullets");
+    }
+    let entry_data_json = serde_json::to_string_pretty(&data_for_prompt)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize entry data: {e}")))?;
 
     let raw_text = entry.raw_text.as_deref().unwrap_or("(no raw text provided)");
@@ -559,17 +794,38 @@ fn build_per_entry_prompt(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize keywords: {e}")))?;
 
-    let jd_summary = format!(
-        "Detected tone: {:?}. Hard requirements: {}",
+    // FIX-02: build full JD context (tone, seniority, all requirements, soft signals, top keywords)
+    let hard_reqs_text = if parsed_jd.hard_requirements.is_empty() {
+        "  none".to_string()
+    } else {
+        parsed_jd.hard_requirements.iter()
+            .map(|r| format!("  - [{}] {}", if r.is_required { "REQUIRED" } else { "preferred" }, r.text))
+            .collect::<Vec<_>>().join("\n")
+    };
+    let keywords_text = if parsed_jd.keyword_inventory.is_empty() {
+        "  none".to_string()
+    } else {
+        parsed_jd.keyword_inventory.iter().take(15)
+            .map(|k| format!("  - {} (freq={}, weight={:.1})", k.keyword, k.frequency, k.position_weight))
+            .collect::<Vec<_>>().join("\n")
+    };
+    let jd_context = format!(
+        "TONE: {:?}  |  SENIORITY: {}  |  STARTUP: {}  |  IC_FOCUSED: {}\n\
+         HARD REQUIREMENTS:\n{}\n\
+         SOFT SIGNALS: {}\n\
+         TOP KEYWORDS (by weight):\n{}",
         parsed_jd.detected_tone,
-        parsed_jd
-            .hard_requirements
-            .iter()
-            .take(5)
-            .map(|r| r.text.as_str())
-            .collect::<Vec<_>>()
-            .join("; ")
+        parsed_jd.role_signals.seniority,
+        parsed_jd.role_signals.is_startup,
+        parsed_jd.role_signals.is_ic_focused,
+        hard_reqs_text,
+        if parsed_jd.soft_signals.is_empty() { "none".to_string() }
+        else { parsed_jd.soft_signals.join("; ") },
+        keywords_text,
     );
+
+    // FIX-03: build per-entry fit context from the fit report
+    let entry_fit_context = build_entry_fit_context(entry.entry_id, fit_report);
 
     Ok(PER_ENTRY_GENERATION_PROMPT_TEMPLATE
         .replace("{grounding_instruction}", GROUNDING_INSTRUCTION)
@@ -580,7 +836,298 @@ fn build_per_entry_prompt(
         .replace("{entry_data_json}", &entry_data_json)
         .replace("{raw_text}", raw_text)
         .replace("{keywords_json}", &keywords_json)
-        .replace("{jd_summary}", &jd_summary))
+        .replace("{jd_context}", &jd_context)
+        .replace("{entry_fit_context}", &entry_fit_context))
+}
+
+/// Builds the JD fit context string for a single entry from the fit report.
+///
+/// Uses `selected_entry_ids` (UUID list set by LlmFitScorer) to determine whether
+/// this entry was identified as relevant to the JD. If not selected, returns a
+/// directive for the LLM to generate minimal content only.
+///
+/// NOTE: `FitMatch.context_evidence` is LLM-generated free-text (e.g. "5 years Rust
+/// at Acme"), never a UUID, so we cannot filter matches per-entry. Instead we show
+/// all overall strong/partial JD requirements as role context for every selected entry.
+/// This is the correct semantic: every selected entry should address the JD requirements.
+fn build_entry_fit_context(entry_id: uuid::Uuid, fit_report: &FitReport) -> String {
+    // Gate: if the scorer returned entry IDs and this entry is not among them, tell the
+    // LLM it was not selected — it should produce minimal/no bullets.
+    let scorer_has_selection = !fit_report.selected_entry_ids.is_empty();
+    let is_selected = fit_report.selected_entry_ids.iter().any(|id| *id == entry_id);
+
+    if scorer_has_selection && !is_selected {
+        return "This entry was NOT selected as a strong JD match. \
+                Only generate bullets if JD overlap is clearly evident from the entry data above. \
+                Prefer returning an empty bullets list.".to_string();
+    }
+
+    // Show the JD requirements from the overall fit report as role context.
+    let strong: Vec<&str> = fit_report.strong_matches.iter()
+        .map(|m| m.jd_requirement.as_str())
+        .collect();
+    let partial: Vec<&str> = fit_report.partial_matches.iter()
+        .map(|m| m.jd_requirement.as_str())
+        .collect();
+
+    format!(
+        "Strong JD matches (user profile vs JD): {}\nPartial JD matches: {}",
+        if strong.is_empty() { "none".to_string() } else { strong.join(", ") },
+        if partial.is_empty() { "none".to_string() } else { partial.join(", ") },
+    )
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Fix 4: Post-generation dedup pass
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Removes near-duplicate bullets using pairwise Jaccard similarity on token sets.
+///
+/// When two bullets share > 75% of their tokens, the later one (lower entry rank) is dropped.
+/// Empty-text bullets (skill headers) are never compared or removed.
+fn dedup_bullets(bullets: Vec<DraftBullet>) -> Vec<DraftBullet> {
+    use std::collections::HashSet;
+
+    let tokenize = |text: &str| -> HashSet<String> {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|t| t.len() > 2)
+            .map(|t| t.to_lowercase())
+            .collect()
+    };
+
+    let n = bullets.len();
+    let mut to_remove: HashSet<usize> = HashSet::new();
+
+    for i in 0..n {
+        if to_remove.contains(&i) || bullets[i].text.is_empty() {
+            continue;
+        }
+        let tokens_i = tokenize(&bullets[i].text);
+        for j in (i + 1)..n {
+            if to_remove.contains(&j) || bullets[j].text.is_empty() {
+                continue;
+            }
+            let tokens_j = tokenize(&bullets[j].text);
+            let intersection = tokens_i.intersection(&tokens_j).count();
+            let union_count = tokens_i.union(&tokens_j).count();
+            if union_count == 0 {
+                continue;
+            }
+            let jaccard = intersection as f32 / union_count as f32;
+            if jaccard > 0.75 {
+                to_remove.insert(j); // drop the later (lower-ranked) bullet
+            }
+        }
+    }
+
+    if !to_remove.is_empty() {
+        info!(dropped = to_remove.len(), "dedup: removed near-duplicate bullets");
+    }
+
+    bullets
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !to_remove.contains(i))
+        .map(|(_, b)| b)
+        .collect()
+}
+
+/// Removes header-only DraftBullet placeholders for entries that produced zero content bullets.
+/// A header-only bullet (text == "") with no sibling content bullets for its source_entry_id
+/// would render as a floating company/project label with no bullets under it in the PDF.
+fn remove_dangling_headers(bullets: Vec<DraftBullet>) -> Vec<DraftBullet> {
+    use std::collections::HashSet;
+    let entries_with_content: HashSet<uuid::Uuid> = bullets.iter()
+        .filter(|b| !b.text.is_empty())
+        .map(|b| b.source_entry_id)
+        .collect();
+    bullets.into_iter()
+        .filter(|b| {
+            // Keep all content bullets unconditionally.
+            // Keep header-only bullets ONLY if the entry has at least one content bullet.
+            !b.text.is_empty() || entries_with_content.contains(&b.source_entry_id)
+        })
+        .collect()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Fix 3: Skills as a separate post-generation phase
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Builds JD-filtered skill header bullets from user's Skill context entries.
+///
+/// Algorithm:
+/// 1. Collect all tech tags mentioned across the already-generated (non-skill) bullets.
+/// 2. Union with JD keyword inventory to form a relevance set.
+/// 3. Determine priority skill categories from JD role signals / tone.
+/// 4. Score each Skill entry by how many items overlap the relevance set.
+/// 5. Sort by (priority, score) and return `\skillcat{Category}{Items}` header bullets.
+///
+/// Skill header bullets have empty `text` — they bypass simulation and grounding.
+fn skills_phase(
+    draft_bullets: &[DraftBullet],
+    skill_entries: &[&crate::generation::content_selector::RankedEntry],
+    non_skill_entries: &[crate::generation::content_selector::RankedEntry],
+    parsed_jd: &crate::generation::jd_parser::ParsedJD,
+) -> Vec<DraftBullet> {
+    use std::collections::HashSet;
+
+    if skill_entries.is_empty() {
+        debug!("skills_phase: no skill entries selected — returning empty");
+        return vec![];
+    }
+
+    // 1. Collect tech tags from source entries of generated bullets.
+    //    Look up by source_entry_id in non_skill_entries (the selection we used for LLM generation).
+    let entry_map: std::collections::HashMap<Uuid, &ContextEntryRow> = non_skill_entries
+        .iter()
+        .map(|re| (re.entry.entry_id, &re.entry))
+        .collect();
+
+    let source_tech: HashSet<String> = draft_bullets
+        .iter()
+        .filter_map(|b| entry_map.get(&b.source_entry_id))
+        .flat_map(|e| e.tags.iter().map(|t| t.to_lowercase()))
+        .collect();
+
+    // 2. JD keywords
+    let jd_keywords: HashSet<String> = parsed_jd
+        .keyword_inventory
+        .iter()
+        .map(|k| k.keyword.to_lowercase())
+        .collect();
+
+    // 3. Relevance set
+    let relevance: HashSet<String> = source_tech.union(&jd_keywords).cloned().collect();
+
+    // 4. Role-based category priority list (index = priority; lower = higher priority)
+    let has_linux = jd_keywords.contains("linux") || jd_keywords.contains("kernel");
+    let priority_categories: Vec<&str> = if parsed_jd.role_signals.is_research {
+        vec!["Languages", "Tools", "Frameworks"]
+    } else if parsed_jd.role_signals.is_ic_focused || has_linux {
+        vec!["Languages", "Linux", "OpenSource"]
+    } else if matches!(
+        parsed_jd.detected_tone,
+        crate::generation::jd_parser::JDTone::AggressiveStartup
+    ) {
+        vec!["Languages", "Frameworks", "DevTools", "OpenSource"]
+    } else {
+        vec!["Languages", "Frameworks", "Databases", "DevTools"]
+    };
+
+    let priority_index = |cat: &str| -> usize {
+        priority_categories
+            .iter()
+            .position(|&c| c.eq_ignore_ascii_case(cat))
+            .unwrap_or(priority_categories.len()) // unlisted = lowest priority
+    };
+
+    // 5. Score and sort skill entries
+    #[derive(Debug)]
+    struct ScoredSkill<'a> {
+        ranked: &'a crate::generation::content_selector::RankedEntry,
+        category: String,
+        filtered_items: Vec<String>,
+        priority: usize,
+        score: usize,
+    }
+
+    let mut scored: Vec<ScoredSkill> = skill_entries
+        .iter()
+        .filter_map(|re| {
+            let mut data_with_tag = re.entry.data.clone();
+            if let Some(obj) = data_with_tag.as_object_mut() {
+                obj.insert(
+                    "entry_type".to_string(),
+                    Value::String(re.entry.entry_type.clone()),
+                );
+            }
+            match serde_json::from_value::<ContextEntryData>(data_with_tag) {
+                Ok(ContextEntryData::Skill(skill)) => {
+                    let relevant_items: Vec<String> = skill
+                        .items
+                        .iter()
+                        .filter(|item| relevance.contains(&item.to_lowercase()))
+                        .cloned()
+                        .collect();
+                    let score = relevant_items.len();
+                    let priority = priority_index(&skill.category);
+                    Some(ScoredSkill {
+                        ranked: re,
+                        category: skill.category.clone(),
+                        filtered_items: if score > 0 { relevant_items } else { skill.items.clone() },
+                        priority,
+                        score,
+                    })
+                }
+                Ok(_other_variant) => {
+                    warn!(
+                        entry_id = %re.entry.entry_id,
+                        entry_type = %re.entry.entry_type,
+                        "skills_phase: entry deserialized to unexpected variant (not Skill) — skipping"
+                    );
+                    None
+                }
+                Err(e) => {
+                    warn!(
+                        entry_id = %re.entry.entry_id,
+                        entry_type = %re.entry.entry_type,
+                        error = %e,
+                        "skills_phase: failed to deserialize entry data as ContextEntryData — skipping"
+                    );
+                    None
+                }
+            }
+        })
+        .collect();
+
+    // Sort: high-priority categories first, then by relevance score descending
+    scored.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then(b.score.cmp(&a.score))
+    });
+
+    let scored_count = scored.len();
+    let relevant_count = scored.iter().filter(|s| s.score > 0).count();
+    debug!(
+        input_entries = skill_entries.len(),
+        deserialized_ok = scored_count,
+        jd_relevant = relevant_count,
+        "skills_phase: scoring summary"
+    );
+    if scored_count == 0 {
+        warn!("skills_phase: all skill entries failed deserialization — 0 bullets produced");
+        return vec![];
+    }
+
+    // Fallback: if nothing scored, take top 4 by priority
+    let to_emit: Vec<&ScoredSkill> = if scored.iter().any(|s| s.score > 0) {
+        scored.iter().filter(|s| s.score > 0).collect()
+    } else {
+        scored.iter().take(4).collect()
+    };
+
+    // 6. Build header-only DraftBullets
+    to_emit
+        .into_iter()
+        .map(|s| {
+            let items_str = s.filtered_items.join(", ");
+            let header = format!(
+                r#"\skillcat{{{}}}{{{}}}"#,
+                escape_header_latex(&s.category),
+                escape_header_latex(&items_str)
+            );
+            DraftBullet {
+                text: String::new(),
+                source_entry_id: s.ranked.entry.entry_id,
+                section: "Skills".to_string(),
+                entry_header_latex: Some(header),
+                line_estimate: 1,
+                jd_keywords_used: vec![],
+            }
+        })
+        .collect()
 }
 
 /// Infers the resume section name for a context entry type.
@@ -599,7 +1146,7 @@ fn section_for_entry_type(entry_type: &str) -> &'static str {
 ///
 /// 1. Filters `selection.selected_entries` to `fit_report.selected_entry_ids` if non-empty.
 /// 2. Builds entry headers from typed data (no LLM needed for headers).
-/// 3. Spawns one LLM call per entry in parallel via JoinSet.
+/// 3. Spawns one LLM call per entry in parallel via JoinSet, capped at `generation_llm_concurrency`.
 /// 4. Flattens results into Vec<DraftBullet> with stable ordering.
 async fn call_llm_with_retry(
     llm: &LlmClient,
@@ -607,6 +1154,7 @@ async fn call_llm_with_retry(
     selection: &SelectionResult,
     tone_examples: &ToneExamples,
     fit_report: &FitReport,
+    generation_llm_concurrency: usize,
 ) -> Result<Vec<DraftBullet>, AppError> {
     // Filter entries: if fit_report has selected_entry_ids, honour them; else use all
     let entries: Vec<&crate::generation::content_selector::RankedEntry> =
@@ -625,12 +1173,13 @@ async fn call_llm_with_retry(
     if entries.is_empty() {
         // Fallback: use all selected entries (e.g. if LLM returned IDs not in selection)
         warn!("call_llm_with_retry: no entries after filtering by selected_entry_ids — using all selected entries");
-        let all: Vec<&crate::generation::content_selector::RankedEntry> = selection.selected_entries.iter().collect();
-        return call_llm_with_retry_entries(llm, parsed_jd, &all, tone_examples).await;
+        let all: Vec<&crate::generation::content_selector::RankedEntry> =
+            selection.selected_entries.iter().collect();
+        return call_llm_with_retry_entries(llm, parsed_jd, &all, tone_examples, fit_report, generation_llm_concurrency).await;
     }
 
     info!("Per-entry generation: {} entries to process", entries.len());
-    call_llm_with_retry_entries(llm, parsed_jd, &entries, tone_examples).await
+    call_llm_with_retry_entries(llm, parsed_jd, &entries, tone_examples, fit_report, generation_llm_concurrency).await
 }
 
 async fn call_llm_with_retry_entries(
@@ -638,6 +1187,8 @@ async fn call_llm_with_retry_entries(
     parsed_jd: &crate::generation::jd_parser::ParsedJD,
     entries: &[&crate::generation::content_selector::RankedEntry],
     tone_examples: &ToneExamples,
+    fit_report: &FitReport,
+    generation_llm_concurrency: usize,
 ) -> Result<Vec<DraftBullet>, AppError> {
     // Build all prompts synchronously before spawning tasks
     let mut prompts: Vec<(usize, String, ContextEntryRow, Option<String>)> =
@@ -645,13 +1196,13 @@ async fn call_llm_with_retry_entries(
 
     for (idx, ranked) in entries.iter().enumerate() {
         let entry = &ranked.entry;
-        let prompt = build_per_entry_prompt(entry, parsed_jd, tone_examples)?;
+        let prompt = build_per_entry_prompt(entry, parsed_jd, tone_examples, fit_report)?;
         let header = build_entry_header_latex(entry);
         prompts.push((idx, prompt, entry.clone(), header));
     }
 
-    // Spawn parallel LLM calls — capped at 4 concurrent to avoid 529 rate limiting
-    let sem = Arc::new(Semaphore::new(4));
+    // Spawn parallel LLM calls — capped at generation_llm_concurrency to avoid 429 rate limiting
+    let sem = Arc::new(Semaphore::new(generation_llm_concurrency));
     let mut join_set: tokio::task::JoinSet<Result<(usize, PerEntryLlmResponse, ContextEntryRow, Option<String>), AppError>> =
         tokio::task::JoinSet::new();
 
@@ -748,74 +1299,160 @@ async fn run_grounding_loop(
     bullets: &[SimulatedBullet],
     entries: &[crate::generation::content_selector::RankedEntry],
     llm: &LlmClient,
+    grounding_llm_concurrency: usize,
+    parsed_jd: &crate::generation::jd_parser::ParsedJD,
 ) -> Result<Vec<(SimulatedBullet, GroundingResult)>, AppError> {
-    let mut pairs: Vec<(SimulatedBullet, GroundingResult)> = Vec::with_capacity(bullets.len());
+    // Build owned (bullet, source_entry) pairs — owned data required for spawning tasks.
+    // Bullets without a source entry get an immediate fallback result.
+    let mut owned_bullets: Vec<SimulatedBullet> = Vec::with_capacity(bullets.len());
+    let mut owned_entries: Vec<Option<ContextEntryRow>> = Vec::with_capacity(bullets.len());
 
     for bullet in bullets {
-        // Find the source entry by entry_id
-        let source_entry: Option<&ContextEntryRow> = entries
+        let source_entry = entries
             .iter()
             .find(|re| re.entry.entry_id == bullet.source_entry_id)
-            .map(|re| &re.entry);
+            .map(|re| re.entry.clone());
+        if source_entry.is_none() {
+            warn!(
+                source_entry_id = %bullet.source_entry_id,
+                "Source entry not found for bullet — using error fallback"
+            );
+        }
+        owned_bullets.push(bullet.clone());
+        owned_entries.push(source_entry);
+    }
 
-        let source_entry = match source_entry {
-            Some(e) => e,
+    // ── Phase A: Score all bullets concurrently ──────────────────────────────
+    let sem = Arc::new(Semaphore::new(grounding_llm_concurrency));
+    let mut join_set: tokio::task::JoinSet<(usize, GroundingResult)> =
+        tokio::task::JoinSet::new();
+
+    for (i, (bullet, entry_opt)) in owned_bullets.iter().zip(owned_entries.iter()).enumerate() {
+        let bullet = bullet.clone();
+        match entry_opt {
             None => {
-                // Missing source entry — this shouldn't happen (LLM retry loop enforces it)
-                // but be defensive: return a fallback result.
-                warn!(
-                    source_entry_id = %bullet.source_entry_id,
-                    "Source entry not found for bullet — using error fallback"
-                );
+                // No source entry — push fallback immediately without spawning.
+                // We'll collect these below alongside scored results.
                 let result = GroundingResult::llm_error_fallback(
                     bullet.text.clone(),
                     bullet.source_entry_id,
                 );
-                pairs.push((bullet.clone(), result));
-                continue;
+                // Use a direct future resolution via spawn to keep indexing uniform.
+                join_set.spawn(async move { (i, result) });
             }
-        };
-
-        // Score the bullet
-        let result = score_bullet(bullet, source_entry, llm).await?;
-
-        if result.verdict != GroundingVerdict::Fail {
-            pairs.push((bullet.clone(), result));
-            continue;
-        }
-
-        // Fail → attempt one rewrite
-        let rejection_reason = result
-            .rejection_reason
-            .as_deref()
-            .unwrap_or("Grounding score below threshold");
-
-        warn!(
-            bullet = %bullet.text.chars().take(60).collect::<String>(),
-            composite = result.score.composite,
-            "Grounding Fail — attempting one rewrite"
-        );
-
-        let rewritten =
-            regenerate_single_bullet(bullet, source_entry, rejection_reason, llm).await?;
-
-        // Re-score the rewritten bullet
-        let rewrite_result = score_bullet(&rewritten, source_entry, llm).await?;
-
-        if rewrite_result.verdict != GroundingVerdict::Fail {
-            pairs.push((rewritten, rewrite_result));
-        } else {
-            // Still failing after rewrite — keep rewritten text, flag for review
-            warn!(
-                bullet = %rewritten.text.chars().take(60).collect::<String>(),
-                composite = rewrite_result.score.composite,
-                "Grounding still Fail after rewrite — keeping with flagged_for_review"
-            );
-            let mut flagged = rewritten;
-            flagged.flagged_for_review = true;
-            pairs.push((flagged, rewrite_result));
+            Some(entry) => {
+                let entry = entry.clone();
+                let llm = llm.clone();
+                let sem = Arc::clone(&sem);
+                let was_adjusted = bullet.was_adjusted;
+                join_set.spawn(async move {
+                    let _permit = sem.acquire().await.expect("semaphore closed");
+                    let result = score_bullet(&bullet, &entry, &llm, was_adjusted)
+                        .await
+                        .unwrap_or_else(|_| {
+                            GroundingResult::llm_error_fallback(
+                                bullet.text.clone(),
+                                bullet.source_entry_id,
+                            )
+                        });
+                    (i, result)
+                });
+            }
         }
     }
+
+    let mut scores: Vec<Option<GroundingResult>> = vec![None; owned_bullets.len()];
+    while let Some(res) = join_set.join_next().await {
+        match res {
+            Ok((i, result)) => scores[i] = Some(result),
+            Err(e) => warn!(error = %e, "Grounding JoinSet task panicked"),
+        }
+    }
+
+    // ── Phase B: Concurrent rewrites for failures ────────────────────────────
+    let failures: Vec<(usize, SimulatedBullet, ContextEntryRow, String)> = scores
+        .iter()
+        .enumerate()
+        .filter_map(|(i, score_opt)| {
+            let score = score_opt.as_ref()?;
+            if score.verdict != GroundingVerdict::Fail {
+                return None;
+            }
+            let entry = owned_entries[i].as_ref()?;
+            let reason = score
+                .rejection_reason
+                .clone()
+                .unwrap_or_else(|| "Grounding score below threshold".to_string());
+            warn!(
+                bullet = %owned_bullets[i].text.chars().take(60).collect::<String>(),
+                composite = score.score.composite,
+                "Grounding Fail — attempting one rewrite"
+            );
+            Some((i, owned_bullets[i].clone(), entry.clone(), reason))
+        })
+        .collect();
+
+    if !failures.is_empty() {
+        let sem = Arc::new(Semaphore::new(grounding_llm_concurrency));
+        let mut rewrite_set: tokio::task::JoinSet<(usize, SimulatedBullet, GroundingResult)> =
+            tokio::task::JoinSet::new();
+
+        for (i, bullet, entry, reason) in failures {
+            let llm = llm.clone();
+            let sem = Arc::clone(&sem);
+            let parsed_jd = parsed_jd.clone();
+            rewrite_set.spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore closed");
+                let rewritten = regenerate_single_bullet(&bullet, &entry, &reason, &parsed_jd, &llm)
+                    .await
+                    .unwrap_or(bullet);
+                let rescore = score_bullet(&rewritten, &entry, &llm, true)
+                    .await
+                    .unwrap_or_else(|_| {
+                        GroundingResult::llm_error_fallback(
+                            rewritten.text.clone(),
+                            rewritten.source_entry_id,
+                        )
+                    });
+                (i, rewritten, rescore)
+            });
+        }
+
+        while let Some(res) = rewrite_set.join_next().await {
+            match res {
+                Ok((i, rewritten, rescore)) => {
+                    if rescore.verdict == GroundingVerdict::Fail {
+                        warn!(
+                            bullet = %rewritten.text.chars().take(60).collect::<String>(),
+                            composite = rescore.score.composite,
+                            "Grounding still Fail after rewrite — keeping with flagged_for_review"
+                        );
+                        owned_bullets[i] = {
+                            let mut flagged = rewritten;
+                            flagged.flagged_for_review = true;
+                            flagged
+                        };
+                    } else {
+                        owned_bullets[i] = rewritten;
+                    }
+                    scores[i] = Some(rescore);
+                }
+                Err(e) => warn!(error = %e, "Grounding rewrite JoinSet task panicked"),
+            }
+        }
+    }
+
+    // ── Phase C: Assemble final pairs in original order ──────────────────────
+    let pairs = owned_bullets
+        .into_iter()
+        .zip(scores.into_iter())
+        .map(|(bullet, score_opt)| {
+            let score = score_opt.unwrap_or_else(|| {
+                GroundingResult::llm_error_fallback(bullet.text.clone(), bullet.source_entry_id)
+            });
+            (bullet, score)
+        })
+        .collect();
 
     Ok(pairs)
 }
@@ -974,13 +1611,113 @@ mod tests {
     }
 
     #[test]
-    fn test_build_entry_header_latex_bad_data_returns_none() {
+    fn test_build_entry_header_latex_empty_data_returns_none() {
         let mut entry = make_experience_entry_row();
-        // Inject malformed data so deserialization fails
-        entry.data = serde_json::json!({"not_a_real_field": true});
+        // Completely empty data — typed deserialization fails, fallback also returns None
+        // because company and role are both empty strings.
+        entry.data = serde_json::json!({});
         let header = build_entry_header_latex(&entry);
-        // Should return None and log a warning, not panic
+        // Should return None (fallback also returns None for empty company+role), not panic
         assert!(header.is_none());
+    }
+
+    #[test]
+    fn test_build_entry_header_fallback_experience_missing_date() {
+        let entry = ContextEntryRow {
+            id: Uuid::new_v4(),
+            entry_id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_type: "experience".to_string(),
+            raw_text: None,
+            data: serde_json::json!({"company": "Acme Corp", "role": "Senior Engineer"}),
+            // date_start is absent — would fail typed deserialization
+            contribution_type: "primary_contributor".to_string(),
+            tags: vec![],
+            recency_score: 0.8,
+            impact_score: 0.8,
+            version: 1,
+            flagged_evergreen: false,
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: chrono::Utc::now(),
+        };
+
+        let result = build_entry_header_latex_fallback(&entry);
+        assert!(
+            result.is_some(),
+            "fallback should return Some for experience with company+role"
+        );
+        let latex = result.unwrap();
+        assert!(latex.contains("Acme Corp"), "fallback must include company name");
+        assert!(
+            latex.contains("Senior Engineer"),
+            "fallback must include role"
+        );
+        assert!(
+            latex.contains('?'),
+            "fallback must use '?' for missing date_start"
+        );
+        assert!(
+            latex.contains("Present"),
+            "fallback must use 'Present' for missing date_end"
+        );
+    }
+
+    #[test]
+    fn test_build_entry_header_fallback_open_source() {
+        let entry = ContextEntryRow {
+            id: Uuid::new_v4(),
+            entry_id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_type: "open_source".to_string(),
+            raw_text: None,
+            data: serde_json::json!({"project_name": "MyLib", "tech_stack": ["Rust", "tokio"]}),
+            contribution_type: "primary_contributor".to_string(),
+            tags: vec![],
+            recency_score: 0.8,
+            impact_score: 0.8,
+            version: 1,
+            flagged_evergreen: false,
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: chrono::Utc::now(),
+        };
+
+        let result = build_entry_header_latex_fallback(&entry);
+        assert!(
+            result.is_some(),
+            "fallback should return Some for open_source with project_name"
+        );
+        let latex = result.unwrap();
+        assert!(latex.contains("MyLib"), "fallback must include project name");
+        assert!(latex.contains("Rust"), "fallback must include tech stack");
+    }
+
+    #[test]
+    fn test_build_entry_header_fallback_unknown_type_returns_none() {
+        let entry = ContextEntryRow {
+            id: Uuid::new_v4(),
+            entry_id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_type: "unknown_custom_type".to_string(),
+            raw_text: None,
+            data: serde_json::json!({"foo": "bar"}),
+            contribution_type: "primary_contributor".to_string(),
+            tags: vec![],
+            recency_score: 0.8,
+            impact_score: 0.8,
+            version: 1,
+            flagged_evergreen: false,
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: chrono::Utc::now(),
+        };
+
+        let result = build_entry_header_latex_fallback(&entry);
+        assert!(
+            result.is_none(),
+            "unknown entry_type should return None from fallback"
+        );
     }
 
     #[test]
@@ -1063,5 +1800,441 @@ mod tests {
         );
         // Bullet remains unchanged
         assert_eq!(bullet.text, "Contributed to distributed caching layer");
+    }
+
+    // ── dedup_bullets ────────────────────────────────────────────────────────
+
+    fn make_draft_bullet(text: &str, entry_id: Uuid) -> DraftBullet {
+        DraftBullet {
+            text: text.to_string(),
+            source_entry_id: entry_id,
+            section: "Experience".to_string(),
+            entry_header_latex: None,
+            line_estimate: 1,
+            jd_keywords_used: vec![],
+        }
+    }
+
+    #[test]
+    fn test_dedup_removes_near_duplicate() {
+        let id = Uuid::new_v4();
+        let b1 = make_draft_bullet("Architected distributed caching layer using Redis and Rust", id);
+        // Slight rewording — high Jaccard overlap
+        let b2 = make_draft_bullet("Architected distributed caching layer using Redis and Rust system", id);
+        let b3 = make_draft_bullet("Reduced p99 latency by 40% via query optimisation", id);
+
+        let result = dedup_bullets(vec![b1, b2, b3]);
+        assert_eq!(result.len(), 2, "near-duplicate should be removed");
+        assert_eq!(result[0].text, "Architected distributed caching layer using Redis and Rust");
+        assert_eq!(result[1].text, "Reduced p99 latency by 40% via query optimisation");
+    }
+
+    #[test]
+    fn test_dedup_keeps_distinct_bullets() {
+        let id = Uuid::new_v4();
+        let b1 = make_draft_bullet("Architected distributed caching layer", id);
+        let b2 = make_draft_bullet("Reduced database query latency by 40%", id);
+        let b3 = make_draft_bullet("Shipped new user onboarding flow", id);
+
+        let result = dedup_bullets(vec![b1, b2, b3]);
+        assert_eq!(result.len(), 3, "distinct bullets should all be kept");
+    }
+
+    #[test]
+    fn test_dedup_skips_empty_text_bullets() {
+        let id = Uuid::new_v4();
+        let skill_header = make_draft_bullet("", id);
+        let b1 = make_draft_bullet("Architected distributed caching layer", id);
+
+        let result = dedup_bullets(vec![skill_header, b1]);
+        // Both kept: empty text is never compared
+        assert_eq!(result.len(), 2);
+    }
+
+    // ── skills_phase ─────────────────────────────────────────────────────────
+
+    fn make_ranked_entry(entry: ContextEntryRow) -> crate::generation::content_selector::RankedEntry {
+        crate::generation::content_selector::RankedEntry {
+            entry,
+            combined_score: 0.8,
+            jd_relevance: 0.7,
+        }
+    }
+
+    fn make_jd_with_keywords(keywords: &[&str]) -> crate::generation::jd_parser::ParsedJD {
+        use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals};
+        ParsedJD {
+            hard_requirements: vec![],
+            soft_signals: vec![],
+            role_signals: RoleSignals {
+                is_startup: false,
+                is_ic_focused: false,
+                is_research: false,
+                seniority: "senior".to_string(),
+            },
+            keyword_inventory: keywords.iter().map(|k| KeywordEntry {
+                keyword: k.to_string(),
+                frequency: 2,
+                position_weight: 0.8,
+                weighted_score: 1.6,
+            }).collect(),
+            detected_tone: JDTone::CollaborativeEnterprise,
+        }
+    }
+
+    fn make_skill_ranked_entry(category: &str, items: &[&str]) -> crate::generation::content_selector::RankedEntry {
+        let entry_id = Uuid::new_v4();
+        let entry = ContextEntryRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_id,
+            version: 1,
+            entry_type: "skill".to_string(),
+            data: serde_json::json!({
+                "category": category,
+                "items": items,
+                "proficiency": null
+            }),
+            raw_text: None,
+            recency_score: 1.0,
+            impact_score: 0.5,
+            tags: items.iter().map(|i| i.to_lowercase()).collect(),
+            flagged_evergreen: true,
+            contribution_type: "sole_author".to_string(),
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: chrono::Utc::now(),
+        };
+        make_ranked_entry(entry)
+    }
+
+    #[test]
+    fn test_skills_phase_filters_to_jd_relevant_items() {
+        let lang_entry = make_skill_ranked_entry("Languages", &["Rust", "Go", "Python", "COBOL"]);
+        let skill_refs = vec![&lang_entry];
+
+        // JD only mentions Rust and Go
+        let parsed_jd = make_jd_with_keywords(&["Rust", "Go"]);
+
+        // No draft bullets (empty context), so source_tech = {}; relevance = JD keywords only
+        let bullets = skills_phase(&[], &skill_refs, &[], &parsed_jd);
+
+        assert_eq!(bullets.len(), 1);
+        let header = bullets[0].entry_header_latex.as_deref().unwrap_or("");
+        assert!(header.contains("Languages"), "should include category");
+        assert!(header.contains("Rust"), "Rust is JD-relevant");
+        assert!(header.contains("Go"), "Go is JD-relevant");
+        assert!(!header.contains("COBOL"), "COBOL is not JD-relevant");
+        assert!(bullets[0].text.is_empty(), "skill bullet text must be empty");
+        assert_eq!(bullets[0].section, "Skills");
+    }
+
+    #[test]
+    fn test_skills_phase_fallback_keeps_all_items_when_no_match() {
+        let lang_entry = make_skill_ranked_entry("Languages", &["COBOL", "Fortran"]);
+        let skill_refs = vec![&lang_entry];
+
+        // JD has no keywords that match the skill items
+        let parsed_jd = make_jd_with_keywords(&["Rust", "Kubernetes"]);
+
+        let bullets = skills_phase(&[], &skill_refs, &[], &parsed_jd);
+
+        // Fallback: no match → keep all items (top 4)
+        assert_eq!(bullets.len(), 1);
+        let header = bullets[0].entry_header_latex.as_deref().unwrap_or("");
+        assert!(header.contains("COBOL"), "fallback: all items kept");
+        assert!(header.contains("Fortran"), "fallback: all items kept");
+    }
+
+    #[test]
+    fn test_skills_phase_empty_when_no_skill_entries() {
+        let parsed_jd = make_jd_with_keywords(&["Rust"]);
+        let bullets = skills_phase(&[], &[], &[], &parsed_jd);
+        assert!(bullets.is_empty(), "no skill entries → empty result");
+    }
+
+    // ── FIX-02 / FIX-03 / FIX-04 ────────────────────────────────────────────
+
+    fn make_fit_report_empty() -> FitReport {
+        FitReport {
+            overall_score: 0,
+            strong_matches: vec![],
+            partial_matches: vec![],
+            gaps: vec![],
+            recommendation: String::new(),
+            scorer_backend: "keyword".to_string(),
+            selected_entry_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn test_build_per_entry_prompt_contains_full_jd_context() {
+        use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals};
+        use crate::generation::tone::get_tone_examples;
+
+        let entry = ContextEntryRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_id: Uuid::new_v4(),
+            version: 1,
+            entry_type: "experience".to_string(),
+            data: serde_json::json!({
+                "company": "Acme",
+                "role": "Engineer",
+                "date_start": "2020-01-01",
+                "date_end": "2022-01-01"
+            }),
+            raw_text: Some("Led backend work".to_string()),
+            recency_score: 0.8,
+            impact_score: 0.8,
+            tags: vec![],
+            flagged_evergreen: false,
+            contribution_type: "primary_contributor".to_string(),
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: chrono::Utc::now(),
+        };
+
+        let parsed_jd = ParsedJD {
+            detected_tone: JDTone::AggressiveStartup,
+            soft_signals: vec!["cross-functional".to_string(), "ownership mindset".to_string()],
+            hard_requirements: (0..10)
+                .map(|i| Requirement {
+                    text: format!("requirement_{}", i),
+                    is_required: true,
+                })
+                .collect(),
+            keyword_inventory: vec![KeywordEntry {
+                keyword: "rust".to_string(),
+                frequency: 5,
+                position_weight: 0.9,
+                weighted_score: 4.5,
+            }],
+            role_signals: RoleSignals {
+                is_startup: true,
+                is_ic_focused: true,
+                is_research: false,
+                seniority: "senior".to_string(),
+            },
+        };
+
+        let tone_examples = get_tone_examples(&JDTone::AggressiveStartup);
+        let fit_report = make_fit_report_empty();
+
+        let prompt = build_per_entry_prompt(&entry, &parsed_jd, &tone_examples, &fit_report).unwrap();
+
+        assert!(prompt.contains("requirement_0"), "prompt must contain first requirement");
+        assert!(prompt.contains("requirement_9"), "prompt must contain 10th requirement");
+        assert!(prompt.contains("cross-functional"), "prompt must contain soft signal");
+        assert!(prompt.contains("rust"), "prompt must contain keyword");
+        assert!(prompt.contains("FULL JD CONTEXT"), "prompt must use new placeholder name");
+    }
+
+    #[test]
+    fn test_entry_data_json_strips_bullets_field() {
+        use crate::generation::jd_parser::{JDTone, ParsedJD, RoleSignals};
+        use crate::generation::tone::get_tone_examples;
+
+        let entry = ContextEntryRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            entry_id: Uuid::new_v4(),
+            version: 1,
+            entry_type: "experience".to_string(),
+            data: serde_json::json!({
+                "company": "Acme",
+                "role": "Engineer",
+                "date_start": "2020-01-01",
+                "bullets": ["pre-written bullet 1", "pre-written bullet 2"]
+            }),
+            raw_text: Some("test".to_string()),
+            recency_score: 0.8,
+            impact_score: 0.8,
+            tags: vec![],
+            flagged_evergreen: false,
+            contribution_type: "primary_contributor".to_string(),
+            quality_score: 1.0,
+            quality_flags: vec![],
+            created_at: chrono::Utc::now(),
+        };
+
+        let parsed_jd = ParsedJD {
+            detected_tone: JDTone::AggressiveStartup,
+            soft_signals: vec![],
+            hard_requirements: vec![],
+            keyword_inventory: vec![],
+            role_signals: RoleSignals {
+                is_startup: false,
+                is_ic_focused: false,
+                is_research: false,
+                seniority: "senior".to_string(),
+            },
+        };
+        let tone_examples = get_tone_examples(&JDTone::AggressiveStartup);
+        let fit_report = make_fit_report_empty();
+
+        let prompt = build_per_entry_prompt(&entry, &parsed_jd, &tone_examples, &fit_report).unwrap();
+
+        assert!(!prompt.contains("pre-written bullet"), "prompt must not contain pre-written bullets");
+        // The entry_data section must not include the bullets array values.
+        // Note: "bullets" appears in the prompt template schema example, but the raw
+        // bullet content ("pre-written bullet 1", etc.) must not appear.
+        assert!(!prompt.contains("pre-written bullet 1"), "first pre-written bullet must be stripped");
+        assert!(!prompt.contains("pre-written bullet 2"), "second pre-written bullet must be stripped");
+    }
+
+    #[test]
+    fn test_entry_fit_context_selected_entry_shows_requirements() {
+        use crate::generation::fit_scoring::{FitMatch, Gap};
+
+        let entry_id = Uuid::new_v4();
+
+        // context_evidence is LLM free-text, NOT a UUID — selection gate uses selected_entry_ids
+        let fit_report = FitReport {
+            overall_score: 85,
+            strong_matches: vec![FitMatch {
+                dimension: "Rust".to_string(),
+                context_evidence: "5 years Rust at Acme".to_string(), // free-text, not UUID
+                jd_requirement: "5+ years Rust experience".to_string(),
+                strength: 0.9,
+            }],
+            partial_matches: vec![],
+            gaps: vec![],
+            recommendation: String::new(),
+            scorer_backend: "llm".to_string(),
+            selected_entry_ids: vec![entry_id], // entry IS selected
+        };
+
+        let result = build_entry_fit_context(entry_id, &fit_report);
+        assert!(result.contains("5+ years Rust experience"), "selected entry must see strong match requirements");
+        assert!(result.contains("Strong JD matches"), "must use 'Strong JD matches' label");
+    }
+
+    #[test]
+    fn test_entry_fit_context_not_selected_returns_directive() {
+        use crate::generation::fit_scoring::{FitMatch, Gap};
+
+        let entry_id = Uuid::new_v4();
+        let other_id = Uuid::new_v4(); // different entry was selected, not this one
+
+        let fit_report = FitReport {
+            overall_score: 85,
+            strong_matches: vec![FitMatch {
+                dimension: "Rust".to_string(),
+                context_evidence: "5 years Rust at Acme".to_string(),
+                jd_requirement: "5+ years Rust experience".to_string(),
+                strength: 0.9,
+            }],
+            partial_matches: vec![],
+            gaps: vec![],
+            recommendation: String::new(),
+            scorer_backend: "llm".to_string(),
+            selected_entry_ids: vec![other_id], // entry_id is NOT in this list
+        };
+
+        let result = build_entry_fit_context(entry_id, &fit_report);
+        // Should return the "not selected" directive so LLM minimises output
+        assert!(result.contains("NOT selected"), "non-selected entry must get the 'NOT selected' directive");
+    }
+
+    #[test]
+    fn test_entry_fit_context_no_scorer_selection_shows_all_matches() {
+        // When selected_entry_ids is empty (scorer didn't populate it or errored),
+        // fall through and show all strong/partial matches without filtering.
+        let entry_id = Uuid::new_v4();
+        let fit_report = make_fit_report_empty(); // selected_entry_ids = []
+
+        let result = build_entry_fit_context(entry_id, &fit_report);
+        assert!(result.contains("none"), "when no matches in empty report, should say 'none'");
+        assert!(!result.contains("NOT selected"), "empty selected_entry_ids must not trigger 'NOT selected' directive");
+    }
+
+    // ── remove_dangling_headers ──────────────────────────────────────────────
+
+    #[test]
+    fn test_remove_dangling_headers_removes_zero_bullet_entry() {
+        let entry_a = Uuid::new_v4();
+        let bullets = vec![
+            DraftBullet {
+                text: String::new(), // header-only
+                source_entry_id: entry_a,
+                entry_header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
+                section: "experience".to_string(),
+                line_estimate: 1,
+                jd_keywords_used: vec![],
+            },
+        ];
+        let result = remove_dangling_headers(bullets);
+        assert!(result.is_empty(), "header-only entry with no content bullets should be removed");
+    }
+
+    #[test]
+    fn test_remove_dangling_headers_keeps_headers_with_siblings() {
+        let entry_a = Uuid::new_v4();
+        let bullets = vec![
+            DraftBullet {
+                text: String::new(), // header
+                source_entry_id: entry_a,
+                entry_header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
+                section: "experience".to_string(),
+                line_estimate: 1,
+                jd_keywords_used: vec![],
+            },
+            DraftBullet {
+                text: "Built distributed system".to_string(),
+                source_entry_id: entry_a,
+                entry_header_latex: None,
+                section: "experience".to_string(),
+                line_estimate: 1,
+                jd_keywords_used: vec![],
+            },
+            DraftBullet {
+                text: "Reduced latency by 40%".to_string(),
+                source_entry_id: entry_a,
+                entry_header_latex: None,
+                section: "experience".to_string(),
+                line_estimate: 1,
+                jd_keywords_used: vec![],
+            },
+        ];
+        let result = remove_dangling_headers(bullets);
+        assert_eq!(result.len(), 3, "all 3 bullets (header + 2 content) should be kept");
+    }
+
+    #[test]
+    fn test_remove_dangling_headers_mixed() {
+        let entry_a = Uuid::new_v4();
+        let entry_b = Uuid::new_v4();
+        let bullets = vec![
+            DraftBullet {
+                text: String::new(), // header for A
+                source_entry_id: entry_a,
+                entry_header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
+                section: "experience".to_string(),
+                line_estimate: 1,
+                jd_keywords_used: vec![],
+            },
+            DraftBullet {
+                text: "Built API".to_string(),
+                source_entry_id: entry_a,
+                entry_header_latex: None,
+                section: "experience".to_string(),
+                line_estimate: 1,
+                jd_keywords_used: vec![],
+            },
+            DraftBullet {
+                text: String::new(), // header for B — no content bullets
+                source_entry_id: entry_b,
+                entry_header_latex: Some(r"\job{Irrelevant Co}{Intern}{2019 -- 2019}".to_string()),
+                section: "experience".to_string(),
+                line_estimate: 1,
+                jd_keywords_used: vec![],
+            },
+        ];
+        let result = remove_dangling_headers(bullets);
+        assert_eq!(result.len(), 2, "entry_a header + content kept; entry_b header removed");
+        assert!(result.iter().any(|b| b.source_entry_id == entry_a && b.text.is_empty()), "entry_a header kept");
+        assert!(result.iter().any(|b| b.source_entry_id == entry_a && !b.text.is_empty()), "entry_a content kept");
+        assert!(!result.iter().any(|b| b.source_entry_id == entry_b), "entry_b header removed");
     }
 }

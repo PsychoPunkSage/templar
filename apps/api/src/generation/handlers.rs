@@ -57,6 +57,9 @@ pub struct GenerateResponse {
     /// `was_adjusted`, and `flagged_for_review` populated by the simulation loop.
     pub bullets: Vec<SimulatedBullet>,
     pub status: String,
+    /// True if the page fill pass could not resolve whitespace/overflow within MAX_FILL_PASSES.
+    /// Frontend should surface a layout warning banner when this is true.
+    pub layout_flagged: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -141,8 +144,8 @@ pub async fn handle_fit_score(
     }
 
     // Step 4: Cache miss or force_refresh — run LlmFitScorer directly
-    // We bypass `state.fit_scorer` (which may be KeywordFitScorer for generation)
-    // and always use the LLM scorer for the explicit fit-analysis step.
+    // We bypass `state.fit_scorer` here and use a fresh LlmFitScorer directly,
+    // invoking score_full() which passes the complete untruncated raw_text to Claude.
     let scorer = LlmFitScorer(state.llm.clone());
     // DIAGNOSTIC: using score_full() — passes complete raw_text + raw JD to Claude.
     // Switch back to scorer.score() once score variation is confirmed working.
@@ -192,6 +195,7 @@ pub async fn handle_generate(
         Some(&state.redis),
         true, // grounding_enabled: Phase 5 — real grounding scores
         request,
+        &state.config,
     )
     .await?;
 
@@ -200,6 +204,7 @@ pub async fn handle_generate(
         fit_report: response.fit_report,
         bullets: response.bullets,
         status: response.status,
+        layout_flagged: response.layout_flagged,
     }))
 }
 
@@ -280,7 +285,7 @@ pub async fn handle_get_resume(
         .ok_or_else(|| AppError::NotFound(format!("Resume {resume_id} not found")))?;
 
     let bullets = sqlx::query_as::<_, ResumeBulletRow>(
-        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, id",
+        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, order_idx, id",
     )
     .bind(resume_id)
     .fetch_all(&state.db)
