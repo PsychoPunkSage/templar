@@ -23,6 +23,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::layout::font_metrics::{PageConfig, TemplateLayoutConfig};
 use crate::render::escape::escape_latex;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -83,6 +84,17 @@ pub struct TemplateMetadata {
     /// Optional itemize spacing overrides. Defaults match legacy hardcoded values.
     #[serde(default)]
     pub section_formatting: Option<SectionFormatting>,
+    /// Layout physics for this template (font, size, margins, paper).
+    /// Defaults to Inter 11pt, Letter paper, 1" margins when not specified.
+    #[serde(default)]
+    pub layout: TemplateLayoutConfig,
+}
+
+impl TemplateMetadata {
+    /// Derive a PageConfig from this template's declared layout physics.
+    pub fn page_config(&self) -> PageConfig {
+        PageConfig::from_layout(&self.layout)
+    }
 }
 
 /// A user's contact/profile information, used to fill header placeholders.
@@ -433,6 +445,11 @@ fn build_sections_latex(sections: &[SampleSection], fmt: &SectionFormatting) -> 
         out.push_str(&format!("\\section*{{{}}}\n", escape_latex(&section.name)));
 
         for sub in &section.sub_entries {
+            // Skip sub-entries with a header but no bullets — they render as floating labels.
+            if sub.header_latex.is_some() && sub.bullets.is_empty() {
+                continue;
+            }
+
             // Emit header verbatim — it uses template macros, already valid LaTeX
             if let Some(h) = &sub.header_latex {
                 out.push_str(h);
@@ -760,6 +777,7 @@ mod tests {
                 engine: "pdflatex".to_string(),
                 thumbnail_s3_key: "thumbnails/test.png".to_string(),
                 section_formatting: None,
+                layout: TemplateLayoutConfig::default(),
             },
             latex_source: "Name: {{FULL_NAME}}\n{{CONTACT_LINE}}\n{{SECTIONS}}".to_string(),
             sample_data: SampleData {
@@ -788,6 +806,25 @@ mod tests {
             !result.contains("{{SECTIONS}}"),
             "placeholder must be replaced"
         );
+    }
+
+    #[test]
+    fn test_build_sections_latex_skips_header_only_sub_entries() {
+        // A sub-entry with a header but no bullets should be skipped entirely —
+        // rendering it would produce a floating bold label with no content below it.
+        let section = SampleSection {
+            name: "Experience".to_string(),
+            sub_entries: vec![
+                SampleSubEntry {
+                    header_latex: Some(r"\job{Acme}{Eng}{2020 -- 2022}".to_string()),
+                    bullets: vec![], // no bullets — should be skipped
+                },
+            ],
+        };
+        let output = build_sections_latex(&[section], &SectionFormatting::default());
+        // The header should NOT appear in the output
+        assert!(!output.contains("Acme"), "header-only sub-entry must be skipped in output");
+        assert!(!output.contains(r"\job"), "\\job macro must not appear for empty sub-entry");
     }
 
     #[test]

@@ -238,7 +238,7 @@ async fn process_render_job(
     let result: Result<(), RenderError> = async {
         // Step 3: Fetch render data from DB (resume row + bullets grouped by section)
         info!(job_id = %job_id, resume_id = %resume_id, "Render job: fetching render data from DB");
-        let (params, resume_template_id) = fetch_render_data(db, resume_id).await?;
+        let (params, resume_template_id) = fetch_render_data(db, resume_id, template_cache).await?;
         info!(
             job_id = %job_id,
             resume_id = %resume_id,
@@ -438,11 +438,12 @@ async fn process_render_job(
 /// Returns `(RenderParams, Option<template_id>)`. The template_id is passed
 /// to `build_latex_for_job` to decide which LaTeX code path to use.
 ///
-/// Uses default page config (Inter 11pt, 1" margins) — per-user font/margins
-/// can be wired later without changing this interface.
+/// Derives PageConfig from the template's declared layout physics when a template
+/// is available; falls back to default Inter 11pt, 1" margins otherwise.
 async fn fetch_render_data(
     db: &PgPool,
     resume_id: Uuid,
+    template_cache: &Arc<TemplateCache>,
 ) -> Result<(RenderParams, Option<String>), RenderError> {
     // Fetch resume row — includes template_id (added in migration 004)
     let resume = sqlx::query_as::<_, ResumeRow>("SELECT * FROM resumes WHERE id = $1")
@@ -453,10 +454,11 @@ async fn fetch_render_data(
 
     let resume_template_id = resume.template_id.clone();
 
-    // Fetch bullets ordered: section ASC, source_entry_id ASC, id ASC
-    // This groups same-entry bullets together within each section.
+    // Fetch bullets ordered: section ASC, order_idx ASC, id ASC
+    // order_idx preserves the relevance-ranked insertion order from the generation pipeline.
+    // Replaces the previous ORDER BY source_entry_id which used random UUIDs.
     let bullets = sqlx::query_as::<_, ResumeBulletRow>(
-        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, source_entry_id, id",
+        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, order_idx, id",
     )
     .bind(resume_id)
     .fetch_all(db)
@@ -520,8 +522,16 @@ async fn fetch_render_data(
         })
         .collect();
 
-    // Use default page config — per-user font/margins can be wired in later
-    let page_config = default_page_config(FontFamily::Inter);
+    // Derive page config from the template's declared layout physics when available;
+    // fall back to default Inter 11pt, 1" margins for resumes without a template.
+    let page_config = resume_template_id.as_deref()
+        .and_then(|id| {
+            template_cache.try_read().ok()
+                .and_then(|cache| cache.get(id).map(|t| t.metadata.page_config()))
+        })
+        .unwrap_or_else(|| crate::layout::font_metrics::default_page_config(
+            crate::layout::font_metrics::FontFamily::Inter
+        ));
 
     Ok((
         RenderParams {
@@ -650,6 +660,7 @@ fn build_minimal_pdflatex_document(params: &RenderParams) -> String {
         r#"\documentclass[letterpaper,11pt]{article}
 \usepackage{lmodern}
 \usepackage[T1]{fontenc}
+\usepackage{textcomp}
 \usepackage[utf8]{inputenc}
 \usepackage[margin=0.75in,top=0.6in,bottom=0.6in]{geometry}
 \usepackage{titlesec}
@@ -847,7 +858,9 @@ mod tests {
             .expect("DB pool");
 
         let fake_id = Uuid::new_v4();
-        let result = fetch_render_data(&pool, fake_id).await;
+        // Empty template cache — no templates needed for this not-found test
+        let empty_cache = Arc::new(TemplateCache::new(std::collections::HashMap::new()));
+        let result = fetch_render_data(&pool, fake_id, &empty_cache).await;
         assert!(
             matches!(result, Err(RenderError::ResumeNotFound(_))),
             "should return ResumeNotFound for unknown resume, got: {:?}",
