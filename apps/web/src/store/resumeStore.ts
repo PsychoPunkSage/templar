@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import { api } from "@/lib/api";
+import { useAuthStore } from "@/store/authStore";
 import type {
   SimulatedBullet,
   FitReport,
@@ -57,10 +58,15 @@ function bulletRowsToEntryGroups(rows: ResumeBulletRow[]): EntryGroup[] {
 }
 
 /**
- * Hardcoded user ID for MVP development.
- * Auth integration (Clerk) will replace this in Phase 9.
+ * Fallback user ID for dev/test environments where Clerk is not configured.
+ * In production, authStore.internalUserId is always used instead.
  */
 export const MVP_USER_ID = "00000000-0000-0000-0000-000000000001";
+
+/** Returns the authenticated user's internal UUID, falling back to MVP seed UUID. */
+function getUserId(): string {
+  return useAuthStore.getState().internalUserId ?? MVP_USER_ID;
+}
 
 interface ResumeStore {
   // ─── State ─────────────────────────────────────────────────────────────────
@@ -193,7 +199,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
   autoLoadCachedFitScore: async (jdText) => {
     if (!jdText.trim()) return;
     try {
-      const resp = await api.getCachedFitScore(MVP_USER_ID, jdText);
+      const resp = await api.getCachedFitScore(getUserId(), jdText);
       if (!resp) return; // cache miss — silent no-op
       set({
         fitReport: resp.fit_report,
@@ -220,7 +226,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
 
     set({ fitScoreLoading: true, error: null });
     try {
-      const resp = await api.analyzeFit(MVP_USER_ID, jdText, forceRefresh);
+      const resp = await api.analyzeFit(getUserId(), jdText, forceRefresh);
       set({
         fitReport: resp.fit_report,
         fitScoreCacheHit: resp.cache_hit,
@@ -260,7 +266,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
 
     try {
       // Step 1: Enqueue — returns immediately with { job_id, status: "queued" }
-      const { job_id } = await api.generateResume(MVP_USER_ID, jdText);
+      const { job_id } = await api.generateResume(getUserId(), jdText);
       console.log("[store] generation job enqueued", { job_id });
       set({ generationJobId: job_id });
 

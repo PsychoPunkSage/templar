@@ -3,7 +3,12 @@
 import { create } from "zustand";
 import { api } from "@/lib/api";
 import { MVP_USER_ID } from "@/store/resumeStore";
+import { useAuthStore } from "@/store/authStore";
 import type { UserProfileResponse, UpsertProfileRequest } from "@templar/types";
+
+function getUserId(): string {
+  return useAuthStore.getState().internalUserId ?? MVP_USER_ID;
+}
 
 interface ProfileStore {
   profile: UserProfileResponse | null;
@@ -26,7 +31,7 @@ export const useProfileStore = create<ProfileStore>((set) => ({
   loadProfile: async () => {
     set({ isLoading: true, error: null });
     try {
-      const profile = await api.getProfile(MVP_USER_ID);
+      const profile = await api.getProfile(getUserId());
       set({ profile });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : "Failed to load profile" });
@@ -38,7 +43,7 @@ export const useProfileStore = create<ProfileStore>((set) => ({
   saveProfile: async (data) => {
     set({ isSaving: true, error: null });
     try {
-      const updated = await api.updateProfile({ user_id: MVP_USER_ID, ...data });
+      const updated = await api.updateProfile({ user_id: getUserId(), ...data });
       set({ profile: updated });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : "Failed to save profile" });

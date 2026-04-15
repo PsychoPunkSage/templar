@@ -5,9 +5,10 @@ import { Download, UploadCloud } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useAuthStore } from '@/store/authStore'
+import { MVP_USER_ID } from '@/store/resumeStore'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
-const MVP_USER_ID = '00000000-0000-0000-0000-000000000001'
 
 // ─── Context template ──────────────────────────────────────────────────────
 
@@ -160,6 +161,7 @@ function StatusBadge({ status }: { status: UploadEntry['uploadStatus'] }) {
 // ─── Main component ────────────────────────────────────────────────────────
 
 export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => void }) {
+  const userId = useAuthStore((s) => s.internalUserId) ?? MVP_USER_ID
   const [activeTab, setActiveTab] = useState<'text' | 'file'>('text')
 
   // Text tab state
@@ -251,7 +253,7 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
       const res = await fetch(`${API_BASE}/api/v1/context/ingest/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: MVP_USER_ID, raw_text: rawText }),
+        body: JSON.stringify({ user_id: userId, raw_text: rawText }),
       })
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}))
@@ -304,7 +306,7 @@ export function ContextPanel({ onContextUpdated }: { onContextUpdated?: () => vo
       )
       try {
         const fd = new FormData()
-        fd.append('user_id', MVP_USER_ID)
+        fd.append('user_id', userId)
         fd.append('file', entries[i].file)
         const res = await fetch(`${API_BASE}/api/v1/context/ingest/upload`, {
           method: 'POST',

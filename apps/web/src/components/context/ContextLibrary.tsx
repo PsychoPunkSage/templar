@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ContextEntryRow, CompletenessReport } from '@/lib/api'
+import { useAuthStore } from '@/store/authStore'
+import { MVP_USER_ID } from '@/store/resumeStore'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -18,10 +20,6 @@ import {
 } from '@/components/ui/alert-dialog'
 import ContextHealthBar from './ContextHealthBar'
 import ContextEntryCard from './ContextEntryCard'
-
-// ─── Constants ───────────────────────────────────────────────────────────────
-
-const MVP_USER_ID = '00000000-0000-0000-0000-000000000001'
 
 /** Canonical display order for entry_type groups. */
 const SECTION_ORDER = [
@@ -134,6 +132,7 @@ interface ContextLibraryProps {
 }
 
 export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
+  const userId = useAuthStore((s) => s.internalUserId) ?? MVP_USER_ID
   const [entries, setEntries] = useState<ContextEntryRow[]>([])
   const [completeness, setCompleteness] = useState<CompletenessReport | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -147,7 +146,7 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
     setIsLoading(true)
     setError(null)
     try {
-      const resp = await api.getContextEntries(MVP_USER_ID)
+      const resp = await api.getContextEntries(userId)
       setEntries(dedupEntries(resp.entries))
       setCompleteness(resp.completeness)
     } catch (e) {
@@ -157,10 +156,10 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
     }
   }, [])
 
-  // Fetch on mount and whenever refreshKey changes.
+  // Fetch on mount and whenever refreshKey or userId changes.
   useEffect(() => {
     fetchEntries()
-  }, [fetchEntries, refreshKey])
+  }, [fetchEntries, refreshKey, userId])
 
   // Reset filter if there are no entries of the selected type after refresh.
   useEffect(() => {
@@ -174,7 +173,7 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
     setClearSuccess(null)
     setError(null)
     try {
-      const result = await api.clearAllContext(MVP_USER_ID)
+      const result = await api.clearAllContext(userId)
       setEntries([])
       setClearSuccess(`Deleted ${result.deleted_count} entries.`)
       fetchEntries()

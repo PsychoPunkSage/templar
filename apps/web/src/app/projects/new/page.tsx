@@ -13,8 +13,8 @@ import { api } from "@/lib/api";
 import { TemplateThumbnailPdf } from "@/components/pdf/TemplateThumbnailPdf";
 import type { TemplateSummary } from "@templar/types";
 import { Eye, X, Check } from "lucide-react";
-
-const MVP_USER_ID = "00000000-0000-0000-0000-000000000001";
+import { useAuthStore } from "@/store/authStore";
+import { MVP_USER_ID } from "@/store/resumeStore";
 
 function TemplatePickerCard({
   template,
@@ -158,6 +158,7 @@ function TemplatePreviewModal({
 
 export default function NewProjectPage() {
   const router = useRouter();
+  const userId = useAuthStore((s) => s.internalUserId) ?? MVP_USER_ID;
   const { loadTemplates, templates, isLoadingTemplates } = useProjectStore();
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [previewTemplate, setPreviewTemplate] = useState<TemplateSummary | null>(null);
@@ -184,7 +185,7 @@ export default function NewProjectPage() {
 
     try {
       const { createProject } = useProjectStore.getState();
-      const project = await createProject(MVP_USER_ID, projectName.trim(), selectedTemplateId);
+      const project = await createProject(userId, projectName.trim(), selectedTemplateId);
       // Redirect directly to the editor for this project
       router.push(`/editor/${project.id}`);
     } catch (e) {

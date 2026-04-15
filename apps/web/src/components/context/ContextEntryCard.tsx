@@ -17,6 +17,8 @@ import {
 } from '@/components/ui/alert-dialog'
 import { api } from '@/lib/api'
 import type { ContextEntryRow } from '@/lib/api'
+import { useAuthStore } from '@/store/authStore'
+import { MVP_USER_ID } from '@/store/resumeStore'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -33,10 +35,6 @@ function normalizeBullets(raw: unknown[]): BulletItem[] {
     return { text: String(b) }
   })
 }
-
-// ─── Constants ───────────────────────────────────────────────────────────────
-
-const MVP_USER_ID = '00000000-0000-0000-0000-000000000001'
 
 /** Max tags shown in collapsed view before truncating. */
 const MAX_COLLAPSED_TAGS = 4
@@ -409,6 +407,7 @@ export default function ContextEntryCard({
   onRefresh,
   onDelete,
 }: ContextEntryCardProps) {
+  const userId = useAuthStore((s) => s.internalUserId) ?? MVP_USER_ID
   const [evergreen, setEvergreen] = useState(entry.flagged_evergreen)
   const [evergreenLoading, setEvergreenLoading] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -438,7 +437,7 @@ export default function ContextEntryCard({
     setEvergreen(newValue) // optimistic
     setEvergreenLoading(true)
     try {
-      await api.toggleEvergreen(entry.entry_id, MVP_USER_ID, newValue)
+      await api.toggleEvergreen(entry.entry_id, userId, newValue)
     } catch {
       setEvergreen(!newValue) // rollback
     } finally {
@@ -455,7 +454,7 @@ export default function ContextEntryCard({
   async function handleDelete() {
     setIsDeleting(true)
     try {
-      await api.deleteContextEntry(entry.entry_id, MVP_USER_ID)
+      await api.deleteContextEntry(entry.entry_id, userId)
       onDelete?.(entry.entry_id)
     } catch {
       // Fallback: refresh list on error so stale card doesn't persist
@@ -624,7 +623,7 @@ export default function ContextEntryCard({
                         value={fieldValue}
                         fieldKey={key}
                         entryId={entry.entry_id}
-                        userId={MVP_USER_ID}
+                        userId={userId}
                         allowPresent={key === 'date_end'}
                         onSave={handleFieldSave}
                       />
@@ -634,7 +633,7 @@ export default function ContextEntryCard({
                         value={fieldValue}
                         fieldKey={key}
                         entryId={entry.entry_id}
-                        userId={MVP_USER_ID}
+                        userId={userId}
                         onSave={handleFieldSave}
                       />
                     )}

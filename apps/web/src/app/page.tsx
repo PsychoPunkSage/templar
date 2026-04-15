@@ -10,9 +10,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 import { useProjectStore } from "@/store/projectStore";
-
-// Hardcoded MVP user — replaced by Clerk auth in Phase 9
-const MVP_USER_ID = "00000000-0000-0000-0000-000000000001";
+import { useAuthStore } from "@/store/authStore";
+import { MVP_USER_ID } from "@/store/resumeStore";
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", {
@@ -47,11 +46,12 @@ function ProjectSkeleton() {
 
 export default function HomePage() {
   const router = useRouter();
+  const userId = useAuthStore((s) => s.internalUserId) ?? MVP_USER_ID;
   const { projects, isLoadingProjects, loadProjects, deleteProject } = useProjectStore();
 
   useEffect(() => {
-    loadProjects(MVP_USER_ID);
-  }, [loadProjects]);
+    loadProjects(userId);
+  }, [loadProjects, userId]);
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-10">
