@@ -5,6 +5,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { UserButton } from "@clerk/nextjs";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 function NavLink({
@@ -52,7 +53,10 @@ export function Header() {
       </div>
 
       {/* Right side controls */}
-      <ThemeToggle />
+      <div className="flex items-center gap-3">
+        <ThemeToggle />
+        <UserButton />
+      </div>
     </header>
   );
 }

@@ -37,9 +37,25 @@ export type {
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
+// ── Auth token injection ───────────────────────────────────────────────────
+// AuthSync calls setTokenGetter() once on mount with Clerk's getToken function.
+// Every apiFetch call then asks for a fresh token — Clerk caches internally and
+// only refreshes when the token is near expiry, so this is cheap.
+
+let _tokenGetter: (() => Promise<string | null>) | null = null;
+
+export function setTokenGetter(fn: () => Promise<string | null>): void {
+  _tokenGetter = fn;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = _tokenGetter ? await _tokenGetter() : null;
+  const authHeader: Record<string, string> = token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader },
     ...init,
   });
   if (!res.ok) {
@@ -72,13 +88,15 @@ export const api = {
    * Callers should treat null as a silent no-op (no error surfaced to the user).
    */
   getCachedFitScore: async (userId: string, jdText: string): Promise<CachedFitScoreResponse | null> => {
-    const res = await fetch(`${API_BASE}/api/v1/resumes/fit-score/cached`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: userId, jd_text: jdText }),
-    });
-    if (!res.ok) return null; // 404 = cache miss; any other error = silently treated as miss
-    return res.json() as Promise<CachedFitScoreResponse>;
+    try {
+      return await apiFetch<CachedFitScoreResponse>("/api/v1/resumes/fit-score/cached", {
+        method: "POST",
+        body: JSON.stringify({ user_id: userId, jd_text: jdText }),
+      });
+    } catch {
+      // 404 = cache miss; any other error = silently treated as miss
+      return null;
+    }
   },
 
   /**
@@ -323,6 +341,16 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(req),
     }),
+
+  /**
+   * GET /api/v1/auth/me
+   * Resolves the caller's internal UUID from the Clerk JWT.
+   * On success returns { user_id: string } (UUID).
+   * If CLERK_JWKS_URL is not configured on the server, returns the seed MVP UUID
+   * so dev/test environments work without Clerk credentials.
+   */
+  authMe: () =>
+    apiFetch<{ user_id: string }>("/api/v1/auth/me"),
 };
 
 export type { UserProfileResponse, UpsertProfileRequest, ProfileLinkData };
