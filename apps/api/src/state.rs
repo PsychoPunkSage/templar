@@ -7,6 +7,7 @@ use bytes::Bytes;
 use redis::Client as RedisClient;
 use sqlx::PgPool;
 
+use crate::auth::JwksCache;
 use crate::config::Config;
 use crate::generation::fit_scoring::FitScorer;
 use crate::layout::PageConfig;
@@ -54,4 +55,10 @@ pub struct AppState {
     /// Read from `TEMPLATES_DIR` env (default: `./templates`).
     /// Used by handle_template_render_pdf to locate pre-compiled preview.pdf files.
     pub templates_dir: PathBuf,
+
+    // ── Auth (Phase 9) ────────────────────────────────────────────────────────
+    /// In-memory cache of Clerk JWKS keys (kid → DecodingKey).
+    /// Populated at startup from CLERK_JWKS_URL; refreshed on cache miss.
+    /// Empty when CLERK_JWKS_URL is not configured (dev/test mode).
+    pub jwks_cache: JwksCache,
 }

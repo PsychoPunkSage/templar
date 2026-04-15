@@ -1,3 +1,4 @@
+mod auth;
 mod config;
 mod context;
 mod db;
@@ -25,6 +26,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 use std::sync::Arc;
 
+use crate::auth::{fetch_jwks, JwksCache};
 use crate::config::Config;
 use crate::context::worker::spawn_context_ingest_worker;
 use crate::db::create_pool;
@@ -76,6 +78,17 @@ async fn main() -> Result<()> {
         Arc::new(LlmFitScorer(llm.clone()))
     };
 
+    // Initialize Clerk JWKS cache (Phase 9: optional auth)
+    let jwks_cache = JwksCache::new();
+    if let Some(url) = &config.clerk_jwks_url {
+        let keys = fetch_jwks(url).await;
+        let mut guard = jwks_cache.0.write().await;
+        guard.extend(keys);
+        info!("Clerk JWKS loaded: {} key(s)", guard.len());
+    } else {
+        info!("CLERK_JWKS_URL not set — auth disabled (dev/test mode)");
+    }
+
     // Initialize layout page config (Phase 3: Inter 11pt on US letter, 1" margins)
     let page_config = default_page_config(FontFamily::Inter);
     info!(
@@ -114,6 +127,7 @@ async fn main() -> Result<()> {
             std::collections::HashMap::new(),
         )),
         templates_dir: templates_dir.clone(),
+        jwks_cache,
     };
 
     // Check pdflatex binary is available on PATH (fail fast at startup)

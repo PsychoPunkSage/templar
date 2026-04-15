@@ -123,6 +123,14 @@ pub struct Config {
     /// Estimated token budget per Phase-B bullet-extraction chunk.
     /// Env: BULLET_TOKEN_BUDGET  |  Default: 1200
     pub bullet_token_budget: usize,
+
+    // ── Auth (optional) ──────────────────────────────────────────────────────
+    /// Clerk JWKS URL for JWT verification.
+    /// Example: https://<instance>.clerk.accounts.dev/.well-known/jwks.json
+    /// If not set, auth is disabled — handlers fall back to the seed MVP user.
+    /// This allows the existing test suite to run without Clerk credentials.
+    /// Env: CLERK_JWKS_URL
+    pub clerk_jwks_url: Option<String>,
 }
 
 impl Config {
@@ -197,6 +205,9 @@ impl Config {
                 toml.ingestion.bullet_token_budget,
                 1200,
             ),
+
+            // Auth (optional)
+            clerk_jwks_url: std::env::var("CLERK_JWKS_URL").ok().filter(|s| !s.is_empty()),
         })
     }
 }

@@ -6,6 +6,7 @@ use axum::{
     Router,
 };
 
+use crate::auth;
 use crate::context::handlers as ctx;
 use crate::generation::handlers as gen;
 use crate::grounding::handlers as grounding;
@@ -18,6 +19,8 @@ use crate::templates::handlers as templates;
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health::health_handler))
+        // ── Auth API (Phase 9) ─────────────────────────────────────────────
+        .route("/api/v1/auth/me", get(auth::handle_auth_me))
         // ── Context API (Phase 1) ──────────────────────────────────────────
         .route(
             "/api/v1/context",
