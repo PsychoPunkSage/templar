@@ -333,6 +333,36 @@ export const api = {
       method: "DELETE",
     }),
 
+  // ── Inline bullet refinement ───────────────────────────────────────────────
+
+  /**
+   * POST /api/v1/resumes/:resumeId/bullets/refine
+   * Refines a single bullet in-place using the user's instruction.
+   * Context is scoped to the bullet's source entry — not the full user context.
+   * On was_rejected=true: caller should revert to original_text (grounding failed).
+   */
+  refineBullet: (
+    resumeId: string,
+    payload: {
+      bullet_text: string;
+      source_entry_id: string;
+      section: string;
+      instruction: string;
+    }
+  ) =>
+    apiFetch<{
+      original_text: string;
+      refined_text: string;
+      verified_line_count: number;
+      grounding_score: number;
+      verdict: string;
+      was_rejected: boolean;
+      rejection_reason: string | null;
+    }>(`/api/v1/resumes/${resumeId}/bullets/refine`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   getProfile: (userId: string) =>
     apiFetch<UserProfileResponse>(`/api/v1/profile?user_id=${userId}`),
 
