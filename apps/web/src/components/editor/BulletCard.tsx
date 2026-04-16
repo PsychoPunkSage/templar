@@ -15,9 +15,27 @@ interface BulletCardProps {
 type VerdictKey = "pass" | "flag_for_review" | "fail";
 
 const VERDICT_CONFIG = {
-  pass:           { label: "Grounded",   variant: "default"     as const, borderClass: "border-l-green-500/60" },
-  flag_for_review:{ label: "Review",     variant: "secondary"   as const, borderClass: "border-l-amber-500"    },
-  fail:           { label: "Ungrounded", variant: "destructive" as const, borderClass: "border-l-destructive"  },
+  pass: {
+    label: "Grounded",
+    variant: "outline" as const,
+    borderClass: "border-l-green-500/60",
+    badgeClass:  "border-green-500/60 text-green-700 bg-green-50 dark:bg-green-900/20 dark:text-green-400",
+    chipClass:   "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+  },
+  flag_for_review: {
+    label: "Review",
+    variant: "outline" as const,
+    borderClass: "border-l-amber-500",
+    badgeClass:  "border-amber-500/60 text-amber-700 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400",
+    chipClass:   "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+  },
+  fail: {
+    label: "Ungrounded",
+    variant: "outline" as const,
+    borderClass: "border-l-destructive",
+    badgeClass:  "border-red-500/60 text-red-700 bg-red-50 dark:bg-red-900/20 dark:text-red-400",
+    chipClass:   "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  },
 };
 
 export function BulletCard({ bullet, auditEntry }: BulletCardProps) {
@@ -81,21 +99,19 @@ export function BulletCard({ bullet, auditEntry }: BulletCardProps) {
 
         {/* Metadata row */}
         <div className="flex items-center gap-2 flex-wrap">
-          <Badge variant={config.variant} className="text-xs">{config.label}</Badge>
+          <Badge variant={config.variant} className={`text-xs ${config.badgeClass}`}>
+            {config.label}
+          </Badge>
 
           {auditEntry && (
-            <span className="text-xs text-muted-foreground">
-              {(auditEntry.composite_score * 100).toFixed(0)}% grounded
+            <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-xs font-medium tabular-nums ${config.chipClass}`}>
+              {(auditEntry.composite_score * 100).toFixed(0)}%
             </span>
           )}
 
           <span className="text-xs text-muted-foreground tabular-nums">
             {bullet.verified_line_count}L
           </span>
-
-          {bullet.flagged_for_review && (
-            <span className="text-xs text-amber-600 font-medium">Review needed</span>
-          )}
 
           {bullet.was_adjusted && (
             <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
