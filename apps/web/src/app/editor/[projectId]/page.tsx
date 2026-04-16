@@ -72,6 +72,11 @@ export default function ProjectEditorPage() {
     rerender,
     renderJobId,
     generationStatus,
+    hydrateQueue,
+    refinementQueue,
+    refiningBullets,
+    applyQueue,
+    clearQueue,
   } = useResumeStore();
   const { currentProject, loadProject, loadTemplates } = useProjectStore();
 
@@ -96,9 +101,11 @@ export default function ProjectEditorPage() {
 
   // Effect 1: Reset all project-scoped state immediately on project navigation.
   // This prevents state bleed-through when switching between projects.
+  // Also hydrates the refinement queue from localStorage for this project.
   useEffect(() => {
     resetForProject(projectId);
-  // resetForProject is a stable Zustand action — safe to omit from deps
+    hydrateQueue(projectId);
+  // resetForProject and hydrateQueue are stable Zustand actions — safe to omit from deps
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -342,12 +349,43 @@ export default function ProjectEditorPage() {
               </ScrollArea>
             </TabsContent>
 
-            <TabsContent value="bullets" className="flex-1 overflow-hidden m-0">
-              <ScrollArea className="h-full">
+            <TabsContent value="bullets" className="flex-1 overflow-hidden m-0 flex flex-col">
+              <ScrollArea className="flex-1 min-h-0">
                 <div className="p-4">
                   <BulletList />
                 </div>
               </ScrollArea>
+              {/* Queue bar — outside ScrollArea so it stays pinned to bottom of pane */}
+              {refinementQueue.length > 0 && (
+                <div className="flex items-center justify-between gap-2 px-3 py-2 border-t border-border bg-background/95 backdrop-blur-sm shrink-0">
+                  <span className="text-xs text-muted-foreground">
+                    {refiningBullets.length > 0 ? (
+                      <span className="flex items-center gap-1.5">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Applying...
+                      </span>
+                    ) : (
+                      `${refinementQueue.length} change${refinementQueue.length > 1 ? "s" : ""} queued`
+                    )}
+                  </span>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={clearQueue}
+                      disabled={refiningBullets.length > 0}
+                      className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-40 transition-colors"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      onClick={() => applyQueue()}
+                      disabled={refiningBullets.length > 0}
+                      className="text-xs px-2.5 py-1 rounded bg-primary text-primary-foreground disabled:opacity-40 hover:opacity-90 transition-opacity"
+                    >
+                      Apply All →
+                    </button>
+                  </div>
+                </div>
+              )}
             </TabsContent>
           </Tabs>
         </div>
