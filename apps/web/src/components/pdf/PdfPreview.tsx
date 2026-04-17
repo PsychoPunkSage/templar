@@ -33,15 +33,22 @@ export function PdfPreview() {
   const [canvasDims, setCanvasDims] = useState({ width: 0, height: 0 });
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRenderTaskRef = useRef<RenderTask | null>(null);
+  // Monotonically increasing counter — each renderPdf call claims a generation.
+  // Any await checkpoint that finds its generation was superseded exits silently.
+  const renderGenRef = useRef(0);
 
   // Renders the PDF once at RENDER_SCALE. Zoom is pure CSS — no re-render needed.
   const renderPdf = useCallback(async (jobId: string) => {
     if (!canvasRef.current) return;
 
+    // Cancel any in-progress pdfjs render task
     if (activeRenderTaskRef.current) {
       activeRenderTaskRef.current.cancel();
       activeRenderTaskRef.current = null;
     }
+
+    // Claim this generation — any older concurrent call will bail at the next checkpoint
+    const myGen = ++renderGenRef.current;
 
     setIsLoading(true);
     setRenderError(null);
@@ -52,9 +59,13 @@ export function PdfPreview() {
         pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
       }
 
+      if (myGen !== renderGenRef.current) return; // superseded while loading pdfjs
+
       const pdfUrl = api.getPdfUrl(jobId);
       const loadingTask = pdfjsLib.getDocument(pdfUrl);
       const pdf = await loadingTask.promise;
+
+      if (myGen !== renderGenRef.current) return; // superseded while fetching PDF
 
       if (pdf.numPages === 0) {
         throw new Error("PDF contains no pages — try generating again.");
@@ -64,6 +75,8 @@ export function PdfPreview() {
       if (!page) {
         throw new Error("Failed to load page 1 — try generating again.");
       }
+
+      if (myGen !== renderGenRef.current) return; // superseded while decoding page
 
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -78,12 +91,13 @@ export function PdfPreview() {
       await task.promise;
       activeRenderTaskRef.current = null;
     } catch (e) {
+      if (myGen !== renderGenRef.current) return; // superseded — don't surface stale error
       if (e instanceof Error && e.name === "RenderingCancelledException") return;
       const msg = e instanceof Error ? e.message : "Unknown render error";
       setRenderError(msg);
       console.error("[PdfPreview] PDF render error:", e);
     } finally {
-      setIsLoading(false);
+      if (myGen === renderGenRef.current) setIsLoading(false);
     }
   }, []);
 

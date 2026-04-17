@@ -576,11 +576,13 @@ pub async fn handle_refine_bullet(
         }));
     }
 
-    // Step 10: Update DB — resume_bullets row
-    sqlx::query!(
+    // Step 10: Update DB — resume_bullets row.
+    // Match by (resume_id, source_entry_id, bullet_text). Use TRIM on both sides so minor
+    // whitespace differences (trailing newline from LLM, etc.) don't silently miss the row.
+    let rows_updated = sqlx::query!(
         "UPDATE resume_bullets \
          SET bullet_text = $1, line_count = $2, grounding_score = $3, is_user_edited = true \
-         WHERE resume_id = $4 AND source_entry_id = $5 AND bullet_text = $6",
+         WHERE resume_id = $4 AND source_entry_id = $5 AND TRIM(bullet_text) = TRIM($6)",
         simulated.text,
         simulated.verified_line_count as i16,
         grounding.score.composite as f64,
@@ -589,7 +591,28 @@ pub async fn handle_refine_bullet(
         request.bullet_text,
     )
     .execute(&state.db)
-    .await?;
+    .await?
+    .rows_affected();
+
+    if rows_updated == 0 {
+        tracing::warn!(
+            resume_id = %resume_id,
+            source_entry_id = %request.source_entry_id,
+            bullet_text_len = request.bullet_text.len(),
+            "refine_bullet: UPDATE matched 0 rows — bullet_text mismatch; \
+             content_hash will still be cleared to force re-render"
+        );
+    }
+
+    // Always invalidate the render content-hash so the next render job never
+    // hits the cache and always compiles fresh from resume_bullets.
+    // This is safe even if rows_updated == 0 — at worst we get an extra compile.
+    let _ = sqlx::query!(
+        "UPDATE resumes SET content_hash = NULL WHERE id = $1",
+        resume_id,
+    )
+    .execute(&state.db)
+    .await;
 
     // Step 11: Update resumes.entry_groups JSONB (replace bullet in-place)
     if let Some(eg_value) = &resume.entry_groups {

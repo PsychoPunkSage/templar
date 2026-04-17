@@ -10,9 +10,9 @@ function formatDisplayHeader(h: EntryDisplayHeader): string {
     case "experience":
       return `${h.company} — ${h.role}  ·  ${h.date_range}`;
     case "project":
-      return `${h.name}  ·  ${h.tech_stack}`;
+      return h.name;
     case "open_source":
-      return `${h.project_name}  ·  ${h.tech_stack}`;
+      return h.project_name;
     case "education":
       return `${h.institution}  ·  ${h.degree}  ·  ${h.date_range}`;
     case "skills":
