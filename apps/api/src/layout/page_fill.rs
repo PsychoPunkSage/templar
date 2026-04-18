@@ -66,7 +66,14 @@ pub enum FillAction {
 ///
 /// `total_lines_used` is the sum of `verified_line_count` across all bullets.
 /// `usable_height_lines` from `PageConfig` is the denominator.
-pub fn analyze_page_fill(bullets: &[SimulatedBullet], config: &PageConfig) -> PageFillAnalysis {
+///
+/// `is_last_page` — when false (intermediate CV pages), `TooMuchWhitespace` is never
+/// reported: partial pages between entries are acceptable in multi-page documents.
+pub fn analyze_page_fill(
+    bullets: &[SimulatedBullet],
+    config: &PageConfig,
+    is_last_page: bool,
+) -> PageFillAnalysis {
     let total_lines_used: u16 = bullets.iter().map(|b| b.verified_line_count as u16).sum();
 
     let available = config.usable_height_lines;
@@ -79,7 +86,8 @@ pub fn analyze_page_fill(bullets: &[SimulatedBullet], config: &PageConfig) -> Pa
         PageFillVerdict::MajorOverflow
     } else if fill_ratio > 1.00 {
         PageFillVerdict::MinorOverflow
-    } else if whitespace_fraction > 0.08 {
+    } else if whitespace_fraction > 0.08 && is_last_page {
+        // Only flag whitespace on the final page — intermediate CV pages can be partial.
         PageFillVerdict::TooMuchWhitespace
     } else {
         PageFillVerdict::Acceptable
@@ -226,6 +234,7 @@ pub async fn run_page_fill_pass(
     config: &crate::layout::font_metrics::PageConfig,
     parsed_jd: &crate::generation::jd_parser::ParsedJD,
     llm: &crate::llm_client::LlmClient,
+    is_last_page: bool,
 ) -> Result<crate::layout::simulator::SimulationResult, crate::errors::AppError> {
     use crate::layout::contract::simulate_lines;
     use crate::layout::font_metrics::get_metrics;
@@ -236,7 +245,7 @@ pub async fn run_page_fill_pass(
     let mut fill_passes = 0u8;
 
     loop {
-        let analysis = analyze_page_fill(&result.bullets, config);
+        let analysis = analyze_page_fill(&result.bullets, config, is_last_page);
 
         if matches!(analysis.verdict, PageFillVerdict::Acceptable) {
             break;
@@ -389,6 +398,7 @@ mod tests {
             jd_keywords_used: keywords.into_iter().map(|s| s.to_string()).collect(),
             was_adjusted: false,
             flagged_for_review: flagged,
+            page_number: 1,
         }
     }
 
@@ -400,7 +410,7 @@ mod tests {
                                     // 43 lines used = 95.6% fill → Acceptable (whitespace = 4.4% < 8%)
         let bullets: Vec<SimulatedBullet> =
             (0..43).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config);
+        let analysis = analyze_page_fill(&bullets, &config, true);
         assert_eq!(analysis.verdict, PageFillVerdict::Acceptable);
         assert_eq!(analysis.total_lines_used, 43);
         assert!(analysis.whitespace_fraction < 0.08);
@@ -412,7 +422,7 @@ mod tests {
                                     // 35 lines used = 77.8% fill → TooMuchWhitespace (whitespace = 22.2% > 8%)
         let bullets: Vec<SimulatedBullet> =
             (0..35).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config);
+        let analysis = analyze_page_fill(&bullets, &config, true);
         assert_eq!(analysis.verdict, PageFillVerdict::TooMuchWhitespace);
         assert!(analysis.whitespace_fraction > 0.08);
     }
@@ -423,7 +433,7 @@ mod tests {
                                     // 47 lines used = 104.4% fill → MinorOverflow (1–5%)
         let bullets: Vec<SimulatedBullet> =
             (0..47).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config);
+        let analysis = analyze_page_fill(&bullets, &config, true);
         assert_eq!(analysis.verdict, PageFillVerdict::MinorOverflow);
         assert!(analysis.overflow_fraction > 0.0 && analysis.overflow_fraction <= 0.05);
     }
@@ -434,7 +444,7 @@ mod tests {
                                     // 50 lines used = 111.1% fill → MajorOverflow (> 5%)
         let bullets: Vec<SimulatedBullet> =
             (0..50).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config);
+        let analysis = analyze_page_fill(&bullets, &config, true);
         assert_eq!(analysis.verdict, PageFillVerdict::MajorOverflow);
         assert!(analysis.overflow_fraction > 0.05);
     }
@@ -442,7 +452,7 @@ mod tests {
     #[test]
     fn test_empty_bullets_is_whitespace() {
         let config = make_config();
-        let analysis = analyze_page_fill(&[], &config);
+        let analysis = analyze_page_fill(&[], &config, true);
         assert_eq!(analysis.verdict, PageFillVerdict::TooMuchWhitespace);
         assert_eq!(analysis.total_lines_used, 0);
         assert!((analysis.whitespace_fraction - 1.0).abs() < 1e-3);
@@ -456,7 +466,7 @@ mod tests {
         // 43/45 = 95.6% fill → Acceptable → NoAction
         let bullets: Vec<SimulatedBullet> =
             (0..43).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config);
+        let analysis = analyze_page_fill(&bullets, &config, true);
         let action = recommend_fill_action(&analysis, &bullets, &make_parsed_jd());
         assert_eq!(action, FillAction::NoAction);
     }
@@ -564,13 +574,13 @@ mod tests {
         let bullets: Vec<SimulatedBullet> =
             (0..50).map(|_| make_bullet(1, vec![], false)).collect();
 
-        let analysis = analyze_page_fill(&bullets, &config);
+        let analysis = analyze_page_fill(&bullets, &config, true);
         assert_eq!(analysis.verdict, PageFillVerdict::MajorOverflow);
         // Removing 3 bullets leaves 47 — still overflowing (104.4%), so page_fill_flagged
         // would be set after MAX_FILL_PASSES. This test validates the analysis side only
         // (the async run_page_fill_pass requires tokio runtime — covered by e2e test).
         let after_3 = &bullets[..47];
-        let after_analysis = analyze_page_fill(after_3, &config);
+        let after_analysis = analyze_page_fill(after_3, &config, true);
         assert_eq!(
             after_analysis.verdict,
             PageFillVerdict::MinorOverflow,
@@ -597,6 +607,7 @@ mod tests {
                     jd_keywords_used: vec![],
                     was_adjusted: false,
                     flagged_for_review: false,
+                    page_number: 1,
                 },
                 SimulatedBullet {
                     text: "Built distributed cache reducing p99 latency by 40%".to_string(),
@@ -607,6 +618,7 @@ mod tests {
                     jd_keywords_used: vec![],
                     was_adjusted: false,
                     flagged_for_review: false,
+                    page_number: 1,
                 },
             ],
             total_passes: 0,
@@ -615,6 +627,7 @@ mod tests {
             llm_calls_made: 0,
             tighten_spacing: false,
             page_fill_flagged: false,
+            page_count: 1,
         };
 
         // Simulate the RemoveBullet handler logic for index 1 (the only content bullet).
@@ -652,6 +665,7 @@ mod tests {
                     jd_keywords_used: vec![],
                     was_adjusted: false,
                     flagged_for_review: false,
+                    page_number: 1,
                 },
                 SimulatedBullet {
                     text: "Built distributed cache reducing p99 latency by 40%".to_string(),
@@ -662,6 +676,7 @@ mod tests {
                     jd_keywords_used: vec![],
                     was_adjusted: false,
                     flagged_for_review: false,
+                    page_number: 1,
                 },
                 SimulatedBullet {
                     text: "Reduced infrastructure costs by 30%".to_string(),
@@ -672,6 +687,7 @@ mod tests {
                     jd_keywords_used: vec![],
                     was_adjusted: false,
                     flagged_for_review: false,
+                    page_number: 1,
                 },
             ],
             total_passes: 0,
@@ -680,6 +696,7 @@ mod tests {
             llm_calls_made: 0,
             tighten_spacing: false,
             page_fill_flagged: false,
+            page_count: 1,
         };
 
         // Remove one of the two content bullets (index 1) — a sibling content bullet remains.

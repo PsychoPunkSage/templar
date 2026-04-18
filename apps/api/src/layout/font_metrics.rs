@@ -91,6 +91,13 @@ impl PaperSize {
             Self::A4 => 8.268,
         }
     }
+
+    pub fn height_in(&self) -> f32 {
+        match self {
+            Self::Letter => 11.0,
+            Self::A4 => 11.693,
+        }
+    }
 }
 
 /// Layout physics declared by a template in its metadata.json.
@@ -105,6 +112,10 @@ pub struct TemplateLayoutConfig {
     pub margin_left_in: f32,
     #[serde(default = "TemplateLayoutConfig::default_margin")]
     pub margin_right_in: f32,
+    #[serde(default = "TemplateLayoutConfig::default_margin")]
+    pub margin_top_in: f32,
+    #[serde(default = "TemplateLayoutConfig::default_margin")]
+    pub margin_bottom_in: f32,
     #[serde(default)]
     pub paper: PaperSize,
 }
@@ -128,6 +139,8 @@ impl Default for TemplateLayoutConfig {
             font_size_pt: 11,
             margin_left_in: 1.0,
             margin_right_in: 1.0,
+            margin_top_in: 1.0,
+            margin_bottom_in: 1.0,
             paper: PaperSize::Letter,
         }
     }
@@ -140,7 +153,9 @@ impl PageConfig {
             layout.paper.width_in() - layout.margin_left_in - layout.margin_right_in;
         let text_width_em = text_width_in * 72.27 / layout.font_size_pt as f32;
         let line_height_pt = layout.font_size_pt as f32 * 1.2;
-        let usable_height_lines = (9.0_f32 * 72.27 / line_height_pt).floor() as u16;
+        let usable_height_in =
+            layout.paper.height_in() - layout.margin_top_in - layout.margin_bottom_in;
+        let usable_height_lines = (usable_height_in * 72.27 / line_height_pt).floor() as u16;
         PageConfig {
             font: layout.font,
             font_size_pt: layout.font_size_pt,
@@ -530,6 +545,8 @@ mod tests {
             font_size_pt: 11,
             margin_left_in: 0.5,
             margin_right_in: 0.5,
+            margin_top_in: 0.5,
+            margin_bottom_in: 0.5,
             paper: PaperSize::A4,
         };
         let config = PageConfig::from_layout(&layout);
@@ -543,6 +560,13 @@ mod tests {
         let budget = estimate_char_budget(&config);
         // 47.73 / 0.47 ≈ 101
         assert!(budget >= 98 && budget <= 108, "char_budget={}", budget);
+        // usable_height_in = 11.693 - 0.5 - 0.5 = 10.693
+        // usable_height_lines = floor(10.693 * 72.27 / (11*1.2)) = floor(58.5) = 58
+        assert!(
+            config.usable_height_lines >= 55 && config.usable_height_lines <= 62,
+            "usable_height_lines={}",
+            config.usable_height_lines
+        );
     }
 
     #[test]
@@ -562,6 +586,15 @@ mod tests {
         let layout: TemplateLayoutConfig = serde_json::from_str(json).unwrap();
         assert_eq!(layout.font, FontFamily::ComputerModern);
         assert_eq!(layout.paper, PaperSize::A4);
+        // margin_top_in and margin_bottom_in default to 1.0 when absent from JSON
+        assert!((layout.margin_top_in - 1.0).abs() < 1e-4);
+        assert!((layout.margin_bottom_in - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_paper_size_height_in() {
+        assert!((PaperSize::Letter.height_in() - 11.0).abs() < 1e-4);
+        assert!((PaperSize::A4.height_in() - 11.693).abs() < 1e-3);
     }
 
     #[test]

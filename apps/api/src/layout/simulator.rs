@@ -53,6 +53,14 @@ pub struct SimulatedBullet {
     pub was_adjusted: bool,
     /// True if the bullet still violates the contract after all simulation passes.
     pub flagged_for_review: bool,
+    /// Page number (1-based) assigned by the paginator for CV mode.
+    /// Always 1 for single-page resumes. Default = 1 for backward compatibility.
+    #[serde(default = "default_page_number")]
+    pub page_number: u8,
+}
+
+fn default_page_number() -> u8 {
+    1
 }
 
 /// Summary of a complete simulation run.
@@ -69,6 +77,13 @@ pub struct SimulationResult {
     /// Surface this in the UI as a layout warning banner.
     #[serde(default)]
     pub page_fill_flagged: bool,
+    /// Number of pages in the document (1 for single-page, 1–N for CV mode).
+    #[serde(default = "default_page_count")]
+    pub page_count: u8,
+}
+
+fn default_page_count() -> u8 {
+    1
 }
 
 /// Intermediate type for deserializing the LLM's adjust response.
@@ -409,6 +424,7 @@ pub async fn run_simulation_loop(
         llm_calls_made,
         tighten_spacing: false,
         page_fill_flagged: false,
+        page_count: 1, // CV paginator overwrites this after run_simulation_loop returns
     })
 }
 
@@ -551,6 +567,7 @@ pub(crate) fn init_simulated(bullets: Vec<DraftBullet>) -> Vec<SimulatedBullet> 
             jd_keywords_used: b.jd_keywords_used,
             was_adjusted: false,
             flagged_for_review: false,
+            page_number: 1, // default; CV paginator overwrites after simulation
         })
         .collect()
 }
@@ -689,6 +706,7 @@ mod tests {
             jd_keywords_used: vec![],
             was_adjusted: false,
             flagged_for_review: false,
+            page_number: 1,
         };
 
         let violations = run_single_pass_sync(&[bullet], metrics, &config);
@@ -714,6 +732,7 @@ mod tests {
             jd_keywords_used: vec![],
             was_adjusted: false,
             flagged_for_review: false,
+            page_number: 1,
         };
 
         let violations = run_single_pass_sync(&[bullet], metrics, &config);
