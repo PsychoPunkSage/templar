@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::context::scoring::{compute_combined_score, ScoringWeights};
+use crate::generation::generator::ResumeMode;
 use crate::generation::jd_parser::{JDTone, ParsedJD};
 use crate::models::context::ContextEntryRow;
 
@@ -44,10 +45,15 @@ pub struct SelectionResult {
 // Selection algorithm
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Section-level limits for entry selection.
+/// Section-level limits for single-page resume entry selection.
 const EXPERIENCE_LIMIT: usize = 8;
 const PROJECT_LIMIT: usize = 4;
 const OTHER_LIMIT: usize = 3;
+
+/// Section-level limits for multi-page CV entry selection (lifted significantly).
+const CV_EXPERIENCE_LIMIT: usize = 20;
+const CV_PROJECT_LIMIT: usize = 10;
+const CV_OTHER_LIMIT: usize = 8;
 
 /// Selects, ranks, and filters context entries for resume generation.
 ///
@@ -55,9 +61,13 @@ const OTHER_LIMIT: usize = 3;
 /// 1. Compute `jd_relevance` per entry from keyword tag/text overlap
 /// 2. Compute `combined_score` via existing context::scoring formula
 /// 3. Sort descending by combined_score
-/// 4. Apply per-section selection limits
+/// 4. Apply per-section selection limits (higher for CV mode)
 /// 5. Adjust section_weights based on JD tone signals
-pub fn select_content(entries: Vec<ContextEntryRow>, parsed_jd: &ParsedJD) -> SelectionResult {
+pub fn select_content(
+    entries: Vec<ContextEntryRow>,
+    parsed_jd: &ParsedJD,
+    resume_mode: ResumeMode,
+) -> SelectionResult {
     let weights = ScoringWeights::default();
 
     // Score and rank all entries
@@ -86,8 +96,8 @@ pub fn select_content(entries: Vec<ContextEntryRow>, parsed_jd: &ParsedJD) -> Se
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Apply section-aware selection limits
-    let (selected_entries, excluded_entries) = apply_section_limits(ranked);
+    // Apply section-aware selection limits (CV mode uses higher limits)
+    let (selected_entries, excluded_entries) = apply_section_limits(ranked, resume_mode);
 
     // Adjust section weights per JD tone
     let section_weights = compute_section_weights(&parsed_jd.detected_tone);
@@ -138,10 +148,18 @@ pub fn compute_jd_relevance(entry: &ContextEntryRow, parsed_jd: &ParsedJD) -> f6
 }
 
 /// Applies per-section limits and separates selected from excluded entries.
-fn apply_section_limits(ranked: Vec<RankedEntry>) -> (Vec<RankedEntry>, Vec<(Uuid, String)>) {
+fn apply_section_limits(
+    ranked: Vec<RankedEntry>,
+    resume_mode: ResumeMode,
+) -> (Vec<RankedEntry>, Vec<(Uuid, String)>) {
     let mut experience_count = 0usize;
     let mut project_count = 0usize;
     let mut other_count = 0usize;
+
+    let (exp_limit, proj_limit, other_limit) = match resume_mode {
+        ResumeMode::SinglePage => (EXPERIENCE_LIMIT, PROJECT_LIMIT, OTHER_LIMIT),
+        ResumeMode::Cv => (CV_EXPERIENCE_LIMIT, CV_PROJECT_LIMIT, CV_OTHER_LIMIT),
+    };
 
     let mut selected = Vec::new();
     let mut excluded = Vec::new();
@@ -150,9 +168,9 @@ fn apply_section_limits(ranked: Vec<RankedEntry>) -> (Vec<RankedEntry>, Vec<(Uui
         let section = ranked_entry.entry.entry_type.as_str();
 
         let (limit, count) = match section {
-            "experience" => (EXPERIENCE_LIMIT, &mut experience_count),
-            "project" | "open_source" => (PROJECT_LIMIT, &mut project_count),
-            _ => (OTHER_LIMIT, &mut other_count),
+            "experience" => (exp_limit, &mut experience_count),
+            "project" | "open_source" => (proj_limit, &mut project_count),
+            _ => (other_limit, &mut other_count),
         };
 
         if *count < limit {
@@ -211,6 +229,7 @@ fn compute_section_weights(tone: &JDTone) -> HashMap<String, f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generation::generator::ResumeMode;
     use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, RoleSignals};
     use chrono::Utc;
     use serde_json::json;
@@ -270,7 +289,7 @@ mod tests {
             make_entry("experience", vec![], 0.1, 0.1),
         ];
         let parsed_jd = make_parsed_jd(&["rust"], JDTone::AggressiveStartup);
-        let result = select_content(entries, &parsed_jd);
+        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage);
 
         assert!(
             result.selected_entries[0].combined_score > result.selected_entries[1].combined_score,
@@ -284,7 +303,7 @@ mod tests {
             .map(|_| make_entry("experience", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::CollaborativeEnterprise);
-        let result = select_content(entries, &parsed_jd);
+        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage);
 
         let selected_exp = result
             .selected_entries
@@ -307,7 +326,7 @@ mod tests {
             .map(|_| make_entry("project", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::CollaborativeEnterprise);
-        let result = select_content(entries, &parsed_jd);
+        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage);
 
         let selected = result
             .selected_entries
@@ -324,7 +343,7 @@ mod tests {
             .map(|_| make_entry("open_source", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::AggressiveStartup);
-        let result = select_content(entries, &parsed_jd);
+        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage);
 
         let selected = result
             .selected_entries
@@ -393,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_reframe_hints_empty_by_default() {
-        let result = select_content(vec![], &make_parsed_jd(&[], JDTone::ProductOriented));
+        let result = select_content(vec![], &make_parsed_jd(&[], JDTone::ProductOriented), ResumeMode::SinglePage);
         assert!(result.reframe_hints.is_empty());
     }
 }

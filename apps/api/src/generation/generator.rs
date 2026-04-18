@@ -80,6 +80,19 @@ pub struct DraftBullet {
     pub jd_keywords_used: Vec<String>,
 }
 
+/// Whether to generate a single-page resume or a multi-page CV.
+///
+/// `SinglePage` is the default and preserves all existing behaviour.
+/// `Cv` lifts the per-page content limits and distributes bullets across pages
+/// using the greedy entry-atomic paginator in `layout::paginator`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeMode {
+    #[default]
+    SinglePage,
+    Cv,
+}
+
 /// Request body for resume generation.
 /// Derives Serialize so the full payload can be stored as JSONB in generation_jobs.request,
 /// allowing the background worker to reconstruct the request without the HTTP connection.
@@ -90,12 +103,24 @@ pub struct GenerateRequest {
     /// When true, bypass the fit score cache and force a fresh LLM call.
     #[serde(default)]
     pub force_refresh: bool,
+    /// Single-page resume (default) or multi-page CV.
+    #[serde(default)]
+    pub resume_mode: ResumeMode,
+    /// Maximum number of pages for CV mode (ignored in SinglePage mode).
+    #[serde(default = "GenerateRequest::default_max_pages")]
+    pub max_pages: u8,
     // Reserved for Phase 7 persona-aware generation
     #[allow(dead_code)]
     pub persona_id: Option<Uuid>,
     // Reserved for Phase 7 tone override
     #[allow(dead_code)]
     pub tone_override: Option<String>,
+}
+
+impl GenerateRequest {
+    fn default_max_pages() -> u8 {
+        4
+    }
 }
 
 /// Response from the generation pipeline.
@@ -115,6 +140,15 @@ pub struct GenerateResponse {
     /// Bullets grouped by source context entry, with human-readable display headers.
     /// Populated by build_entry_groups() — empty only when generation produces 0 bullets.
     pub entry_groups: Vec<EntryGroup>,
+    /// Number of pages in the generated document (1 for SinglePage, 1–max_pages for CV).
+    #[serde(default = "GenerateResponse::default_page_count")]
+    pub page_count: u8,
+}
+
+impl GenerateResponse {
+    fn default_page_count() -> u8 {
+        1
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -229,8 +263,8 @@ pub async fn generate_resume(
         fit_report.overall_score, request.user_id
     );
 
-    // Step 4: Content selection
-    let selection = select_content(entries, &parsed_jd);
+    // Step 4: Content selection (CV mode uses higher per-section limits)
+    let selection = select_content(entries, &parsed_jd, request.resume_mode);
     info!(
         "Selected {} entries for generation",
         selection.selected_entries.len()
@@ -315,9 +349,73 @@ pub async fn generate_resume(
     .await?;
 
     // Page fill remediation pass — runs after simulation loop to fix whitespace/overflow.
-    let simulation =
-        crate::layout::page_fill::run_page_fill_pass(simulation, page_config, &parsed_jd, llm)
+    // Single-page mode is always the "last page" for fill analysis purposes.
+    let mut simulation =
+        crate::layout::page_fill::run_page_fill_pass(simulation, page_config, &parsed_jd, llm, true)
             .await?;
+
+    // CV mode: distribute bullets across pages using the greedy entry-atomic paginator.
+    // For single-page mode, page_number stays 1 and page_count stays 1.
+    if request.resume_mode == ResumeMode::Cv {
+        // We need the entry_groups to pass to the paginator (for group-size lookup context).
+        // Build a temporary group list from the current bullet set.
+        // (The permanent entry_groups will be built later from grounding_pairs.)
+        let temp_entry_groups = build_entry_groups_from_bullets(&simulation.bullets);
+        let pagination = crate::layout::paginate_bullets(
+            &simulation.bullets,
+            &temp_entry_groups,
+            page_config.usable_height_lines,
+            request.max_pages,
+        );
+        crate::layout::apply_pagination(&mut simulation.bullets, &pagination);
+        simulation.page_count = pagination.page_count;
+
+        // Per-page page-fill pass: check each page independently (not the last page check).
+        // For now, we do a single all-page check — individual page remediation is a Phase 7 item.
+        // The page_fill for intermediate pages already skips TooMuchWhitespace (is_last_page=false).
+        let actual_pages = pagination.page_count;
+        if actual_pages > 1 {
+            // Re-run page fill for just the final page's bullets.
+            let last_page_bullets: Vec<crate::layout::SimulatedBullet> = simulation
+                .bullets
+                .iter()
+                .filter(|b| b.page_number == actual_pages)
+                .cloned()
+                .collect();
+            let last_page_sim = crate::layout::simulator::SimulationResult {
+                bullets: last_page_bullets,
+                total_passes: simulation.total_passes,
+                violations_remaining: 0,
+                flagged_count: 0,
+                llm_calls_made: 0,
+                tighten_spacing: false,
+                page_fill_flagged: false,
+                page_count: 1,
+            };
+            let last_page_result = crate::layout::page_fill::run_page_fill_pass(
+                last_page_sim,
+                page_config,
+                &parsed_jd,
+                llm,
+                true, // is_last_page
+            )
+            .await?;
+            // Merge back the last-page bullets (they may have been compressed/promoted)
+            let mut last_page_idx = 0usize;
+            for bullet in simulation.bullets.iter_mut() {
+                if bullet.page_number == actual_pages {
+                    if let Some(updated) = last_page_result.bullets.get(last_page_idx) {
+                        *bullet = updated.clone();
+                        bullet.page_number = actual_pages; // restore page number
+                        last_page_idx += 1;
+                    }
+                }
+            }
+            if last_page_result.page_fill_flagged {
+                simulation.page_fill_flagged = true;
+            }
+        }
+    }
 
     if simulation.flagged_count > 0 {
         warn!(
@@ -374,6 +472,7 @@ pub async fn generate_resume(
                 jd_keywords_used: vec![],
                 was_adjusted: false,
                 flagged_for_review: false,
+                page_number: 1,
             };
             let score = GroundingScore::compute(1.0, 1.0, 1.0, 0.0);
             let result = GroundingResult {
@@ -399,10 +498,16 @@ pub async fn generate_resume(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize ParsedJD: {e}")))?;
     let fit_score = fit_report.overall_score as f64 / 100.0;
 
+    let resume_type_str = match request.resume_mode {
+        ResumeMode::SinglePage => "single_page",
+        ResumeMode::Cv => "cv",
+    };
+    let page_count_db = simulation.page_count as i16;
+
     sqlx::query(
         r#"
-        INSERT INTO resumes (id, user_id, jd_text, jd_parsed, fit_score, status)
-        VALUES ($1, $2, $3, $4, $5, 'draft')
+        INSERT INTO resumes (id, user_id, jd_text, jd_parsed, fit_score, status, resume_type, page_count)
+        VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7)
         "#,
     )
     .bind(resume_id)
@@ -410,6 +515,8 @@ pub async fn generate_resume(
     .bind(&request.jd_text)
     .bind(&jd_parsed_value)
     .bind(fit_score)
+    .bind(resume_type_str)
+    .bind(page_count_db)
     .execute(pool)
     .await?;
 
@@ -423,8 +530,8 @@ pub async fn generate_resume(
             r#"
             INSERT INTO resume_bullets
                 (resume_id, section, bullet_text, source_entry_id,
-                 grounding_score, line_count, rejection_reason, entry_header, order_idx)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 grounding_score, line_count, rejection_reason, entry_header, order_idx, page_number)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             "#,
         )
         .bind(resume_id)
@@ -436,6 +543,7 @@ pub async fn generate_resume(
         .bind(grounding_result.rejection_reason.as_deref())
         .bind(sim_bullet.entry_header_latex.as_deref())
         .bind(rank_idx as i32)
+        .bind(sim_bullet.page_number as i16)
         .execute(pool)
         .await?;
     }
@@ -513,6 +621,7 @@ pub async fn generate_resume(
         status: "draft".to_string(),
         layout_flagged: simulation.page_fill_flagged,
         entry_groups,
+        page_count: simulation.page_count,
     })
 }
 
@@ -1751,6 +1860,46 @@ fn build_entry_display_header(entry: &ContextEntryRow) -> EntryDisplayHeader {
 /// and are rendered directly from entry_header_latex by the LaTeX render pipeline.
 ///
 /// The output preserves the original relevance-ranked insertion order from the grounding pairs.
+/// Builds a minimal `Vec<EntryGroup>` directly from `SimulatedBullet`s, without needing
+/// the full context entry metadata. Used by the CV paginator to compute entry group sizes
+/// before the permanent `build_entry_groups` call (which needs grounding_pairs).
+fn build_entry_groups_from_bullets(bullets: &[SimulatedBullet]) -> Vec<EntryGroup> {
+    use std::collections::HashMap;
+
+    let mut seen_order: Vec<(Uuid, String, Option<String>)> = Vec::new();
+    let mut seen_ids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    let mut bullet_map: HashMap<Uuid, Vec<SimulatedBullet>> = HashMap::new();
+
+    for b in bullets {
+        let eid = b.source_entry_id;
+        if seen_ids.insert(eid) {
+            seen_order.push((eid, b.section.clone(), b.entry_header_latex.clone()));
+        }
+        if !b.text.is_empty() {
+            bullet_map.entry(eid).or_default().push(b.clone());
+        }
+    }
+
+    seen_order
+        .into_iter()
+        .filter_map(|(entry_id, section, header_latex)| {
+            let bullets = bullet_map.remove(&entry_id).unwrap_or_default();
+            if bullets.is_empty() {
+                return None;
+            }
+            Some(EntryGroup {
+                source_entry_id: entry_id,
+                section,
+                display_header: EntryDisplayHeader::Other {
+                    label: entry_id.to_string(),
+                },
+                entry_header_latex: header_latex,
+                bullets,
+            })
+        })
+        .collect()
+}
+
 fn build_entry_groups(
     grounding_pairs: &[(SimulatedBullet, GroundingResult)],
     entries: &[crate::generation::content_selector::RankedEntry],
@@ -1893,6 +2042,53 @@ mod tests {
         let request: GenerateRequest = serde_json::from_value(json).unwrap();
         assert!(!request.jd_text.is_empty());
         assert!(request.persona_id.is_none());
+    }
+
+    /// Backward compatibility: old JSON without `resume_mode` must deserialize to SinglePage.
+    /// This is critical for the worker — stored generation_jobs.request JSONB created
+    /// before migration 016 must not fail to deserialize after the upgrade.
+    #[test]
+    fn test_generate_request_backward_compat_no_resume_mode() {
+        let legacy_json = serde_json::json!({
+            "user_id": "00000000-0000-0000-0000-000000000001",
+            "jd_text": "Legacy request without resume_mode field.",
+            "persona_id": null,
+            "tone_override": null
+        });
+        let request: GenerateRequest = serde_json::from_value(legacy_json)
+            .expect("Legacy GenerateRequest (no resume_mode) must deserialize successfully");
+
+        // Default must be SinglePage — not Cv
+        assert_eq!(
+            request.resume_mode,
+            ResumeMode::SinglePage,
+            "Missing resume_mode must default to SinglePage for backward compat"
+        );
+        // max_pages must also have a sensible default
+        assert!(
+            request.max_pages >= 1 && request.max_pages <= 8,
+            "max_pages default must be in [1, 8], got {}",
+            request.max_pages
+        );
+    }
+
+    /// Verify that resume_mode=cv round-trips through JSON correctly.
+    #[test]
+    fn test_generate_request_cv_mode_serde_round_trip() {
+        let json = serde_json::json!({
+            "user_id": "00000000-0000-0000-0000-000000000001",
+            "jd_text": "CV mode request for a senior researcher role.",
+            "resume_mode": "cv",
+            "max_pages": 3
+        });
+        let request: GenerateRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(request.resume_mode, ResumeMode::Cv);
+        assert_eq!(request.max_pages, 3);
+
+        // Serialize back and verify round-trip
+        let serialized = serde_json::to_value(&request).unwrap();
+        assert_eq!(serialized["resume_mode"], "cv");
+        assert_eq!(serialized["max_pages"], 3);
     }
 
     fn make_experience_entry_row() -> ContextEntryRow {
@@ -2172,6 +2368,7 @@ mod tests {
             jd_keywords_used: vec!["distributed".to_string()],
             was_adjusted: false,
             flagged_for_review: false,
+            page_number: 1,
         };
         // When grounding is disabled, composite = 0.0 and verdict = FlagForReview
         let score = crate::grounding::types::GroundingScore::compute(0.0, 0.0, 0.0, 0.0);
@@ -2765,6 +2962,7 @@ mod tests {
                 jd_keywords_used: vec![],
                 was_adjusted: false,
                 flagged_for_review: false,
+                page_number: 1,
             },
             crate::grounding::GroundingResult {
                 bullet_text: text.to_string(),
@@ -2791,6 +2989,7 @@ mod tests {
                 jd_keywords_used: vec![],
                 was_adjusted: false,
                 flagged_for_review: false,
+                page_number: 1,
             },
             crate::grounding::GroundingResult {
                 bullet_text: String::new(),

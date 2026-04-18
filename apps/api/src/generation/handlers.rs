@@ -78,6 +78,8 @@ pub struct GenerationStatusResponse {
     pub fit_report: Option<FitReport>,
     pub entry_groups: Option<Vec<EntryGroup>>,
     pub layout_flagged: Option<bool>,
+    /// Number of pages in the generated document. Null until status='done'.
+    pub page_count: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -269,23 +271,25 @@ pub async fn handle_generation_status(
             fit_report: None,
             entry_groups: None,
             layout_flagged: None,
+            page_count: None,
         }));
     }
 
     // status='done': deserialize the stored GenerateResponse from result JSONB
     let result: Option<GenerateResponse> = row.result.and_then(|v| serde_json::from_value(v).ok());
 
-    let (fit_report, entry_groups, layout_flagged) = match result {
+    let (fit_report, entry_groups, layout_flagged, page_count) = match result {
         Some(r) => (
             Some(r.fit_report),
             Some(r.entry_groups),
             Some(r.layout_flagged),
+            Some(r.page_count),
         ),
         None => {
             // result JSONB missing or malformed — return done status with null fields.
             // This is non-fatal: the frontend can still render from resume_bullets.
             tracing::warn!(job_id = %job_id, "Generation job done but result JSONB missing or invalid");
-            (None, None, None)
+            (None, None, None, None)
         }
     };
 
@@ -297,6 +301,7 @@ pub async fn handle_generation_status(
         fit_report,
         entry_groups,
         layout_flagged,
+        page_count,
     }))
 }
 
