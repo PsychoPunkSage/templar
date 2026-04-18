@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { TemplateThumbnailPdf } from "@/components/pdf/TemplateThumbnailPdf";
 import type { TemplateSummary } from "@templar/types";
-import { Eye, X, Check } from "lucide-react";
+import { Eye, X, Check, FileText, BookOpen } from "lucide-react";
 import { useAuthStore } from "@/store/authStore";
 import { MVP_USER_ID } from "@/store/resumeStore";
 
@@ -163,6 +163,7 @@ export default function NewProjectPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [previewTemplate, setPreviewTemplate] = useState<TemplateSummary | null>(null);
   const [projectName, setProjectName] = useState("");
+  const [documentType, setDocumentType] = useState<"single_page" | "cv">("single_page");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -185,7 +186,7 @@ export default function NewProjectPage() {
 
     try {
       const { createProject } = useProjectStore.getState();
-      const project = await createProject(userId, projectName.trim(), selectedTemplateId);
+      const project = await createProject(userId, projectName.trim(), selectedTemplateId, documentType);
       // Redirect directly to the editor for this project
       router.push(`/editor/${project.id}`);
     } catch (e) {
@@ -233,6 +234,68 @@ export default function NewProjectPage() {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Document type selector */}
+      <div className="mb-8">
+        <h2 className="text-sm font-semibold mb-3">Document type</h2>
+        <div className="grid grid-cols-2 gap-3 max-w-md">
+          {/* Single-page option */}
+          <button
+            type="button"
+            onClick={() => setDocumentType("single_page")}
+            className={`flex flex-col items-start gap-2 rounded-xl border-2 p-4 text-left transition-all hover:border-primary/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              documentType === "single_page"
+                ? "border-primary ring-2 ring-primary/20 bg-primary/5"
+                : "border-border hover:bg-muted/50"
+            }`}
+          >
+            <div className={`flex h-9 w-9 items-center justify-center rounded-lg ${
+              documentType === "single_page" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+            }`}>
+              <FileText className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold">Resume</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Single page, concise. Best for most job applications.
+              </div>
+            </div>
+            {documentType === "single_page" && (
+              <div className="absolute top-2 right-2">
+                <Check className="h-4 w-4 text-primary" />
+              </div>
+            )}
+          </button>
+
+          {/* CV / multi-page option */}
+          <button
+            type="button"
+            onClick={() => setDocumentType("cv")}
+            className={`flex flex-col items-start gap-2 rounded-xl border-2 p-4 text-left transition-all hover:border-primary/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              documentType === "cv"
+                ? "border-primary ring-2 ring-primary/20 bg-primary/5"
+                : "border-border hover:bg-muted/50"
+            }`}
+          >
+            <div className={`flex h-9 w-9 items-center justify-center rounded-lg ${
+              documentType === "cv" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+            }`}>
+              <BookOpen className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold">CV</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Multi-page, comprehensive. For academia and senior roles.
+              </div>
+            </div>
+            {documentType === "cv" && (
+              <div className="absolute top-2 right-2">
+                <Check className="h-4 w-4 text-primary" />
+              </div>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Project name + create button */}

@@ -22,7 +22,7 @@ interface ProjectStore {
   loadProjects: (userId: string) => Promise<void>;
   loadProject: (id: string) => Promise<void>;
   loadTemplates: () => Promise<void>;
-  createProject: (userId: string, name: string, templateId: string) => Promise<CvProject>;
+  createProject: (userId: string, name: string, templateId: string, documentType?: 'single_page' | 'cv') => Promise<CvProject>;
   /** Hard-deletes a project. Clears currentProject if it matches. */
   deleteProject: (id: string) => Promise<void>;
   /** Links a generated resume to the current project (fire-and-forget). */
@@ -80,8 +80,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     }
   },
 
-  createProject: async (userId, name, templateId) => {
-    const project = await api.createProject({ user_id: userId, name, template_id: templateId });
+  createProject: async (userId, name, templateId, documentType) => {
+    const project = await api.createProject({
+      user_id: userId,
+      name,
+      template_id: templateId,
+      document_type: documentType,
+    });
     // Prepend to list so it appears at the top (projects are ordered by updated_at DESC)
     set((s) => ({ projects: [project, ...s.projects] }));
     return project;

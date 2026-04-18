@@ -104,11 +104,13 @@ export const api = {
    * Enqueues an async generation job and returns immediately with { job_id, status: "queued" }.
    * The actual pipeline runs in the background worker.
    * Poll GET /api/v1/generation/jobs/:id/status to track progress.
+   *
+   * @param resumeMode 'single_page' (default) or 'cv' — controls pagination in the pipeline.
    */
-  generateResume: (userId: string, jdText: string) =>
+  generateResume: (userId: string, jdText: string, resumeMode: 'single_page' | 'cv' = 'single_page') =>
     apiFetch<GenerateJobResponse>("/api/v1/resumes/generate", {
       method: "POST",
-      body: JSON.stringify({ user_id: userId, jd_text: jdText }),
+      body: JSON.stringify({ user_id: userId, jd_text: jdText, resume_mode: resumeMode }),
     }),
 
   /**

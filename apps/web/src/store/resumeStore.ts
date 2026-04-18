@@ -76,6 +76,8 @@ function bulletRowsToEntryGroups(rows: ResumeBulletRow[]): EntryGroup[] {
       jd_keywords_used: [],
       was_adjusted: false,
       flagged_for_review: row.grounding_score < 0.8 || row.rejection_reason != null,
+      // page_number from DB row (added in migration 016); defaults to 1 for pre-migration rows
+      page_number: row.page_number ?? 1,
     };
 
     groupMap.get(row.source_entry_id)!.bullets.push(bullet);
@@ -112,6 +114,12 @@ interface ResumeStore {
   error: string | null;
   /** The project this generation belongs to. Used to link resume after generation. */
   currentProjectId: string | null;
+  /**
+   * Number of pages in the generated resume (1 for single-page, 1+ for CV mode).
+   * Set from the generation job status response when status='done'.
+   * Null until first generation completes.
+   */
+  pageCount: number | null;
   /** True while analyzeFit() is in flight. */
   fitScoreLoading: boolean;
   /** null = no fit score loaded yet; true = came from cache; false = freshly scored via LLM. */
@@ -211,6 +219,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
   isGenerating: false,
   error: null,
   currentProjectId: null,
+  pageCount: null,
   fitScoreLoading: false,
   fitScoreCacheHit: null,
   lastJdHash: null,
@@ -246,6 +255,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
     generationStatus: "idle",
     refinementQueue: [],
     refiningBullets: [],
+    pageCount: null,
   }),
 
   invalidateFitScore: () => set({ contextChangedSinceAnalysis: true }),
@@ -320,7 +330,14 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
 
     try {
       // Step 1: Enqueue — returns immediately with { job_id, status: "queued" }
-      const { job_id } = await api.generateResume(getUserId(), jdText);
+      // Determine resume mode from the current project's document_type.
+      // Import projectStore lazily to avoid circular dependency.
+      const { useProjectStore } = await import("@/store/projectStore");
+      const project = useProjectStore.getState().currentProject;
+      const resumeMode: 'single_page' | 'cv' =
+        project?.document_type === 'cv' ? 'cv' : 'single_page';
+
+      const { job_id } = await api.generateResume(getUserId(), jdText, resumeMode);
       console.log("[store] generation job enqueued", { job_id });
       set({ generationJobId: job_id });
 
@@ -368,6 +385,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
             lastJdHash: null,
             lastContextHash: null,
             isGenerating: false,
+            pageCount: status.page_count ?? 1,
           });
           console.log("[store] generation done", {
             resumeId,
@@ -475,6 +493,9 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
         entryGroups: detail.entry_groups ?? bulletRowsToEntryGroups(detail.bullets),
         renderJobId: restoredJobId,
         renderStatus: restoredStatus,
+        // Restore page count so the CV page badge is correct after page refresh.
+        // page_count is null for single-page resumes until generation completes; treat as 1.
+        pageCount: detail.resume.page_count ?? 1,
       });
 
       // Resume polling if a render job was in-flight when the page was last closed

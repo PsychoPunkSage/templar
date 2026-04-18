@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/tabs";
 import { useResumeStore } from "@/store/resumeStore";
 import { useProjectStore } from "@/store/projectStore";
+import { BookOpen } from "lucide-react";
 import { api } from "@/lib/api";
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -77,6 +78,7 @@ export default function ProjectEditorPage() {
     refiningBullets,
     applyQueue,
     clearQueue,
+    pageCount,
   } = useResumeStore();
   const { currentProject, loadProject, loadTemplates } = useProjectStore();
 
@@ -235,6 +237,19 @@ export default function ProjectEditorPage() {
           {currentProject && (
             <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
               {currentProject.template_id}
+            </span>
+          )}
+          {/* CV badge — shown when document_type is 'cv' */}
+          {currentProject?.document_type === "cv" && (
+            <span className="shrink-0 flex items-center gap-1 rounded-full bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 text-xs text-indigo-700 dark:text-indigo-300 font-medium">
+              <BookOpen className="h-3 w-3" />
+              CV
+            </span>
+          )}
+          {/* Page count badge — shown after generation completes for CV mode */}
+          {pageCount !== null && pageCount > 1 && (
+            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+              {pageCount} pages
             </span>
           )}
         </div>
