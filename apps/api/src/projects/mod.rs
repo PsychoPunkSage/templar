@@ -34,6 +34,10 @@ pub struct CvProjectRow {
     /// Added in migration 013: tracks the most recent async generation job for this project.
     /// On page load, the editor probes this job's status endpoint to resume polling if in-flight.
     pub generation_job_id: Option<Uuid>,
+    /// Added in migration 016: whether this project targets a single-page resume or a multi-page CV.
+    /// Defaults to 'single_page' for backward compatibility.
+    #[sqlx(default)]
+    pub document_type: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -49,6 +53,9 @@ pub struct CreateProjectRequest {
     pub name: String,
     /// Must be a key in the loaded TemplateCache. Validated against cache (no DB query).
     pub template_id: String,
+    /// Whether this project targets a single-page resume or a multi-page CV.
+    /// Defaults to 'single_page' if not provided.
+    pub document_type: Option<String>,
 }
 
 /// Body for `PATCH /api/v1/projects/:id` — all fields are optional.
