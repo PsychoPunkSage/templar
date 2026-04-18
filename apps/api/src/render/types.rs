@@ -80,6 +80,8 @@ pub struct ResumeSubEntry {
     pub header_latex: Option<String>,
     /// Bullet texts (raw; will be escaped by the LaTeX builder).
     pub bullets: Vec<String>,
+    /// Page number (1-based) for CV mode. Always 1 for single-page resumes.
+    pub page_number: i16,
 }
 
 /// A named resume section containing grouped sub-entries.
@@ -98,6 +100,7 @@ impl ResumeSection {
             sub_entries: vec![ResumeSubEntry {
                 header_latex: None,
                 bullets,
+                page_number: 1,
             }],
         }
     }

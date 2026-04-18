@@ -357,6 +357,25 @@ pub fn render_file_template(
         .replace("{{SECTIONS}}", &sections_latex)
 }
 
+/// Renders the template with a pre-built sections LaTeX string.
+///
+/// Used for CV mode where the sections block contains `\newpage` commands
+/// built by `build_paginated_sections_latex`. The `sections` parameter is only
+/// used for contact-line construction — the actual body comes from `sections_latex`.
+pub fn render_file_template_with_sections(
+    template: &LoadedTemplate,
+    profile: &ProfileData,
+    _sections: &[SampleSection],
+    sections_latex: &str,
+) -> String {
+    let contact_line = build_contact_line(profile);
+    template
+        .latex_source
+        .replace("{{FULL_NAME}}", &escape_latex(&profile.full_name))
+        .replace("{{CONTACT_LINE}}", &contact_line)
+        .replace("{{SECTIONS}}", sections_latex)
+}
+
 /// Renders the template with sample data for thumbnail generation.
 ///
 /// Identical to `render_file_template` but uses the sample profile + sections
@@ -469,6 +488,26 @@ fn build_sections_latex(sections: &[SampleSection], fmt: &SectionFormatting) -> 
         out.push('\n');
     }
 
+    out
+}
+
+/// Builds a multi-page `{{SECTIONS}}` value by emitting `\newpage` between pages.
+///
+/// Each element in `pages` is the set of sections that belong to that page.
+/// The `\newpage` command is inserted before pages 2, 3, … (never before page 1).
+/// Within each page, sections are rendered by `build_sections_latex` exactly as
+/// for the single-page path.
+pub fn build_paginated_sections_latex(
+    pages: &[Vec<SampleSection>],
+    fmt: &SectionFormatting,
+) -> String {
+    let mut out = String::new();
+    for (i, page_sections) in pages.iter().enumerate() {
+        if i > 0 {
+            out.push_str("\\newpage\n");
+        }
+        out.push_str(&build_sections_latex(page_sections, fmt));
+    }
     out
 }
 
