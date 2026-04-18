@@ -21,6 +21,11 @@ export interface SimulatedBullet {
   was_adjusted: boolean
   /** True if the bullet still violates the contract after all simulation passes. */
   flagged_for_review: boolean
+  /**
+   * Page number (1-based) assigned by the CV paginator.
+   * Always 1 for single-page resumes. Added in migration 016.
+   */
+  page_number: number
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,6 +77,12 @@ export interface ResumeBulletRow {
   created_at: string
   /** Set when grounding score failed — from migration 007. */
   rejection_reason: string | null
+  /**
+   * Page number (1-based) assigned by the CV paginator.
+   * Always 1 for single-page resumes. Added in migration 016.
+   * May be undefined for pre-migration rows fetched from the DB before schema upgrade.
+   */
+  page_number?: number
 }
 
 /**
@@ -87,6 +98,16 @@ export interface ResumeRow {
   latex_source: string | null
   s3_pdf_key: string | null
   status: string
+  /**
+   * 'single_page' | 'cv'. Added in migration 016. Defaults to 'single_page' via
+   * #[sqlx(default)] in Rust — always present in API responses.
+   */
+  resume_type: string
+  /**
+   * Total page count for CV-mode resumes. Null for single-page resumes or until
+   * generation has been completed. Added in migration 016.
+   */
+  page_count: number | null
   created_at: string
   updated_at: string
 }
@@ -261,6 +282,11 @@ export interface GenerationStatusResponse {
   fit_report?: FitReport | null
   entry_groups?: EntryGroup[] | null
   layout_flagged?: boolean | null
+  /**
+   * Number of pages in the generated resume (1 for single-page, 1+ for CV mode).
+   * Populated only when status='done'. Added in migration 016.
+   */
+  page_count?: number | null
 }
 
 /**
@@ -346,6 +372,11 @@ export interface CvProject {
    * On page load, the editor probes this job's status to resume polling if in-flight.
    */
   generation_job_id: string | null
+  /**
+   * Whether this project targets a single-page resume or a multi-page CV.
+   * Added in migration 016. Defaults to 'single_page'.
+   */
+  document_type: 'single_page' | 'cv'
   created_at: string
   updated_at: string
 }
@@ -358,6 +389,11 @@ export interface CreateProjectRequest {
   user_id: string
   name: string
   template_id: string
+  /**
+   * Whether to create a single-page resume project or a multi-page CV project.
+   * Defaults to 'single_page' on the backend if omitted.
+   */
+  document_type?: 'single_page' | 'cv'
 }
 
 export interface UpdateProjectRequest {

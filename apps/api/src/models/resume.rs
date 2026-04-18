@@ -25,6 +25,12 @@ pub struct ResumeRow {
     /// Added in migration 014: serialized Vec<EntryGroup> for page-reload restoration.
     /// NULL for resumes generated before this migration.
     pub entry_groups: Option<Value>,
+    /// Added in migration 016: 'single_page' or 'cv'. Defaults to 'single_page'.
+    #[sqlx(default)]
+    pub resume_type: String,
+    /// Added in migration 016: number of pages (null for single-page resumes until generation sets it).
+    #[sqlx(default)]
+    pub page_count: Option<i16>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -46,6 +52,10 @@ pub struct ResumeBulletRow {
     /// Added in migration 011: insertion rank from the generation pipeline (0-based).
     /// Used in ORDER BY for render to preserve relevance-ranked order.
     pub order_idx: i32,
+    /// Added in migration 016: page number (1-based) for CV mode.
+    /// Always 1 for single-page resumes.
+    #[sqlx(default)]
+    pub page_number: i16,
     pub created_at: DateTime<Utc>,
 }
 
