@@ -112,8 +112,8 @@ async fn verify_jwt(
     cache: &JwksCache,
     jwks_url: &str,
 ) -> Result<TokenData<ClerkClaims>, AppError> {
-    let header = decode_header(token)
-        .map_err(|_| AppError::Validation("Invalid JWT header".to_string()))?;
+    let header =
+        decode_header(token).map_err(|_| AppError::Validation("Invalid JWT header".to_string()))?;
     let kid = header
         .kid
         .ok_or_else(|| AppError::Validation("JWT missing kid".to_string()))?;
@@ -150,12 +150,11 @@ async fn verify_jwt(
 /// Returns the internal UUID.
 async fn resolve_user(db: &sqlx::PgPool, external_id: &str) -> Result<Uuid, AppError> {
     // Fast path: user already exists
-    let row: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM users WHERE external_id = $1")
-            .bind(external_id)
-            .fetch_optional(db)
-            .await
-            .map_err(AppError::Database)?;
+    let row: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE external_id = $1")
+        .bind(external_id)
+        .fetch_optional(db)
+        .await
+        .map_err(AppError::Database)?;
 
     if let Some((id,)) = row {
         return Ok(id);

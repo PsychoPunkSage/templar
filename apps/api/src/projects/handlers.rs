@@ -78,14 +78,29 @@ pub async fn handle_create_project(
         ));
     }
 
+    let document_type = body
+        .document_type
+        .as_deref()
+        .unwrap_or("single_page")
+        .to_string();
+
+    // Validate document_type value
+    if document_type != "single_page" && document_type != "cv" {
+        return Err(AppError::Validation(format!(
+            "Invalid document_type '{}'. Must be 'single_page' or 'cv'",
+            document_type
+        )));
+    }
+
     let project = sqlx::query_as::<_, CvProjectRow>(
-        r#"INSERT INTO cv_projects (user_id, name, template_id)
-           VALUES ($1, $2, $3)
+        r#"INSERT INTO cv_projects (user_id, name, template_id, document_type)
+           VALUES ($1, $2, $3, $4)
            RETURNING *"#,
     )
     .bind(body.user_id)
     .bind(body.name.trim())
     .bind(&body.template_id)
+    .bind(&document_type)
     .fetch_one(&state.db)
     .await?;
 

@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 
-type SectionEntryList = Vec<(uuid::Uuid, Option<String>, Vec<String>)>;
 use std::sync::Arc;
 
 use aws_sdk_s3::primitives::ByteStream;
@@ -28,6 +27,9 @@ use crate::templates::{ProfileData, SampleSection, SampleSubEntry, TemplateCache
 
 /// Redis list key used for the render job queue.
 pub const RENDER_QUEUE_KEY: &str = "render:jobs";
+
+/// (source_entry_id, page_number, entry_header_latex, bullet_texts)
+type SectionEntry = (Uuid, i16, Option<String>, Vec<String>);
 
 // ────────────────────────────────────────────────────────────────────────────
 // Worker spawn
@@ -240,7 +242,8 @@ async fn process_render_job(
     let result: Result<(), RenderError> = async {
         // Step 3: Fetch render data from DB (resume row + bullets grouped by section)
         info!(job_id = %job_id, resume_id = %resume_id, "Render job: fetching render data from DB");
-        let (params, resume_template_id) = fetch_render_data(db, resume_id, template_cache).await?;
+        let (params, resume_template_id, resume_type) =
+            fetch_render_data(db, resume_id, template_cache).await?;
         info!(
             job_id = %job_id,
             resume_id = %resume_id,
@@ -301,6 +304,7 @@ async fn process_render_job(
             resume_template_id.as_deref(),
             template_cache,
             profile,
+            &resume_type,
         )
         .await;
         info!(
@@ -442,11 +446,12 @@ async fn process_render_job(
 ///
 /// Derives PageConfig from the template's declared layout physics when a template
 /// is available; falls back to default Inter 11pt, 1" margins otherwise.
+/// Returns `(RenderParams, resume_template_id, resume_type)`.
 async fn fetch_render_data(
     db: &PgPool,
     resume_id: Uuid,
     template_cache: &Arc<TemplateCache>,
-) -> Result<(RenderParams, Option<String>), RenderError> {
+) -> Result<(RenderParams, Option<String>, String), RenderError> {
     // Fetch resume row — includes template_id (added in migration 004)
     let resume = sqlx::query_as::<_, ResumeRow>("SELECT * FROM resumes WHERE id = $1")
         .bind(resume_id)
@@ -455,22 +460,29 @@ async fn fetch_render_data(
         .ok_or(RenderError::ResumeNotFound(resume_id))?;
 
     let resume_template_id = resume.template_id.clone();
+    let resume_type = if resume.resume_type.is_empty() {
+        "single_page".to_string()
+    } else {
+        resume.resume_type.clone()
+    };
 
-    // Fetch bullets ordered: section ASC, order_idx ASC, id ASC
+    // Fetch bullets ordered: page_number ASC, section ASC, order_idx ASC, id ASC
+    // page_number=1 for all single-page resumes (added migration 016, default 1).
     // order_idx preserves the relevance-ranked insertion order from the generation pipeline.
-    // Replaces the previous ORDER BY source_entry_id which used random UUIDs.
     let bullets = sqlx::query_as::<_, ResumeBulletRow>(
-        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY section, order_idx, id",
+        "SELECT * FROM resume_bullets WHERE resume_id = $1 ORDER BY page_number, section, order_idx, id",
     )
     .bind(resume_id)
     .fetch_all(db)
     .await?;
 
-    // Group: section_name → ordered list of (source_entry_id, entry_header, Vec<bullet_text>)
+    // Group: section_name → ordered list of (source_entry_id, page_number, entry_header, Vec<bullet_text>)
     // Preserve first-seen ordering of sections and entries within sections.
+    // page_number comes from the bullet row — for multi-page CV resumes, bullets on different
+    // pages get different page_number values. For single-page resumes, all are 1.
     let mut section_order: Vec<String> = Vec::new();
-    // section → Vec<(source_entry_id, entry_header, Vec<bullet_text>)>
-    let mut section_entries: HashMap<String, SectionEntryList> = HashMap::new();
+    // section → Vec<(source_entry_id, page_number, entry_header, Vec<bullet_text>)>
+    let mut section_entries: HashMap<String, Vec<SectionEntry>> = HashMap::new();
 
     for bullet in &bullets {
         if !section_entries.contains_key(&bullet.section) {
@@ -483,11 +495,11 @@ async fn fetch_render_data(
         // Find existing entry group or create new one
         if let Some(group) = entries
             .iter_mut()
-            .find(|(id, _, _)| *id == bullet.source_entry_id)
+            .find(|(id, _, _, _)| *id == bullet.source_entry_id)
         {
             // Add bullet to existing group (skip empty placeholder for skills entries)
             if !bullet.bullet_text.is_empty() {
-                group.2.push(bullet.bullet_text.clone());
+                group.3.push(bullet.bullet_text.clone());
             }
         } else {
             // New entry group: take entry_header from this bullet (it's the first in the group)
@@ -496,25 +508,31 @@ async fn fetch_render_data(
             } else {
                 vec![bullet.bullet_text.clone()]
             };
+            // page_number defaults to 1 if column absent (pre-migration 016 resumes)
+            let page_num = bullet.page_number.max(1);
             entries.push((
                 bullet.source_entry_id,
+                page_num,
                 bullet.entry_header.clone(),
                 initial_bullets,
             ));
         }
     }
 
-    // Build ResumeSection with ResumeSubEntry
+    // Build ResumeSection with ResumeSubEntry (page_number preserved for CV mode)
     let sections: Vec<ResumeSection> = section_order
         .into_iter()
         .map(|section_name| {
             let entries = section_entries.remove(&section_name).unwrap_or_default();
             let sub_entries = entries
                 .into_iter()
-                .map(|(_, header_latex, entry_bullets)| ResumeSubEntry {
-                    header_latex,
-                    bullets: entry_bullets,
-                })
+                .map(
+                    |(_, page_number, header_latex, entry_bullets)| ResumeSubEntry {
+                        header_latex,
+                        bullets: entry_bullets,
+                        page_number,
+                    },
+                )
                 .collect();
             ResumeSection {
                 name: section_name,
@@ -549,6 +567,7 @@ async fn fetch_render_data(
             sections,
         },
         resume_template_id,
+        resume_type,
     ))
 }
 
@@ -591,6 +610,62 @@ fn compute_render_hash(
     hex::encode(hasher.finalize())
 }
 
+/// Groups `ResumeSection`s by page number for multi-page CV rendering.
+///
+/// Returns a `Vec<Vec<SampleSection>>` where the outer index is `page_number - 1`.
+/// Sub-entries from different pages of the same logical section are split across
+/// the page groups — section headers repeat on each page they appear (since
+/// the paginator already cleared seen_sections on page advance).
+///
+/// `resume_sections` uses `ResumeSubEntry` (which has `page_number`).
+/// The output `SampleSection`s carry NO page_number — they're rendered within one page.
+fn group_sections_by_page(resume_sections: &[ResumeSection]) -> Vec<Vec<SampleSection>> {
+    // Determine the maximum page number
+    let max_page = resume_sections
+        .iter()
+        .flat_map(|s| s.sub_entries.iter())
+        .map(|se| se.page_number as usize)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
+    let mut pages: Vec<Vec<SampleSection>> = vec![Vec::new(); max_page];
+
+    for section in resume_sections {
+        // Group sub-entries by page
+        let mut page_sub_entries: std::collections::HashMap<i16, Vec<SampleSubEntry>> =
+            std::collections::HashMap::new();
+        for se in &section.sub_entries {
+            let page_num = se.page_number.max(1);
+            page_sub_entries
+                .entry(page_num)
+                .or_default()
+                .push(SampleSubEntry {
+                    header_latex: se.header_latex.clone(),
+                    bullets: se.bullets.clone(),
+                });
+        }
+
+        for (page_num, sub_entries) in page_sub_entries {
+            let page_idx = (page_num as usize).saturating_sub(1).min(max_page - 1);
+            pages[page_idx].push(SampleSection {
+                name: section.name.clone(),
+                sub_entries,
+            });
+        }
+    }
+
+    // Remove trailing empty pages
+    while pages.last().map(|p| p.is_empty()).unwrap_or(false) {
+        pages.pop();
+    }
+    if pages.is_empty() {
+        pages.push(Vec::new());
+    }
+
+    pages
+}
+
 /// Builds the LaTeX document string for a render job.
 ///
 /// Routing logic:
@@ -599,12 +674,16 @@ fn compute_render_hash(
 ///   - Otherwise (None or unrecognized id) → try generic-cv from cache,
 ///     then fall back to `build_minimal_pdflatex_document()`
 ///
+/// For CV mode (`resume_type == "cv"`), uses `build_paginated_sections_latex`
+/// which emits `\newpage` between pages.
+///
 /// `profile` is passed in (already fetched by the caller) to avoid a double DB fetch.
 async fn build_latex_for_job(
     params: &RenderParams,
     template_id: Option<&str>,
     template_cache: &Arc<TemplateCache>,
     profile: ProfileData,
+    resume_type: &str,
 ) -> String {
     // Apply canonical section ordering — done once here, reused in both template branches
     let ordered_sections = crate::render::section_order::order_sections(&params.sections);
@@ -623,11 +702,47 @@ async fn build_latex_for_job(
         })
         .collect();
 
+    // Determine if this is a real multi-page document (page_number > 1 exists in data).
+    let is_multipage_cv = resume_type == "cv"
+        && params
+            .sections
+            .iter()
+            .any(|s| s.sub_entries.iter().any(|se| se.page_number > 1));
+
+    // Helper: renders the template with either paginated or flat sections.
+    let render_with_template = |template: &crate::templates::LoadedTemplate| -> String {
+        if is_multipage_cv {
+            let fmt = template
+                .metadata
+                .section_formatting
+                .as_ref()
+                .cloned()
+                .unwrap_or_default();
+            // group_sections_by_page uses ResumeSection (with page_number on sub-entries)
+            // order_sections returns Vec<&ResumeSection> — collect into owned Vec first.
+            let ordered: Vec<ResumeSection> =
+                crate::render::section_order::order_sections(&params.sections)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+            let pages = group_sections_by_page(&ordered);
+            let sections_latex = crate::templates::build_paginated_sections_latex(&pages, &fmt);
+            crate::templates::render_file_template_with_sections(
+                template,
+                &profile,
+                &sections,
+                &sections_latex,
+            )
+        } else {
+            crate::templates::render_file_template(template, &profile, &sections)
+        }
+    };
+
     if let Some(tid) = template_id {
         // Acquire read lock — lightweight, no contention in practice
         let cache = template_cache.read().await;
         if let Some(template) = cache.get(tid) {
-            return crate::templates::render_file_template(template, &profile, &sections);
+            return render_with_template(template);
         } else {
             // template_id set but not in cache — log and fall through to generic-cv
             warn!(
@@ -641,7 +756,7 @@ async fn build_latex_for_job(
     {
         let cache = template_cache.read().await;
         if let Some(template) = cache.get("generic-cv") {
-            return crate::templates::render_file_template(template, &profile, &sections);
+            return render_with_template(template);
         }
     }
 

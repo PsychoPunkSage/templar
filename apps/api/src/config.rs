@@ -207,7 +207,9 @@ impl Config {
             ),
 
             // Auth (optional)
-            clerk_jwks_url: std::env::var("CLERK_JWKS_URL").ok().filter(|s| !s.is_empty()),
+            clerk_jwks_url: std::env::var("CLERK_JWKS_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
         })
     }
 }

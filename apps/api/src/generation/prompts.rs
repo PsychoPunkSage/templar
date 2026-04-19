@@ -173,6 +173,46 @@ Rules:
 - selected_entry_indices: list of integer indices from the [N] prefix in CANDIDATE CONTEXT SUMMARY — include entries with any match; omit only entries with zero relevance
 - Do NOT include any text outside the JSON object"#;
 
+// ────────────────────────────────────────────────────────────────────────────
+// Inline bullet refinement
+// ────────────────────────────────────────────────────────────────────────────
+
+/// System prompt for inline bullet refinement — enforces JSON-only output.
+pub const REFINE_BULLET_SYSTEM: &str =
+    "You are refining a single resume bullet per a user's instruction. \
+    You MUST respond with valid JSON only — a JSON object with a single \"text\" field. \
+    Do NOT include any text outside the JSON object. \
+    Do NOT invent facts not present in the context entry. \
+    The refined bullet must remain traceable to the provided context entry. \
+    Output only the rewritten bullet text — no explanation, no commentary.";
+
+/// Inline bullet refinement prompt template.
+/// Placeholders: {entry_data_json}, {raw_text}, {jd_keywords_json}, {current_bullet}, {instruction}
+pub const REFINE_BULLET_PROMPT_TEMPLATE: &str = r#"Rewrite the resume bullet below per the user's instruction.
+
+CONTEXT ENTRY (the only source of truth — do not add facts not present here):
+{entry_data_json}
+
+RAW CONTEXT TEXT:
+{raw_text}
+
+JD KEYWORDS (incorporate naturally if relevant — do not keyword-stuff):
+{jd_keywords_json}
+
+CURRENT BULLET:
+{current_bullet}
+
+USER INSTRUCTION:
+{instruction}
+
+HARD RULES:
+1. Only use facts present in the context entry data or raw text — no invention
+2. Begin with a strong action verb
+3. Keep it concise — aim for 1–2 rendered lines, never 3+
+4. Return a JSON object with this EXACT schema (no extra fields):
+
+{{"text": "Rewritten bullet text here"}}"#;
+
 /// Reframe hint prompt template.
 /// Replace: {entry_json}, {tone}, {jd_summary}
 pub const REFRAME_PROMPT_TEMPLATE: &str = r#"Given this context entry and the detected JD tone, suggest a concise alternative framing that better highlights the most relevant aspect of this entry for the target role.

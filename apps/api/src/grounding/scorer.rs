@@ -198,6 +198,7 @@ pub async fn regenerate_single_bullet(
         jd_keywords_used: bullet.jd_keywords_used.clone(),
         was_adjusted: true,
         flagged_for_review: bullet.flagged_for_review,
+        page_number: bullet.page_number,
     })
 }
 

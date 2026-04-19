@@ -104,11 +104,13 @@ export const api = {
    * Enqueues an async generation job and returns immediately with { job_id, status: "queued" }.
    * The actual pipeline runs in the background worker.
    * Poll GET /api/v1/generation/jobs/:id/status to track progress.
+   *
+   * @param resumeMode 'single_page' (default) or 'cv' — controls pagination in the pipeline.
    */
-  generateResume: (userId: string, jdText: string) =>
+  generateResume: (userId: string, jdText: string, resumeMode: 'single_page' | 'cv' = 'single_page') =>
     apiFetch<GenerateJobResponse>("/api/v1/resumes/generate", {
       method: "POST",
-      body: JSON.stringify({ user_id: userId, jd_text: jdText }),
+      body: JSON.stringify({ user_id: userId, jd_text: jdText, resume_mode: resumeMode }),
     }),
 
   /**
@@ -331,6 +333,36 @@ export const api = {
   clearAllContext: async (userId: string): Promise<{ deleted_count: number }> =>
     apiFetch<{ deleted_count: number }>(`/api/v1/context?user_id=${userId}`, {
       method: "DELETE",
+    }),
+
+  // ── Inline bullet refinement ───────────────────────────────────────────────
+
+  /**
+   * POST /api/v1/resumes/:resumeId/bullets/refine
+   * Refines a single bullet in-place using the user's instruction.
+   * Context is scoped to the bullet's source entry — not the full user context.
+   * On was_rejected=true: caller should revert to original_text (grounding failed).
+   */
+  refineBullet: (
+    resumeId: string,
+    payload: {
+      bullet_text: string;
+      source_entry_id: string;
+      section: string;
+      instruction: string;
+    }
+  ) =>
+    apiFetch<{
+      original_text: string;
+      refined_text: string;
+      verified_line_count: number;
+      grounding_score: number;
+      verdict: string;
+      was_rejected: boolean;
+      rejection_reason: string | null;
+    }>(`/api/v1/resumes/${resumeId}/bullets/refine`, {
+      method: "POST",
+      body: JSON.stringify(payload),
     }),
 
   getProfile: (userId: string) =>

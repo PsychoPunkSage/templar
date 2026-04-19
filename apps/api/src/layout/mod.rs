@@ -5,9 +5,11 @@
 pub mod contract;
 pub mod font_metrics;
 pub mod page_fill;
+pub mod paginator;
 pub mod prompts;
 pub mod simulator;
 
 // Re-export the public API consumed by other modules (generator, handlers).
 pub use font_metrics::{default_page_config, FontFamily, PageConfig};
+pub use paginator::{apply_pagination, paginate_bullets};
 pub use simulator::{run_simulation_loop, SimulatedBullet};

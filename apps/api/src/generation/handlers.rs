@@ -11,10 +11,14 @@ use crate::context::versioning::get_current_entries;
 use crate::errors::AppError;
 use crate::generation::fit_cache;
 use crate::generation::fit_scoring::{FitReport, /* FitScorer,*/ LlmFitScorer};
-use crate::generation::generator::{EntryGroup, GenerateRequest, GenerateResponse};
+use crate::generation::generator::{DraftBullet, EntryGroup, GenerateRequest, GenerateResponse};
 use crate::generation::hash_utils;
 use crate::generation::jd_parser::{parse_jd, ParsedJD};
+use crate::generation::prompts::{REFINE_BULLET_PROMPT_TEMPLATE, REFINE_BULLET_SYSTEM};
 use crate::generation::worker::enqueue_generation_job;
+use crate::grounding::scorer::score_bullet;
+use crate::grounding::types::GroundingVerdict;
+use crate::layout::run_simulation_loop;
 use crate::models::resume::{GenerationJobRow, ResumeBulletRow, ResumeRow};
 use crate::state::AppState;
 
@@ -74,6 +78,8 @@ pub struct GenerationStatusResponse {
     pub fit_report: Option<FitReport>,
     pub entry_groups: Option<Vec<EntryGroup>>,
     pub layout_flagged: Option<bool>,
+    /// Number of pages in the generated document. Null until status='done'.
+    pub page_count: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -265,23 +271,25 @@ pub async fn handle_generation_status(
             fit_report: None,
             entry_groups: None,
             layout_flagged: None,
+            page_count: None,
         }));
     }
 
     // status='done': deserialize the stored GenerateResponse from result JSONB
     let result: Option<GenerateResponse> = row.result.and_then(|v| serde_json::from_value(v).ok());
 
-    let (fit_report, entry_groups, layout_flagged) = match result {
+    let (fit_report, entry_groups, layout_flagged, page_count) = match result {
         Some(r) => (
             Some(r.fit_report),
             Some(r.entry_groups),
             Some(r.layout_flagged),
+            Some(r.page_count),
         ),
         None => {
             // result JSONB missing or malformed — return done status with null fields.
             // This is non-fatal: the frontend can still render from resume_bullets.
             tracing::warn!(job_id = %job_id, "Generation job done but result JSONB missing or invalid");
-            (None, None, None)
+            (None, None, None, None)
         }
     };
 
@@ -293,6 +301,7 @@ pub async fn handle_generation_status(
         fit_report,
         entry_groups,
         layout_flagged,
+        page_count,
     }))
 }
 
@@ -390,5 +399,283 @@ pub async fn handle_get_resume(
         resume,
         bullets,
         entry_groups,
+    }))
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Inline bullet refinement
+// ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct RefineBulletRequest {
+    /// Current bullet text — used to identify the bullet in the DB.
+    pub bullet_text: String,
+    /// Source context entry ID — scopes LLM context to this entry only.
+    pub source_entry_id: Uuid,
+    /// Section the bullet belongs to (e.g. "experience").
+    pub section: String,
+    /// Free-form user instruction (e.g. "make this more concise").
+    pub instruction: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RefineBulletResponse {
+    pub original_text: String,
+    /// On rejection: same as original_text. On success: the new bullet text.
+    pub refined_text: String,
+    pub verified_line_count: u8,
+    pub grounding_score: f32,
+    /// "pass" | "flag_for_review" | "fail"
+    pub verdict: String,
+    /// true when grounding score < 0.65 — frontend should revert to original_text.
+    pub was_rejected: bool,
+    pub rejection_reason: Option<String>,
+}
+
+/// Internal LLM output type for the refinement call.
+#[derive(serde::Deserialize)]
+struct RefinedBulletOutput {
+    text: String,
+}
+
+/// POST /api/v1/resumes/:resume_id/bullets/refine
+///
+/// Refines a single bullet in-place using the user's instruction.
+/// Context is scoped to the bullet's source entry only — not the full user context.
+///
+/// Pipeline: LLM rewrite → layout simulation → grounding check → DB update.
+/// On grounding failure (< 0.65): returns was_rejected=true, DB unchanged.
+/// On success: updates resume_bullets + resumes.entry_groups, caller should re-render.
+pub async fn handle_refine_bullet(
+    State(state): State<AppState>,
+    Path(resume_id): Path<Uuid>,
+    Json(request): Json<RefineBulletRequest>,
+) -> Result<Json<RefineBulletResponse>, AppError> {
+    if request.instruction.trim().is_empty() {
+        return Err(AppError::Validation(
+            "instruction cannot be empty".to_string(),
+        ));
+    }
+    if request.bullet_text.trim().is_empty() {
+        return Err(AppError::Validation(
+            "bullet_text cannot be empty".to_string(),
+        ));
+    }
+
+    // Step 1: Load resume → get jd_text + template_id + user_id
+    let resume = sqlx::query_as::<_, ResumeRow>("SELECT * FROM resumes WHERE id = $1")
+        .bind(resume_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Resume {resume_id} not found")))?;
+
+    // Step 2: Load source entry (scoped context — only this entry sent to LLM).
+    // FIX: Sending only source_entry context for single-bullet refinement.
+    // Future: can scope further to specific achievements within the entry
+    // that were originally selected (tracked via selected_entry_ids on FitReport).
+    let all_entries = get_current_entries(&state.db, resume.user_id)
+        .await
+        .map_err(AppError::Internal)?;
+    let source_entry = all_entries
+        .into_iter()
+        .find(|e| e.entry_id == request.source_entry_id)
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Context entry {} not found for this user",
+                request.source_entry_id
+            ))
+        })?;
+
+    // Step 3: Get page_config from template (for accurate layout simulation)
+    let page_config = {
+        let cache = state.template_cache.read().await;
+        resume
+            .template_id
+            .as_deref()
+            .and_then(|id| cache.get(id).map(|t| t.metadata.page_config()))
+            .unwrap_or_else(|| state.page_config.clone())
+    };
+
+    // Step 4: Parse JD to extract keywords for the refinement prompt
+    let parsed_jd = parse_jd(&resume.jd_text, &state.llm).await?;
+    let keywords: Vec<&str> = parsed_jd
+        .keyword_inventory
+        .iter()
+        .map(|k| k.keyword.as_str())
+        .collect();
+    let keywords_json = serde_json::to_string(&keywords).unwrap_or_else(|_| "[]".to_string());
+
+    // Step 5: Fetch existing bullet's entry_header_latex so we preserve it on update
+    let existing = sqlx::query!(
+        "SELECT entry_header FROM resume_bullets \
+         WHERE resume_id = $1 AND source_entry_id = $2 AND bullet_text = $3 \
+         LIMIT 1",
+        resume_id,
+        request.source_entry_id,
+        request.bullet_text,
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    let entry_header_latex = existing.and_then(|r| r.entry_header);
+
+    // Step 6: LLM refinement call
+    let entry_data_json =
+        serde_json::to_string(&source_entry.data).unwrap_or_else(|_| "{}".to_string());
+    let raw_text = source_entry.raw_text.as_deref().unwrap_or("");
+
+    let prompt = REFINE_BULLET_PROMPT_TEMPLATE
+        .replace("{entry_data_json}", &entry_data_json)
+        .replace("{raw_text}", raw_text)
+        .replace("{jd_keywords_json}", &keywords_json)
+        .replace("{current_bullet}", &request.bullet_text)
+        .replace("{instruction}", &request.instruction);
+
+    let llm_output: RefinedBulletOutput = state
+        .llm
+        .call_json(&prompt, REFINE_BULLET_SYSTEM)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("LLM refinement call failed: {e}")))?;
+
+    let refined_text = llm_output.text.trim().to_string();
+    if refined_text.is_empty() {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "LLM returned empty refined bullet"
+        )));
+    }
+
+    // Step 7: Layout simulation (single bullet — enforces 2-line contract)
+    let draft = DraftBullet {
+        text: refined_text.clone(),
+        source_entry_id: request.source_entry_id,
+        section: request.section.clone(),
+        entry_header_latex: entry_header_latex.clone(),
+        line_estimate: 1,
+        jd_keywords_used: vec![],
+    };
+    let sim_result =
+        run_simulation_loop(vec![draft], &page_config, &parsed_jd, &state.llm, 1).await?;
+    let simulated = sim_result
+        .bullets
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Simulation produced no bullets")))?;
+
+    // Step 8: Grounding check
+    let grounding = score_bullet(
+        &simulated,
+        &source_entry,
+        &state.llm,
+        simulated.was_adjusted,
+    )
+    .await?;
+    let verdict_str = match &grounding.verdict {
+        GroundingVerdict::Pass => "pass",
+        GroundingVerdict::FlagForReview => "flag_for_review",
+        GroundingVerdict::Fail => "fail",
+    };
+
+    // Step 9: Reject on grounding Fail — DB unchanged
+    if matches!(grounding.verdict, GroundingVerdict::Fail) {
+        tracing::warn!(
+            resume_id = %resume_id,
+            source_entry_id = %request.source_entry_id,
+            score = grounding.score.composite,
+            "Refined bullet rejected — grounding score below threshold"
+        );
+        return Ok(Json(RefineBulletResponse {
+            original_text: request.bullet_text.clone(),
+            refined_text: request.bullet_text,
+            verified_line_count: 1,
+            grounding_score: grounding.score.composite,
+            verdict: verdict_str.to_string(),
+            was_rejected: true,
+            rejection_reason: grounding.rejection_reason,
+        }));
+    }
+
+    // Step 10: Update DB — resume_bullets row.
+    // Match by (resume_id, source_entry_id, bullet_text). Use TRIM on both sides so minor
+    // whitespace differences (trailing newline from LLM, etc.) don't silently miss the row.
+    let rows_updated = sqlx::query!(
+        "UPDATE resume_bullets \
+         SET bullet_text = $1, line_count = $2, grounding_score = $3, is_user_edited = true \
+         WHERE resume_id = $4 AND source_entry_id = $5 AND TRIM(bullet_text) = TRIM($6)",
+        simulated.text,
+        simulated.verified_line_count as i16,
+        grounding.score.composite as f64,
+        resume_id,
+        request.source_entry_id,
+        request.bullet_text,
+    )
+    .execute(&state.db)
+    .await?
+    .rows_affected();
+
+    if rows_updated == 0 {
+        tracing::warn!(
+            resume_id = %resume_id,
+            source_entry_id = %request.source_entry_id,
+            bullet_text_len = request.bullet_text.len(),
+            "refine_bullet: UPDATE matched 0 rows — bullet_text mismatch; \
+             content_hash will still be cleared to force re-render"
+        );
+    }
+
+    // Always invalidate the render content-hash so the next render job never
+    // hits the cache and always compiles fresh from resume_bullets.
+    // This is safe even if rows_updated == 0 — at worst we get an extra compile.
+    let _ = sqlx::query!(
+        "UPDATE resumes SET content_hash = NULL WHERE id = $1",
+        resume_id,
+    )
+    .execute(&state.db)
+    .await;
+
+    // Step 11: Update resumes.entry_groups JSONB (replace bullet in-place)
+    if let Some(eg_value) = &resume.entry_groups {
+        if let Ok(mut entry_groups) = serde_json::from_value::<Vec<EntryGroup>>(eg_value.clone()) {
+            for group in &mut entry_groups {
+                if group.source_entry_id == request.source_entry_id {
+                    for bullet in &mut group.bullets {
+                        if bullet.text == request.bullet_text {
+                            bullet.text = simulated.text.clone();
+                            bullet.verified_line_count = simulated.verified_line_count;
+                            bullet.was_adjusted = true;
+                            bullet.flagged_for_review =
+                                matches!(grounding.verdict, GroundingVerdict::FlagForReview);
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+            if let Ok(new_eg) = serde_json::to_value(&entry_groups) {
+                let _ = sqlx::query!(
+                    "UPDATE resumes SET entry_groups = $1 WHERE id = $2",
+                    new_eg,
+                    resume_id,
+                )
+                .execute(&state.db)
+                .await;
+            }
+        }
+    }
+
+    tracing::info!(
+        resume_id = %resume_id,
+        source_entry_id = %request.source_entry_id,
+        verdict = verdict_str,
+        score = grounding.score.composite,
+        "Bullet refined successfully"
+    );
+
+    Ok(Json(RefineBulletResponse {
+        original_text: request.bullet_text,
+        refined_text: simulated.text,
+        verified_line_count: simulated.verified_line_count,
+        grounding_score: grounding.score.composite,
+        verdict: verdict_str.to_string(),
+        was_rejected: false,
+        rejection_reason: None,
     }))
 }

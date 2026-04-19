@@ -6,8 +6,6 @@ import { useResumeStore } from "@/store/resumeStore";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 
-import type { RenderTask } from "pdfjs-dist";
-
 type PdfjsLib = typeof import("pdfjs-dist");
 let pdfjsLib: PdfjsLib | null = null;
 
@@ -21,30 +19,36 @@ const ZOOM_STEP = 0.25;
 // Default zoom: show the canvas at its natural 1:1 pixel size
 const ZOOM_DEFAULT = 1.0;
 
+/** Per-page rasterized state. */
+interface RenderedPage {
+  width: number;
+  height: number;
+  /** ImageBitmap or canvas — we store the canvas element directly. */
+  canvas: HTMLCanvasElement;
+}
+
 export function PdfPreview() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const { renderJobId, renderStatus, rerender, resumeId } = useResumeStore();
   const [isLoading, setIsLoading] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [isDownloading, setIsDownloading] = useState(false);
-  // Track rendered canvas dimensions so the wrapper div can reflect the scaled size,
-  // giving overflow-auto a real layout size to scroll against.
-  const [canvasDims, setCanvasDims] = useState({ width: 0, height: 0 });
+  const [pages, setPages] = useState<RenderedPage[]>([]);
+  const [totalPages, setTotalPages] = useState(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activeRenderTaskRef = useRef<RenderTask | null>(null);
+  // Monotonically increasing counter — each renderPdf call claims a generation.
+  const renderGenRef = useRef(0);
 
-  // Renders the PDF once at RENDER_SCALE. Zoom is pure CSS — no re-render needed.
+  // Renders ALL pages of the PDF at RENDER_SCALE into offscreen canvases.
+  // Stores them in state so React can mount them into the DOM.
   const renderPdf = useCallback(async (jobId: string) => {
-    if (!canvasRef.current) return;
-
-    if (activeRenderTaskRef.current) {
-      activeRenderTaskRef.current.cancel();
-      activeRenderTaskRef.current = null;
-    }
+    // Claim this generation — any older concurrent call will bail at the next checkpoint
+    const myGen = ++renderGenRef.current;
 
     setIsLoading(true);
     setRenderError(null);
+    setPages([]);
 
     try {
       if (!pdfjsLib) {
@@ -52,38 +56,50 @@ export function PdfPreview() {
         pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
       }
 
+      if (myGen !== renderGenRef.current) return;
+
       const pdfUrl = api.getPdfUrl(jobId);
       const loadingTask = pdfjsLib.getDocument(pdfUrl);
       const pdf = await loadingTask.promise;
 
-      if (pdf.numPages === 0) {
+      if (myGen !== renderGenRef.current) return;
+
+      const numPages = pdf.numPages;
+      if (numPages === 0) {
         throw new Error("PDF contains no pages — try generating again.");
       }
 
-      const page = await pdf.getPage(1);
-      if (!page) {
-        throw new Error("Failed to load page 1 — try generating again.");
+      setTotalPages(numPages);
+
+      // Render pages sequentially to avoid overwhelming the PDF.js worker
+      const rendered: RenderedPage[] = [];
+      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+        if (myGen !== renderGenRef.current) return;
+
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: RENDER_SCALE });
+
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        const renderTask = page.render({ canvas, viewport });
+        await renderTask.promise;
+
+        rendered.push({ width: viewport.width, height: viewport.height, canvas });
+        // Publish pages progressively so the user sees them appear one by one
+        if (myGen === renderGenRef.current) {
+          setPages([...rendered]);
+        }
       }
-
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-
-      const viewport = page.getViewport({ scale: RENDER_SCALE });
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-      setCanvasDims({ width: viewport.width, height: viewport.height });
-
-      const task = page.render({ canvas, viewport });
-      activeRenderTaskRef.current = task;
-      await task.promise;
-      activeRenderTaskRef.current = null;
     } catch (e) {
+      if (myGen !== renderGenRef.current) return;
       if (e instanceof Error && e.name === "RenderingCancelledException") return;
       const msg = e instanceof Error ? e.message : "Unknown render error";
       setRenderError(msg);
       console.error("[PdfPreview] PDF render error:", e);
     } finally {
-      setIsLoading(false);
+      if (myGen === renderGenRef.current) setIsLoading(false);
     }
   }, []);
 
@@ -163,7 +179,7 @@ export function PdfPreview() {
     );
   }
 
-  // renderStatus === "done" — show toolbar + scrollable canvas
+  // renderStatus === "done" — show toolbar + scrollable multi-page canvas area
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
@@ -192,6 +208,13 @@ export function PdfPreview() {
           >
             <ZoomIn className="h-3.5 w-3.5" />
           </Button>
+
+          {/* Page count indicator — visible for multi-page documents */}
+          {totalPages > 1 && (
+            <span className="ml-2 text-xs text-muted-foreground">
+              {pages.length}/{totalPages} pages
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <Button
@@ -221,29 +244,58 @@ export function PdfPreview() {
         </div>
       </div>
 
-      {/* Scrollable canvas area */}
-      <div className="flex-1 overflow-auto relative">
-        {isLoading && (
+      {/* Scrollable multi-page canvas area */}
+      <div ref={scrollContainerRef} className="flex-1 overflow-auto relative">
+        {isLoading && pages.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center bg-background/50 z-10">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent text-muted-foreground" />
           </div>
         )}
-        {/*
-          The wrapper div is sized to the actual scaled dimensions so overflow-auto
-          has real layout space to scroll against. The canvas is then CSS-scaled
-          with transform-origin: top left so it fills that space exactly.
-        */}
-        <div className="p-2">
-          <div style={{
-            width: canvasDims.width * zoom,
-            height: canvasDims.height * zoom,
-          }}>
-            <canvas
-              ref={canvasRef}
-              className="shadow-lg rounded"
-              style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }}
-            />
-          </div>
+        <div className="p-2 flex flex-col gap-3 items-start">
+          {pages.map((pg, idx) => (
+            <div
+              key={idx}
+              style={{
+                width: pg.width * zoom,
+                height: pg.height * zoom,
+                position: "relative",
+                flexShrink: 0,
+              }}
+            >
+              {/* Mount the offscreen canvas into the DOM via ref callback */}
+              <div
+                style={{
+                  transformOrigin: "top left",
+                  transform: `scale(${zoom})`,
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                }}
+                ref={(node) => {
+                  if (node && !node.contains(pg.canvas)) {
+                    node.innerHTML = "";
+                    node.appendChild(pg.canvas);
+                  }
+                }}
+              />
+              {/* Page number label for multi-page documents */}
+              {totalPages > 1 && (
+                <div
+                  className="absolute -bottom-5 left-0 text-xs text-muted-foreground select-none"
+                  style={{ width: pg.width * zoom }}
+                >
+                  Page {idx + 1}
+                </div>
+              )}
+            </div>
+          ))}
+          {/* Loading indicator for progressive page loading */}
+          {isLoading && pages.length > 0 && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Loading page {pages.length + 1} of {totalPages}...
+            </div>
+          )}
         </div>
       </div>
     </div>

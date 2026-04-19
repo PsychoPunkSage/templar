@@ -66,6 +66,11 @@ pub fn build_router(state: AppState) -> Router {
             post(gen::handle_get_cached_fit_score),
         )
         .route("/api/v1/resumes/generate", post(gen::handle_generate))
+        // Inline bullet refinement — literal suffix before :id param (Axum priority)
+        .route(
+            "/api/v1/resumes/:id/bullets/refine",
+            post(gen::handle_refine_bullet),
+        )
         // FIX-08: async generation job status polling
         .route(
             "/api/v1/generation/jobs/:id/status",

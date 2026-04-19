@@ -14,6 +14,36 @@ import type {
 type GenerationStatus = "idle" | "queued" | "processing" | "done" | "failed";
 type RenderStatus = "idle" | "queued" | "rendering" | "done" | "failed";
 
+export interface RefinementQueueItem {
+  bulletText: string;
+  sourceEntryId: string;
+  section: string;
+  instruction: string;
+  originalText: string; // for revert on rejection
+}
+
+function queueStorageKey(projectId: string): string {
+  return `templar:refinement-queue:${projectId}`;
+}
+
+function persistQueue(projectId: string, queue: RefinementQueueItem[]): void {
+  try {
+    localStorage.setItem(queueStorageKey(projectId), JSON.stringify(queue));
+  } catch {
+    // localStorage unavailable — silently ignore
+  }
+}
+
+function loadQueue(projectId: string): RefinementQueueItem[] {
+  try {
+    const raw = localStorage.getItem(queueStorageKey(projectId));
+    if (!raw) return [];
+    return JSON.parse(raw) as RefinementQueueItem[];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Reconstructs an EntryGroup from ResumeBulletRow for the loadResume() path.
  * Display headers are not available from DB alone — uses "other" fallback with source_entry_id label.
@@ -46,6 +76,8 @@ function bulletRowsToEntryGroups(rows: ResumeBulletRow[]): EntryGroup[] {
       jd_keywords_used: [],
       was_adjusted: false,
       flagged_for_review: row.grounding_score < 0.8 || row.rejection_reason != null,
+      // page_number from DB row (added in migration 016); defaults to 1 for pre-migration rows
+      page_number: row.page_number ?? 1,
     };
 
     groupMap.get(row.source_entry_id)!.bullets.push(bullet);
@@ -82,6 +114,12 @@ interface ResumeStore {
   error: string | null;
   /** The project this generation belongs to. Used to link resume after generation. */
   currentProjectId: string | null;
+  /**
+   * Number of pages in the generated resume (1 for single-page, 1+ for CV mode).
+   * Set from the generation job status response when status='done'.
+   * Null until first generation completes.
+   */
+  pageCount: number | null;
   /** True while analyzeFit() is in flight. */
   fitScoreLoading: boolean;
   /** null = no fit score loaded yet; true = came from cache; false = freshly scored via LLM. */
@@ -98,6 +136,12 @@ interface ResumeStore {
   generationJobId: string | null;
   /** Current phase of the async generation pipeline (FIX-08). */
   generationStatus: GenerationStatus;
+
+  // ─── Inline refinement ─────────────────────────────────────────────────────
+  /** Pending refinements persisted to localStorage — survive navigation and refresh. */
+  refinementQueue: RefinementQueueItem[];
+  /** Bullet texts currently being refined (for per-card spinner). */
+  refiningBullets: string[];
 
   // ─── Actions ───────────────────────────────────────────────────────────────
   setJdText: (text: string) => void;
@@ -148,6 +192,20 @@ interface ResumeStore {
    */
   rerender: () => Promise<void>;
   clearError: () => void;
+
+  // ─── Inline refinement actions ─────────────────────────────────────────────
+  /** Restores the queue from localStorage for a given project on page mount. */
+  hydrateQueue: (projectId: string) => void;
+  /** Fires an immediate single-bullet refinement → updates store → re-renders PDF. */
+  refineBullet: (bulletText: string, sourceEntryId: string, section: string, instruction: string) => Promise<void>;
+  /** Adds a refinement to the queue and persists to localStorage. */
+  queueRefinement: (bulletText: string, sourceEntryId: string, section: string, instruction: string) => void;
+  /** Fires all queued refinements in parallel → patches bullets → single re-render. */
+  applyQueue: () => Promise<void>;
+  /** Clears the full queue and removes from localStorage. */
+  clearQueue: () => void;
+  /** Removes a single item from the queue by bulletText. */
+  removeFromQueue: (bulletText: string) => void;
 }
 
 export const useResumeStore = create<ResumeStore>((set, get) => ({
@@ -161,6 +219,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
   isGenerating: false,
   error: null,
   currentProjectId: null,
+  pageCount: null,
   fitScoreLoading: false,
   fitScoreCacheHit: null,
   lastJdHash: null,
@@ -169,6 +228,8 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
   contextChangedSinceAnalysis: false,
   generationJobId: null,
   generationStatus: "idle",
+  refinementQueue: [],
+  refiningBullets: [],
 
   setJdText: (text) => set({ jdText: text }),
   setCurrentProjectId: (id) => set({ currentProjectId: id }),
@@ -192,6 +253,9 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
     error: null,
     generationJobId: null,
     generationStatus: "idle",
+    refinementQueue: [],
+    refiningBullets: [],
+    pageCount: null,
   }),
 
   invalidateFitScore: () => set({ contextChangedSinceAnalysis: true }),
@@ -266,7 +330,14 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
 
     try {
       // Step 1: Enqueue — returns immediately with { job_id, status: "queued" }
-      const { job_id } = await api.generateResume(getUserId(), jdText);
+      // Determine resume mode from the current project's document_type.
+      // Import projectStore lazily to avoid circular dependency.
+      const { useProjectStore } = await import("@/store/projectStore");
+      const project = useProjectStore.getState().currentProject;
+      const resumeMode: 'single_page' | 'cv' =
+        project?.document_type === 'cv' ? 'cv' : 'single_page';
+
+      const { job_id } = await api.generateResume(getUserId(), jdText, resumeMode);
       console.log("[store] generation job enqueued", { job_id });
       set({ generationJobId: job_id });
 
@@ -314,6 +385,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
             lastJdHash: null,
             lastContextHash: null,
             isGenerating: false,
+            pageCount: status.page_count ?? 1,
           });
           console.log("[store] generation done", {
             resumeId,
@@ -421,6 +493,9 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
         entryGroups: detail.entry_groups ?? bulletRowsToEntryGroups(detail.bullets),
         renderJobId: restoredJobId,
         renderStatus: restoredStatus,
+        // Restore page count so the CV page badge is correct after page refresh.
+        // page_count is null for single-page resumes until generation completes; treat as 1.
+        pageCount: detail.resume.page_count ?? 1,
       });
 
       // Resume polling if a render job was in-flight when the page was last closed
@@ -430,6 +505,105 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
     } catch {
       // Non-fatal — if the fetch fails, entryGroups stay empty (user can regenerate)
     }
+  },
+
+  // ─── Inline refinement ─────────────────────────────────────────────────────
+
+  hydrateQueue: (projectId) => {
+    set({ refinementQueue: loadQueue(projectId) });
+  },
+
+  refineBullet: async (bulletText, sourceEntryId, section, instruction) => {
+    const { resumeId, entryGroups, currentProjectId } = get();
+    if (!resumeId) return;
+
+    // Mark bullet as in-flight
+    set((s) => ({ refiningBullets: [...s.refiningBullets, bulletText] }));
+    try {
+      const result = await api.refineBullet(resumeId, {
+        bullet_text: bulletText,
+        source_entry_id: sourceEntryId,
+        section,
+        instruction,
+      });
+
+      if (!result.was_rejected) {
+        // Patch the bullet in entryGroups
+        const newGroups = entryGroups.map((g) => {
+          if (g.source_entry_id !== sourceEntryId) return g;
+          return {
+            ...g,
+            bullets: g.bullets.map((b) =>
+              b.text === bulletText
+                ? { ...b, text: result.refined_text, verified_line_count: result.verified_line_count as 1 | 2, was_adjusted: true }
+                : b
+            ),
+          };
+        });
+        set({ entryGroups: newGroups });
+        get().rerender();
+      }
+
+      // Remove from queue if it was queued
+      if (currentProjectId) {
+        const newQ = get().refinementQueue.filter((r) => r.bulletText !== bulletText);
+        set({ refinementQueue: newQ });
+        persistQueue(currentProjectId, newQ);
+      }
+
+      return result.was_rejected
+        ? Promise.reject(new Error(result.rejection_reason ?? "Refinement rejected"))
+        : Promise.resolve();
+    } catch (e) {
+      throw e;
+    } finally {
+      set((s) => ({ refiningBullets: s.refiningBullets.filter((t) => t !== bulletText) }));
+    }
+  },
+
+  queueRefinement: (bulletText, sourceEntryId, section, instruction) => {
+    const { currentProjectId, refinementQueue } = get();
+    // Replace if already queued for this bullet
+    const existing = refinementQueue.findIndex((r) => r.bulletText === bulletText);
+    const item: RefinementQueueItem = { bulletText, sourceEntryId, section, instruction, originalText: bulletText };
+    const newQ = existing >= 0
+      ? refinementQueue.map((r, i) => (i === existing ? item : r))
+      : [...refinementQueue, item];
+    set({ refinementQueue: newQ });
+    if (currentProjectId) persistQueue(currentProjectId, newQ);
+  },
+
+  applyQueue: async () => {
+    const { refinementQueue, resumeId, currentProjectId } = get();
+    if (!resumeId || refinementQueue.length === 0) return;
+
+    // Fire all in parallel — each updates entryGroups on its own
+    await Promise.allSettled(
+      refinementQueue.map((item) =>
+        get().refineBullet(item.bulletText, item.sourceEntryId, item.section, item.instruction)
+      )
+    );
+
+    // Clear queue
+    set({ refinementQueue: [] });
+    if (currentProjectId) persistQueue(currentProjectId, []);
+
+    // Single re-render after all settle (refineBullet also calls rerender, but those
+    // may interleave — one final call ensures the last state is rendered)
+    get().rerender();
+  },
+
+  clearQueue: () => {
+    const { currentProjectId } = get();
+    set({ refinementQueue: [] });
+    if (currentProjectId) persistQueue(currentProjectId, []);
+  },
+
+  removeFromQueue: (bulletText) => {
+    const { currentProjectId } = get();
+    const newQ = get().refinementQueue.filter((r) => r.bulletText !== bulletText);
+    set({ refinementQueue: newQ });
+    if (currentProjectId) persistQueue(currentProjectId, newQ);
   },
 
   pollRenderStatus: () => {

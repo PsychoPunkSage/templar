@@ -224,6 +224,7 @@ mod tests {
                 entry_header: None,
                 order_idx: 0,
                 created_at: now,
+                page_number: 1,
             },
             ResumeBulletRow {
                 id: Uuid::new_v4(),
@@ -238,6 +239,7 @@ mod tests {
                 entry_header: None,
                 order_idx: 1,
                 created_at: now,
+                page_number: 1,
             },
             ResumeBulletRow {
                 id: Uuid::new_v4(),
@@ -252,6 +254,7 @@ mod tests {
                 entry_header: None,
                 order_idx: 2,
                 created_at: now,
+                page_number: 1,
             },
         ];
 
