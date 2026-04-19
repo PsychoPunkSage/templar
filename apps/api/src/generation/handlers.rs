@@ -452,10 +452,14 @@ pub async fn handle_refine_bullet(
     Json(request): Json<RefineBulletRequest>,
 ) -> Result<Json<RefineBulletResponse>, AppError> {
     if request.instruction.trim().is_empty() {
-        return Err(AppError::Validation("instruction cannot be empty".to_string()));
+        return Err(AppError::Validation(
+            "instruction cannot be empty".to_string(),
+        ));
     }
     if request.bullet_text.trim().is_empty() {
-        return Err(AppError::Validation("bullet_text cannot be empty".to_string()));
+        return Err(AppError::Validation(
+            "bullet_text cannot be empty".to_string(),
+        ));
     }
 
     // Step 1: Load resume → get jd_text + template_id + user_id
@@ -499,8 +503,7 @@ pub async fn handle_refine_bullet(
         .iter()
         .map(|k| k.keyword.as_str())
         .collect();
-    let keywords_json = serde_json::to_string(&keywords)
-        .unwrap_or_else(|_| "[]".to_string());
+    let keywords_json = serde_json::to_string(&keywords).unwrap_or_else(|_| "[]".to_string());
 
     // Step 5: Fetch existing bullet's entry_header_latex so we preserve it on update
     let existing = sqlx::query!(
@@ -516,8 +519,8 @@ pub async fn handle_refine_bullet(
     let entry_header_latex = existing.and_then(|r| r.entry_header);
 
     // Step 6: LLM refinement call
-    let entry_data_json = serde_json::to_string(&source_entry.data)
-        .unwrap_or_else(|_| "{}".to_string());
+    let entry_data_json =
+        serde_json::to_string(&source_entry.data).unwrap_or_else(|_| "{}".to_string());
     let raw_text = source_entry.raw_text.as_deref().unwrap_or("");
 
     let prompt = REFINE_BULLET_PROMPT_TEMPLATE
@@ -549,13 +552,22 @@ pub async fn handle_refine_bullet(
         line_estimate: 1,
         jd_keywords_used: vec![],
     };
-    let sim_result = run_simulation_loop(vec![draft], &page_config, &parsed_jd, &state.llm, 1).await?;
-    let simulated = sim_result.bullets.into_iter().next().ok_or_else(|| {
-        AppError::Internal(anyhow::anyhow!("Simulation produced no bullets"))
-    })?;
+    let sim_result =
+        run_simulation_loop(vec![draft], &page_config, &parsed_jd, &state.llm, 1).await?;
+    let simulated = sim_result
+        .bullets
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Simulation produced no bullets")))?;
 
     // Step 8: Grounding check
-    let grounding = score_bullet(&simulated, &source_entry, &state.llm, simulated.was_adjusted).await?;
+    let grounding = score_bullet(
+        &simulated,
+        &source_entry,
+        &state.llm,
+        simulated.was_adjusted,
+    )
+    .await?;
     let verdict_str = match &grounding.verdict {
         GroundingVerdict::Pass => "pass",
         GroundingVerdict::FlagForReview => "flag_for_review",
@@ -629,10 +641,8 @@ pub async fn handle_refine_bullet(
                             bullet.text = simulated.text.clone();
                             bullet.verified_line_count = simulated.verified_line_count;
                             bullet.was_adjusted = true;
-                            bullet.flagged_for_review = matches!(
-                                grounding.verdict,
-                                GroundingVerdict::FlagForReview
-                            );
+                            bullet.flagged_for_review =
+                                matches!(grounding.verdict, GroundingVerdict::FlagForReview);
                             break;
                         }
                     }

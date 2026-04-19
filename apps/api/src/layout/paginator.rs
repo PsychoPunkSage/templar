@@ -58,7 +58,7 @@ pub fn paginate_bullets(
     lines_per_page: u16,
     max_pages: u8,
 ) -> PaginationResult {
-    let max_pages = max_pages.min(8).max(1);
+    let max_pages = max_pages.clamp(1, 8);
 
     // Build a lookup: source_entry_id → lines needed for the whole group.
     // We measure the group size as the sum of verified_line_count for all non-header bullets
@@ -67,9 +67,8 @@ pub fn paginate_bullets(
     for bullet in bullets {
         if !bullet.text.is_empty() {
             // header placeholders (empty text) count as 0 lines for placement purposes
-            *entry_line_counts
-                .entry(bullet.source_entry_id)
-                .or_insert(0) += bullet.verified_line_count as u16;
+            *entry_line_counts.entry(bullet.source_entry_id).or_insert(0) +=
+                bullet.verified_line_count as u16;
         }
     }
 
@@ -89,7 +88,8 @@ pub fn paginate_bullets(
     let mut lines_used_on_page: u16 = 0;
     // Track which sections have appeared on the current page — reset on page advance
     // so section headers are re-emitted at the top of each new page.
-    let mut seen_sections_on_page: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_sections_on_page: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     // Process entries in order; for each entry, place all its bullets atomically.
     for entry_id in &ordered_entry_ids {
@@ -139,7 +139,7 @@ pub fn paginate_bullets(
 /// Applies the `PaginationResult` back to the bullet slice (mutating `page_number`).
 ///
 /// Bullets absent from `result.page_assignments` retain their existing `page_number` (1).
-pub fn apply_pagination(bullets: &mut Vec<SimulatedBullet>, result: &PaginationResult) {
+pub fn apply_pagination(bullets: &mut [SimulatedBullet], result: &PaginationResult) {
     for (idx, bullet) in bullets.iter_mut().enumerate() {
         if let Some(&page) = result.page_assignments.get(&idx) {
             bullet.page_number = page;
@@ -248,8 +248,16 @@ mod tests {
             make_bullet(id2, "experience", 2),
         ];
         let groups = vec![
-            make_group(id1, "experience", vec![bullets[0].clone(), bullets[1].clone()]),
-            make_group(id2, "experience", vec![bullets[2].clone(), bullets[3].clone()]),
+            make_group(
+                id1,
+                "experience",
+                vec![bullets[0].clone(), bullets[1].clone()],
+            ),
+            make_group(
+                id2,
+                "experience",
+                vec![bullets[2].clone(), bullets[3].clone()],
+            ),
         ];
         let result = paginate_bullets(&bullets, &groups, 45, 4);
         assert_eq!(result.page_count, 1, "both entries should fit on page 1");

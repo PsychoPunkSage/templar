@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 
-// SectionEntryList is no longer used — replaced by inline HashMap in fetch_render_data.
 use std::sync::Arc;
 
 use aws_sdk_s3::primitives::ByteStream;
@@ -28,6 +27,9 @@ use crate::templates::{ProfileData, SampleSection, SampleSubEntry, TemplateCache
 
 /// Redis list key used for the render job queue.
 pub const RENDER_QUEUE_KEY: &str = "render:jobs";
+
+/// (source_entry_id, page_number, entry_header_latex, bullet_texts)
+type SectionEntry = (Uuid, i16, Option<String>, Vec<String>);
 
 // ────────────────────────────────────────────────────────────────────────────
 // Worker spawn
@@ -240,7 +242,8 @@ async fn process_render_job(
     let result: Result<(), RenderError> = async {
         // Step 3: Fetch render data from DB (resume row + bullets grouped by section)
         info!(job_id = %job_id, resume_id = %resume_id, "Render job: fetching render data from DB");
-        let (params, resume_template_id, resume_type) = fetch_render_data(db, resume_id, template_cache).await?;
+        let (params, resume_template_id, resume_type) =
+            fetch_render_data(db, resume_id, template_cache).await?;
         info!(
             job_id = %job_id,
             resume_id = %resume_id,
@@ -479,8 +482,7 @@ async fn fetch_render_data(
     // pages get different page_number values. For single-page resumes, all are 1.
     let mut section_order: Vec<String> = Vec::new();
     // section → Vec<(source_entry_id, page_number, entry_header, Vec<bullet_text>)>
-    let mut section_entries: HashMap<String, Vec<(Uuid, i16, Option<String>, Vec<String>)>> =
-        HashMap::new();
+    let mut section_entries: HashMap<String, Vec<SectionEntry>> = HashMap::new();
 
     for bullet in &bullets {
         if !section_entries.contains_key(&bullet.section) {
@@ -524,11 +526,13 @@ async fn fetch_render_data(
             let entries = section_entries.remove(&section_name).unwrap_or_default();
             let sub_entries = entries
                 .into_iter()
-                .map(|(_, page_number, header_latex, entry_bullets)| ResumeSubEntry {
-                    header_latex,
-                    bullets: entry_bullets,
-                    page_number,
-                })
+                .map(
+                    |(_, page_number, header_latex, entry_bullets)| ResumeSubEntry {
+                        header_latex,
+                        bullets: entry_bullets,
+                        page_number,
+                    },
+                )
                 .collect();
             ResumeSection {
                 name: section_name,
@@ -716,10 +720,11 @@ async fn build_latex_for_job(
                 .unwrap_or_default();
             // group_sections_by_page uses ResumeSection (with page_number on sub-entries)
             // order_sections returns Vec<&ResumeSection> — collect into owned Vec first.
-            let ordered: Vec<ResumeSection> = crate::render::section_order::order_sections(&params.sections)
-                .into_iter()
-                .cloned()
-                .collect();
+            let ordered: Vec<ResumeSection> =
+                crate::render::section_order::order_sections(&params.sections)
+                    .into_iter()
+                    .cloned()
+                    .collect();
             let pages = group_sections_by_page(&ordered);
             let sections_latex = crate::templates::build_paginated_sections_latex(&pages, &fmt);
             crate::templates::render_file_template_with_sections(

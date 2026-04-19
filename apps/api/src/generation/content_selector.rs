@@ -412,7 +412,11 @@ mod tests {
 
     #[test]
     fn test_reframe_hints_empty_by_default() {
-        let result = select_content(vec![], &make_parsed_jd(&[], JDTone::ProductOriented), ResumeMode::SinglePage);
+        let result = select_content(
+            vec![],
+            &make_parsed_jd(&[], JDTone::ProductOriented),
+            ResumeMode::SinglePage,
+        );
         assert!(result.reframe_hints.is_empty());
     }
 }

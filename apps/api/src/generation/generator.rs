@@ -350,9 +350,14 @@ pub async fn generate_resume(
 
     // Page fill remediation pass — runs after simulation loop to fix whitespace/overflow.
     // Single-page mode is always the "last page" for fill analysis purposes.
-    let mut simulation =
-        crate::layout::page_fill::run_page_fill_pass(simulation, page_config, &parsed_jd, llm, true)
-            .await?;
+    let mut simulation = crate::layout::page_fill::run_page_fill_pass(
+        simulation,
+        page_config,
+        &parsed_jd,
+        llm,
+        true,
+    )
+    .await?;
 
     // CV mode: distribute bullets across pages using the greedy entry-atomic paginator.
     // For single-page mode, page_number stays 1 and page_count stays 1.
