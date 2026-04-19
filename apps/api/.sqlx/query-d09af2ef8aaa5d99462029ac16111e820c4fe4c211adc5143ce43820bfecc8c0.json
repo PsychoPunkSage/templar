@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE resume_bullets SET bullet_text = $1, line_count = $2, grounding_score = $3, is_user_edited = true WHERE resume_id = $4 AND source_entry_id = $5 AND TRIM(bullet_text) = TRIM($6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int2",
+        "Float8",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d09af2ef8aaa5d99462029ac16111e820c4fe4c211adc5143ce43820bfecc8c0"
+}
