@@ -1,0 +1,26 @@
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║               Templar Configuration Template                    ║
+# ║                                                                  ║
+# ║  Copy this file to config.toml and fill in the required values. ║
+# ║  All tunable parameters are shown with their recommended        ║
+# ║  defaults. Environment variables ALWAYS override values here.   ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+[concurrency]
+ingest_worker_count        = 2   # INGEST_WORKER_COUNT
+ingest_llm_concurrency     = 2   # INGEST_LLM_CONCURRENCY
+generation_llm_concurrency = 1   # GENERATION_LLM_CONCURRENCY
+layout_llm_concurrency     = 4   # LAYOUT_LLM_CONCURRENCY
+grounding_llm_concurrency  = 4   # GROUNDING_LLM_CONCURRENCY
+render_worker_count        = 4   # RENDER_WORKER_COUNT
+generation_worker_count    = 2   # GENERATION_WORKER_COUNT
+
+[ingestion]
+bullet_token_budget = 1200  # BULLET_TOKEN_BUDGET
+
+[persona_suggestion]
+min_entries_required    = 3    # PERSONA_SUGGEST_MIN_ENTRIES
+max_count               = 3    # PERSONA_SUGGEST_MAX_COUNT
+top_tags                = 20   # PERSONA_SUGGEST_TOP_TAGS
+top_entries             = 8    # PERSONA_SUGGEST_TOP_ENTRIES
+dedup_jaccard_threshold = 0.6  # PERSONA_SUGGEST_DEDUP_THRESHOLD
