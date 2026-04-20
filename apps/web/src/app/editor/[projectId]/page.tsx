@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/tabs";
 import { useResumeStore } from "@/store/resumeStore";
 import { useProjectStore } from "@/store/projectStore";
+import { PersonaSelect } from "@/components/editor/PersonaSelect";
 import { BookOpen } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -84,6 +85,7 @@ export default function ProjectEditorPage() {
 
   const [leftTab, setLeftTab] = useState<"jd" | "bullets">("jd");
   const [isDownloading, setIsDownloading] = useState(false);
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(null);
 
   // Total bullet count across all entry groups
   const bulletCount = entryGroups.reduce((acc, g) => acc + g.bullets.length, 0);
@@ -256,6 +258,7 @@ export default function ProjectEditorPage() {
 
         {/* Two-step action bar */}
         <div className="flex items-center gap-2">
+          <PersonaSelect value={selectedPersonaId} onChange={setSelectedPersonaId} />
           {hasBullets && (
             <span className="text-xs text-muted-foreground shrink-0">
               {bulletCount} bullets
@@ -301,7 +304,7 @@ export default function ProjectEditorPage() {
           )}
           <Button
             size="sm"
-            onClick={() => generate(projectId)}
+            onClick={() => generate(projectId, selectedPersonaId)}
             disabled={isGenerating || fitScoreLoading || !jdText.trim()}
           >
             {isGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
