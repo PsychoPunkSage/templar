@@ -133,17 +133,21 @@ function EditableField({
 }: EditableFieldProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(value ?? '')
+  const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState(false)
 
   const handleSave = async () => {
-    if (draft !== (value ?? '')) {
-      try {
-        await api.patchEntry(entryId, userId, { [fieldKey]: draft || null })
-        onSave()
-      } catch {
-        // silently revert — field will show old value on next render
-      }
-    }
     setEditing(false)
+    if (draft === (value ?? '')) return
+    try {
+      await api.patchEntry(entryId, userId, { [fieldKey]: draft || null })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
+      onSave()
+    } catch {
+      setSaveError(true)
+      setTimeout(() => setSaveError(false), 1500)
+    }
   }
 
   if (editing) {
@@ -178,6 +182,8 @@ function EditableField({
       >
         &#x270E;
       </button>
+      {saved && <span className="text-xs text-green-500 transition-opacity">✓</span>}
+      {saveError && <span className="text-xs text-red-500 transition-opacity">✗</span>}
     </div>
   )
 }
@@ -205,18 +211,23 @@ function EditableDateField({
   onSave,
 }: EditableDateFieldProps) {
   const [editing, setEditing] = useState(false)
-  const [isPresent, setIsPresent] = useState(!value)
+  const [isPresent, setIsPresent] = useState(allowPresent && !value)
   const [draft, setDraft] = useState(value ?? '')
+  const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState(false)
 
   const handleSave = async () => {
     const patchVal = isPresent ? null : (draft || null)
+    setEditing(false)
     try {
       await api.patchEntry(entryId, userId, { [fieldKey]: patchVal })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
       onSave()
     } catch {
-      // silently revert
+      setSaveError(true)
+      setTimeout(() => setSaveError(false), 1500)
     }
-    setEditing(false)
   }
 
   if (!editing) {
@@ -236,6 +247,8 @@ function EditableDateField({
         >
           &#x270E;
         </button>
+        {saved && <span className="text-xs text-green-500 transition-opacity">✓</span>}
+        {saveError && <span className="text-xs text-red-500 transition-opacity">✗</span>}
       </div>
     )
   }
