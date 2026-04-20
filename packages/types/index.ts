@@ -406,6 +406,66 @@ export interface UpdateProjectRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Persona types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A persona row from the database.
+ * Mirrors: apps/api/src/models/resume.rs — PersonaRow
+ */
+export interface Persona {
+  id: string
+  user_id: string
+  name: string
+  emphasized_tags: string[]
+  suppressed_tags: string[]
+  tone_preference: string | null
+  section_order: unknown | null
+  created_at: string
+}
+
+export interface PersonaListResponse {
+  personas: Persona[]
+}
+
+export interface CreatePersonaRequest {
+  user_id: string
+  name: string
+  emphasized_tags?: string[]
+  suppressed_tags?: string[]
+  tone_preference?: string
+}
+
+export interface UpdatePersonaRequest {
+  name?: string
+  emphasized_tags?: string[]
+  suppressed_tags?: string[]
+  tone_preference?: string | null
+}
+
+export interface PersonaSuggestion {
+  name: string
+  emphasized_tags: string[]
+  suppressed_tags: string[]
+  /** "startup" | "enterprise" | "research" | "product" | null */
+  tone_preference: string | null
+  reasoning: string
+}
+
+/**
+ * Response from GET /api/v1/personas/suggest.
+ * Includes content hashes for client-side cache freshness detection.
+ * Mirrors: apps/api/src/personas/mod.rs — SuggestPersonasResponse
+ */
+export interface SuggestPersonasResponse {
+  suggestions: PersonaSuggestion[]
+  /** SHA-256 of the user's current context entries. */
+  context_hash: string
+  /** SHA-256 of the user's current persona IDs. */
+  persona_hash: string
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Context Library types
 // ─────────────────────────────────────────────────────────────────────────────
 
