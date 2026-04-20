@@ -14,6 +14,12 @@ import type {
   UserProfileResponse,
   UpsertProfileRequest,
   ProfileLinkData,
+  Persona,
+  PersonaListResponse,
+  CreatePersonaRequest,
+  UpdatePersonaRequest,
+  PersonaSuggestion,
+  SuggestPersonasResponse,
 } from "@templar/types";
 
 /**
@@ -65,6 +71,9 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
       `HTTP ${res.status}`;
     throw new Error(String(errorMsg));
   }
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return undefined as T;
+  }
   return res.json() as Promise<T>;
 }
 
@@ -107,10 +116,20 @@ export const api = {
    *
    * @param resumeMode 'single_page' (default) or 'cv' — controls pagination in the pipeline.
    */
-  generateResume: (userId: string, jdText: string, resumeMode: 'single_page' | 'cv' = 'single_page') =>
+  generateResume: (
+    userId: string,
+    jdText: string,
+    resumeMode: 'single_page' | 'cv' = 'single_page',
+    personaId?: string | null,
+  ) =>
     apiFetch<GenerateJobResponse>("/api/v1/resumes/generate", {
       method: "POST",
-      body: JSON.stringify({ user_id: userId, jd_text: jdText, resume_mode: resumeMode }),
+      body: JSON.stringify({
+        user_id: userId,
+        jd_text: jdText,
+        resume_mode: resumeMode,
+        ...(personaId ? { persona_id: personaId } : {}),
+      }),
     }),
 
   /**
@@ -364,6 +383,39 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  // ── Personas API ───────────────────────────────────────────────────────────
+
+  listPersonas: (userId: string) =>
+    apiFetch<PersonaListResponse>(`/api/v1/personas?user_id=${userId}`),
+
+  createPersona: (body: CreatePersonaRequest) =>
+    apiFetch<Persona>("/api/v1/personas", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updatePersona: (id: string, body: UpdatePersonaRequest) =>
+    apiFetch<Persona>(`/api/v1/personas/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  deletePersona: (id: string) =>
+    fetch(`${API_BASE}/api/v1/personas/${id}`, { method: "DELETE" }),
+
+  /**
+   * GET /api/v1/personas/suggest
+   * Returns 200 SuggestPersonasResponse on fresh data (or first call).
+   * Returns undefined (204 No Content) when the client's hashes match the server's —
+   * the cached result is still valid and no LLM call was made.
+   */
+  suggestPersonas: (userId: string, ctxHash?: string, personaHash?: string) =>
+    apiFetch<SuggestPersonasResponse>(
+      `/api/v1/personas/suggest?user_id=${userId}` +
+        (ctxHash ? `&ctx_hash=${encodeURIComponent(ctxHash)}` : "") +
+        (personaHash ? `&persona_hash=${encodeURIComponent(personaHash)}` : ""),
+    ) as Promise<SuggestPersonasResponse | undefined>,
 
   getProfile: (userId: string) =>
     apiFetch<UserProfileResponse>(`/api/v1/profile?user_id=${userId}`),
