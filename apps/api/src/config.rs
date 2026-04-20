@@ -34,10 +34,10 @@ struct TomlIngestionConfig {
 
 #[derive(Debug, Default, serde::Deserialize)]
 struct TomlPersonaSuggestionConfig {
-    min_entries_required:    Option<usize>,
-    max_count:               Option<usize>,
-    top_tags:                Option<usize>,
-    top_entries:             Option<usize>,
+    min_entries_required: Option<usize>,
+    max_count: Option<usize>,
+    top_tags: Option<usize>,
+    top_entries: Option<usize>,
     dedup_jaccard_threshold: Option<f64>,
 }
 

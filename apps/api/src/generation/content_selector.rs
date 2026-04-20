@@ -82,9 +82,7 @@ pub fn select_content(
                 jd_relevance,
                 &weights,
             );
-            let combined_score = (base_score * persona_multiplier(&entry, persona))
-                .min(1.0)
-                .max(0.0);
+            let combined_score = (base_score * persona_multiplier(&entry, persona)).clamp(0.0, 1.0);
             RankedEntry {
                 entry,
                 combined_score,

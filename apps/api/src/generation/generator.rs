@@ -260,39 +260,35 @@ pub async fn generate_resume(
     );
 
     // Step 3b: Fetch persona — non-fatal on miss; generation proceeds without it.
-    let persona: Option<crate::models::resume::PersonaRow> =
-        if let Some(pid) = request.persona_id {
-            match sqlx::query_as::<_, crate::models::resume::PersonaRow>(
-                "SELECT * FROM personas WHERE id = $1 AND user_id = $2",
-            )
-            .bind(pid)
-            .bind(request.user_id)
-            .fetch_optional(pool)
-            .await
-            {
-                Ok(Some(p)) => {
-                    info!("Persona '{}' loaded for generation", p.name);
-                    Some(p)
-                }
-                Ok(None) => {
-                    tracing::warn!(
-                        "Persona {} not found for user {} — proceeding without persona",
-                        pid,
-                        request.user_id
-                    );
-                    None
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Persona fetch error: {} — proceeding without persona",
-                        e
-                    );
-                    None
-                }
+    let persona: Option<crate::models::resume::PersonaRow> = if let Some(pid) = request.persona_id {
+        match sqlx::query_as::<_, crate::models::resume::PersonaRow>(
+            "SELECT * FROM personas WHERE id = $1 AND user_id = $2",
+        )
+        .bind(pid)
+        .bind(request.user_id)
+        .fetch_optional(pool)
+        .await
+        {
+            Ok(Some(p)) => {
+                info!("Persona '{}' loaded for generation", p.name);
+                Some(p)
             }
-        } else {
-            None
-        };
+            Ok(None) => {
+                tracing::warn!(
+                    "Persona {} not found for user {} — proceeding without persona",
+                    pid,
+                    request.user_id
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!("Persona fetch error: {} — proceeding without persona", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Step 4: Content selection (CV mode uses higher per-section limits)
     let selection = select_content(entries, &parsed_jd, request.resume_mode, persona.as_ref());
@@ -315,7 +311,10 @@ pub async fn generate_resume(
         .or_else(|| persona.as_ref().and_then(|p| p.tone_preference.as_deref()));
     if let Some(tone_str) = tone_override_str {
         if let Some(overridden) = crate::generation::tone::parse_tone_preference(tone_str) {
-            info!("Tone overridden to {:?} via preference '{}'", overridden, tone_str);
+            info!(
+                "Tone overridden to {:?} via preference '{}'",
+                overridden, tone_str
+            );
             tone_examples = get_tone_examples(&overridden);
         } else {
             tracing::warn!("Unknown tone preference '{}' — ignoring", tone_str);

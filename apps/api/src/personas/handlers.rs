@@ -15,9 +15,8 @@ use crate::personas::{
     dedup::dedup_suggestions,
     hash::compute_persona_hash,
     prompts::{build_persona_suggest_prompt, PERSONA_SUGGEST_SYSTEM},
-    suggestion_cache,
-    CreatePersonaRequest, PersonaSuggestion, SuggestPersonasQuery, SuggestPersonasResponse,
-    UpdatePersonaRequest,
+    suggestion_cache, CreatePersonaRequest, PersonaSuggestion, SuggestPersonasQuery,
+    SuggestPersonasResponse, UpdatePersonaRequest,
 };
 use crate::state::AppState;
 
@@ -229,7 +228,8 @@ pub async fn handle_suggest_personas(
         .await
         .map_err(|e| AppError::Llm(format!("Persona suggestion failed: {e}")))?;
 
-    let suggestions = dedup_suggestions(raw, &existing_personas, cfg.persona_suggest_dedup_threshold);
+    let suggestions =
+        dedup_suggestions(raw, &existing_personas, cfg.persona_suggest_dedup_threshold);
 
     // Persist to DB so future refreshes skip the LLM (non-fatal if write fails)
     if let Err(e) = suggestion_cache::upsert_cache(

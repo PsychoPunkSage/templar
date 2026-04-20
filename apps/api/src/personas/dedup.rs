@@ -99,7 +99,11 @@ mod tests {
     #[test]
     fn jaccard_partial_overlap() {
         let a = vec!["rust".to_string(), "cpp".to_string(), "perf".to_string()];
-        let b = vec!["rust".to_string(), "cpp".to_string(), "leadership".to_string()];
+        let b = vec![
+            "rust".to_string(),
+            "cpp".to_string(),
+            "leadership".to_string(),
+        ];
         // intersection = 2, union = 4 → 0.5
         assert!((tag_jaccard(&a, &b) - 0.5).abs() < 1e-9);
     }
