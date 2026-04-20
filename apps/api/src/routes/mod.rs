@@ -10,6 +10,7 @@ use crate::auth;
 use crate::context::handlers as ctx;
 use crate::generation::handlers as gen;
 use crate::grounding::handlers as grounding;
+use crate::personas::handlers as personas;
 use crate::profile::handlers as profile;
 use crate::projects::handlers as projects;
 use crate::render::handlers as render;
@@ -118,6 +119,22 @@ pub fn build_router(state: AppState) -> Router {
             get(projects::handle_get_project)
                 .patch(projects::handle_update_project)
                 .delete(projects::handle_delete_project),
+        )
+        // ── Personas API ──────────────────────────────────────────────────
+        .route(
+            "/api/v1/personas",
+            get(personas::handle_list_personas).post(personas::handle_create_persona),
+        )
+        // Note: literal /suggest must be registered before /:id (Axum resolves literals first)
+        .route(
+            "/api/v1/personas/suggest",
+            get(personas::handle_suggest_personas),
+        )
+        .route(
+            "/api/v1/personas/:id",
+            get(personas::handle_get_persona)
+                .patch(personas::handle_update_persona)
+                .delete(personas::handle_delete_persona),
         )
         // ── Profile API (Issue 5) ──────────────────────────────────────────
         .route(

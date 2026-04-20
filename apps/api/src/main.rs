@@ -8,6 +8,7 @@ mod grounding;
 mod layout;
 mod llm_client;
 mod models;
+mod personas;
 mod profile;
 mod projects;
 mod render;
