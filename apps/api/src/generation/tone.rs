@@ -124,6 +124,19 @@ pub fn filter_verbs_for_contribution<'a>(
     }
 }
 
+/// Maps a persona tone preference string to a JDTone variant.
+///
+/// Returns None for unknown values — caller logs a warning and skips the override.
+pub fn parse_tone_preference(s: &str) -> Option<JDTone> {
+    match s.to_lowercase().as_str() {
+        "startup" => Some(JDTone::AggressiveStartup),
+        "enterprise" => Some(JDTone::CollaborativeEnterprise),
+        "research" => Some(JDTone::ResearchOriented),
+        "product" => Some(JDTone::ProductOriented),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

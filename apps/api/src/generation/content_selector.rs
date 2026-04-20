@@ -67,6 +67,7 @@ pub fn select_content(
     entries: Vec<ContextEntryRow>,
     parsed_jd: &ParsedJD,
     resume_mode: ResumeMode,
+    persona: Option<&crate::models::resume::PersonaRow>,
 ) -> SelectionResult {
     let weights = ScoringWeights::default();
 
@@ -75,12 +76,15 @@ pub fn select_content(
         .into_iter()
         .map(|entry| {
             let jd_relevance = compute_jd_relevance(&entry, parsed_jd);
-            let combined_score = compute_combined_score(
+            let base_score = compute_combined_score(
                 entry.recency_score,
                 entry.impact_score,
                 jd_relevance,
                 &weights,
             );
+            let combined_score = (base_score * persona_multiplier(&entry, persona))
+                .min(1.0)
+                .max(0.0);
             RankedEntry {
                 entry,
                 combined_score,
@@ -145,6 +149,32 @@ pub fn compute_jd_relevance(entry: &ContextEntryRow, parsed_jd: &ParsedJD) -> f6
         .sum();
 
     (matched_weight / total_weight) as f64
+}
+
+/// Returns a score multiplier based on persona tag matching.
+///
+/// Suppressed beats emphasized: if an entry matches both, suppressed (0.2×) wins.
+/// Returns 1.0 when no persona is active or no tags match.
+fn persona_multiplier(
+    entry: &ContextEntryRow,
+    persona: Option<&crate::models::resume::PersonaRow>,
+) -> f64 {
+    let Some(p) = persona else { return 1.0 };
+    let suppressed = entry
+        .tags
+        .iter()
+        .any(|t| p.suppressed_tags.iter().any(|s| s.eq_ignore_ascii_case(t)));
+    if suppressed {
+        return 0.2;
+    }
+    let emphasized = entry
+        .tags
+        .iter()
+        .any(|t| p.emphasized_tags.iter().any(|e| e.eq_ignore_ascii_case(t)));
+    if emphasized {
+        return 1.5;
+    }
+    1.0
 }
 
 /// Applies per-section limits and separates selected from excluded entries.
@@ -289,7 +319,7 @@ mod tests {
             make_entry("experience", vec![], 0.1, 0.1),
         ];
         let parsed_jd = make_parsed_jd(&["rust"], JDTone::AggressiveStartup);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage);
+        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None);
 
         assert!(
             result.selected_entries[0].combined_score > result.selected_entries[1].combined_score,
@@ -303,7 +333,7 @@ mod tests {
             .map(|_| make_entry("experience", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::CollaborativeEnterprise);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage);
+        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None);
 
         let selected_exp = result
             .selected_entries
@@ -326,7 +356,7 @@ mod tests {
             .map(|_| make_entry("project", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::CollaborativeEnterprise);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage);
+        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None);
 
         let selected = result
             .selected_entries
@@ -343,7 +373,7 @@ mod tests {
             .map(|_| make_entry("open_source", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::AggressiveStartup);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage);
+        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None);
 
         let selected = result
             .selected_entries
@@ -416,7 +446,58 @@ mod tests {
             vec![],
             &make_parsed_jd(&[], JDTone::ProductOriented),
             ResumeMode::SinglePage,
+            None,
         );
         assert!(result.reframe_hints.is_empty());
+    }
+
+    fn make_persona(emphasized: &[&str], suppressed: &[&str]) -> crate::models::resume::PersonaRow {
+        crate::models::resume::PersonaRow {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            name: "Test Persona".to_string(),
+            emphasized_tags: emphasized.iter().map(|s| s.to_string()).collect(),
+            suppressed_tags: suppressed.iter().map(|s| s.to_string()).collect(),
+            tone_preference: None,
+            section_order: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_persona_emphasize_boosts_score() {
+        let entry = make_entry("experience", vec!["ml".to_string()], 0.5, 0.5);
+        let persona = make_persona(&["ml"], &[]);
+        let multiplier = persona_multiplier(&entry, Some(&persona));
+        assert_eq!(multiplier, 1.5, "Emphasized tag must boost by 1.5×");
+    }
+
+    #[test]
+    fn test_persona_suppress_reduces_score() {
+        let entry = make_entry("experience", vec!["react".to_string()], 0.5, 0.5);
+        let persona = make_persona(&[], &["react"]);
+        let multiplier = persona_multiplier(&entry, Some(&persona));
+        assert_eq!(multiplier, 0.2, "Suppressed tag must reduce to 0.2×");
+    }
+
+    #[test]
+    fn test_persona_suppress_beats_emphasize() {
+        // Entry has both an emphasized and a suppressed tag — suppressed wins.
+        let entry = make_entry(
+            "experience",
+            vec!["ml".to_string(), "react".to_string()],
+            0.5,
+            0.5,
+        );
+        let persona = make_persona(&["ml"], &["react"]);
+        let multiplier = persona_multiplier(&entry, Some(&persona));
+        assert_eq!(multiplier, 0.2, "Suppressed must win over emphasized");
+    }
+
+    #[test]
+    fn test_persona_none_is_noop() {
+        let entry = make_entry("experience", vec!["ml".to_string()], 0.6, 0.6);
+        let multiplier = persona_multiplier(&entry, None);
+        assert_eq!(multiplier, 1.0, "No persona must return 1.0 multiplier");
     }
 }
