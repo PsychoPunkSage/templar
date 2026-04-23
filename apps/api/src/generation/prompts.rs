@@ -73,7 +73,9 @@ pub const PER_ENTRY_GENERATION_SYSTEM: &str =
     Do NOT include any text outside the JSON object. \
     Do NOT use markdown code fences. \
     Do NOT invent facts not present in the context entry. \
-    Every bullet must be traceable to a specific claim in the raw context text provided.";
+    Every bullet must be traceable to a specific claim in the raw context text provided. \
+    NEVER use double dashes (--), triple dashes (---), or em dashes (—). \
+    Write natural, human prose only — no typographic artifacts.";
 
 /// Per-entry resume generation prompt template.
 /// Replace: {grounding_instruction}, {scope_instruction}, {entry_type}, {contribution_type},
@@ -115,7 +117,8 @@ HARD RULES:
 3. Match `contribution_type` to verb language per the scope instruction above
 4. If the JD FIT section above shows no strong or partial matches for this entry, return {{"bullets": []}}
 5. Generate 2–4 bullets for experience/project entries; 1–2 for awards/publications
-6. Every bullet must begin with a strong action verb from the allowed verbs list"#;
+6. Every bullet must begin with a strong action verb from the allowed verbs list
+7. NEVER use double dashes (--), triple dashes (---), or em dashes (—). Write natural prose."#;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Phase 7.0 — LLM-based fit scoring
@@ -171,7 +174,8 @@ Rules:
 - gaps: all JD keywords with strength < 0.4 — nothing relevant in candidate context
 - Keep recommendation to 2 sentences maximum
 - selected_entry_indices: list of integer indices from the [N] prefix in CANDIDATE CONTEXT SUMMARY — include entries with any match; omit only entries with zero relevance
-- Do NOT include any text outside the JSON object"#;
+- Do NOT include any text outside the JSON object
+- recommendation field: NEVER use double dashes (--), triple dashes (---), or em dashes (—). Write natural prose."#;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Inline bullet refinement
@@ -184,7 +188,9 @@ pub const REFINE_BULLET_SYSTEM: &str =
     Do NOT include any text outside the JSON object. \
     Do NOT invent facts not present in the context entry. \
     The refined bullet must remain traceable to the provided context entry. \
-    Output only the rewritten bullet text — no explanation, no commentary.";
+    Output only the rewritten bullet text — no explanation, no commentary. \
+    NEVER use double dashes (--), triple dashes (---), or em dashes (—). \
+    Write natural, human prose only — no typographic artifacts.";
 
 /// Inline bullet refinement prompt template.
 /// Placeholders: {entry_data_json}, {raw_text}, {jd_keywords_json}, {current_bullet}, {instruction}
@@ -209,7 +215,8 @@ HARD RULES:
 1. Only use facts present in the context entry data or raw text — no invention
 2. Begin with a strong action verb
 3. Keep it concise — aim for 1–2 rendered lines, never 3+
-4. Return a JSON object with this EXACT schema (no extra fields):
+4. NEVER use double dashes (--), triple dashes (---), or em dashes (—). Write natural prose.
+5. Return a JSON object with this EXACT schema (no extra fields):
 
 {{"text": "Rewritten bullet text here"}}"#;
 

@@ -15,7 +15,8 @@ Expand ONLY by: rephrasing verbosely, spelling out abbreviations, adding conjunc
 reordering clauses, or using more descriptive phrasing for actions already stated.\n\
 \n\
 Respond with valid JSON only: {\"text\": \"...\"}\n\
-Do NOT use markdown code fences. Do NOT add any explanation outside the JSON object.";
+Do NOT use markdown code fences. Do NOT add any explanation outside the JSON object.\n\
+NEVER use double dashes (--), triple dashes (---), or em dashes (—). Write natural, human prose only.";
 
 pub const EXPAND_PROMPT_TEMPLATE: &str = "\
 A resume bullet is too short and must be expanded to fill more horizontal space.\n\
@@ -35,6 +36,7 @@ EXPANSION RULES:\n\
 6. Prioritize the JD keywords listed above — but only if they are already present in the bullet\n\
 \n\
 {previous_attempt}\
+7. NEVER use double dashes (--), triple dashes (---), or em dashes (—). Write natural prose.\n\
 Return JSON only: {\"text\": \"expanded bullet text here\"}";
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -47,7 +49,8 @@ You are a resume bullet editor. Your task is to compress a resume bullet that ex
 outcomes above all else.\n\
 \n\
 Respond with valid JSON only: {\"text\": \"...\"}\n\
-Do NOT use markdown code fences. Do NOT add any explanation outside the JSON object.";
+Do NOT use markdown code fences. Do NOT add any explanation outside the JSON object.\n\
+NEVER use double dashes (--), triple dashes (---), or em dashes (—). Write natural, human prose only.";
 
 pub const COMPRESS_PROMPT_TEMPLATE: &str = "\
 A resume bullet is too long and must be compressed to fit within 2 printed lines.\n\
@@ -66,4 +69,5 @@ PRIORITY ORDER (keep > remove):\n\
 6. REMOVE: Verbose prepositions and filler clauses\n\
 \n\
 {previous_attempt}\
+7. NEVER use double dashes (--), triple dashes (---), or em dashes (—). Write natural prose.\n\
 The result MUST fit within 2 printed lines. Return JSON only: {\"text\": \"compressed bullet text here\"}";
