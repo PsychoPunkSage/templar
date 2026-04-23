@@ -22,6 +22,20 @@ import type {
   SuggestPersonasResponse,
 } from "@templar/types";
 
+export interface CoverLetterResponse {
+  id: string;
+  user_id: string;
+  resume_id: string | null;
+  persona_id: string | null;
+  jd_text_hash: string;
+  tone: string;
+  focus: string;
+  content: Array<{ role: string; text: string }>;
+  company_name: string | null;
+  role_title: string | null;
+  created_at: string;
+}
+
 /**
  * Response from POST /api/v1/resumes/fit-score/cached.
  * cache_hit is always true — the endpoint only returns data on a cache hit.
@@ -435,6 +449,37 @@ export const api = {
    */
   authMe: () =>
     apiFetch<{ user_id: string }>("/api/v1/auth/me"),
+
+  // ── Cover Letter API (Phase 3) ─────────────────────────────────────────────
+
+  generateCoverLetter: (
+    userId: string,
+    jdText: string,
+    tone: string,
+    focus: string,
+    resumeId: string | null,
+    personaId: string | null,
+  ) =>
+    apiFetch<CoverLetterResponse>("/api/v1/cover-letters/generate", {
+      method: "POST",
+      body: JSON.stringify({
+        user_id: userId,
+        jd_text: jdText,
+        tone,
+        focus,
+        resume_id: resumeId ?? undefined,
+        persona_id: personaId ?? undefined,
+      }),
+    }),
+
+  getCoverLetter: (id: string) =>
+    apiFetch<CoverLetterResponse>(`/api/v1/cover-letters/${id}`),
+
+  listCoverLetters: (userId: string, resumeId?: string) =>
+    apiFetch<{ cover_letters: CoverLetterResponse[] }>(
+      `/api/v1/cover-letters?user_id=${userId}` +
+        (resumeId ? `&resume_id=${resumeId}` : ""),
+    ),
 };
 
 export type { UserProfileResponse, UpsertProfileRequest, ProfileLinkData };

@@ -31,6 +31,7 @@ import { BulletList } from "@/components/editor/BulletList";
 import { FitReportPanel } from "@/components/editor/FitReportPanel";
 import { PdfPreview } from "@/components/pdf/PdfPreview";
 import { StaticPdfPreview } from "@/components/pdf/StaticPdfPreview";
+import { CoverLetterPane } from "@/components/editor/CoverLetterPane";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -41,6 +42,7 @@ import {
 } from "@/components/ui/tabs";
 import { useResumeStore } from "@/store/resumeStore";
 import { useProjectStore } from "@/store/projectStore";
+import { useCoverLetterStore } from "@/store/coverLetterStore";
 import { PersonaSelect } from "@/components/editor/PersonaSelect";
 import { BookOpen } from "lucide-react";
 import { api } from "@/lib/api";
@@ -84,8 +86,13 @@ export default function ProjectEditorPage() {
   const { currentProject, loadProject, loadTemplates } = useProjectStore();
 
   const [leftTab, setLeftTab] = useState<"jd" | "bullets">("jd");
+  const [rightPane, setRightPane] = useState<"resume" | "cover_letter">("resume");
   const [isDownloading, setIsDownloading] = useState(false);
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(null);
+
+  const { coverId, generatedWithJdText } = useCoverLetterStore();
+  const clIsStale =
+    !!generatedWithJdText && !!coverId && generatedWithJdText !== jdText;
 
   // Total bullet count across all entry groups
   const bulletCount = entryGroups.reduce((acc, g) => acc + g.bullets.length, 0);
@@ -408,22 +415,57 @@ export default function ProjectEditorPage() {
           </Tabs>
         </div>
 
-        {/* Right: template PDF preview (pre-generation) or PDF.js live preview (post-generation) */}
-        <div className="w-1/2 bg-muted/30 relative overflow-hidden">
-          {hasBullets ? (
-            // Post-generation: PDF.js live preview (debounced at 300ms)
-            <PdfPreview />
-          ) : templateId ? (
-            // Pre-generation: compiled PDF preview of the selected template.
-            <StaticPdfPreview
-              pdfUrl={api.getTemplateRenderPdfUrl(templateId)}
-            />
-          ) : (
-            // Project not yet loaded — show neutral placeholder
-            <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-              PDF preview will appear here after generation.
+        {/* Right: toggle header + resume preview or cover letter pane */}
+        <div className="w-1/2 bg-muted/30 relative overflow-hidden flex flex-col">
+          {/* Toggle */}
+          <div className="flex items-center px-3 py-1.5 border-b bg-background/80 shrink-0">
+            <div className="flex rounded-md border overflow-hidden text-xs">
+              <button
+                onClick={() => setRightPane("resume")}
+                className={`px-3 py-1 transition-colors ${
+                  rightPane === "resume"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Resume
+              </button>
+              <button
+                onClick={() => setRightPane("cover_letter")}
+                className={`px-3 py-1 transition-colors flex items-center gap-1 ${
+                  rightPane === "cover_letter"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Cover Letter
+                {clIsStale && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400 inline-block" />
+                )}
+              </button>
             </div>
-          )}
+          </div>
+
+          {/* Pane content */}
+          <div className="flex-1 overflow-hidden">
+            {rightPane === "resume" ? (
+              hasBullets ? (
+                <PdfPreview />
+              ) : templateId ? (
+                <StaticPdfPreview pdfUrl={api.getTemplateRenderPdfUrl(templateId)} />
+              ) : (
+                <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+                  PDF preview will appear here after generation.
+                </div>
+              )
+            ) : (
+              <CoverLetterPane
+                jdText={jdText}
+                resumeId={resumeId}
+                personaId={selectedPersonaId}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
