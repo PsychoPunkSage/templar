@@ -8,6 +8,7 @@ use axum::{
 
 use crate::auth;
 use crate::context::handlers as ctx;
+use crate::cover_letter::handlers as cl;
 use crate::generation::handlers as gen;
 use crate::grounding::handlers as grounding;
 use crate::personas::handlers as personas;
@@ -140,6 +141,17 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/profile",
             axum::routing::get(profile::handle_get_profile).put(profile::handle_upsert_profile),
+        )
+        // ── Cover Letter API (Phase 3) ─────────────────────────────────────
+        // Note: literal /generate must be before /:id (Axum resolves literals first)
+        .route(
+            "/api/v1/cover-letters/generate",
+            post(cl::handle_generate_cover_letter),
+        )
+        .route("/api/v1/cover-letters", get(cl::handle_list_cover_letters))
+        .route(
+            "/api/v1/cover-letters/:id",
+            get(cl::handle_get_cover_letter),
         )
         .with_state(state)
         // 10 MB global body size limit — protects all endpoints, covers the

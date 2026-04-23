@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod context;
+mod cover_letter;
 mod db;
 mod errors;
 mod generation;
