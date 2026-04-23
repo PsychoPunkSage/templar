@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT entry_header FROM resume_bullets WHERE resume_id = $1 AND source_entry_id = $2 AND bullet_text = $3 LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "entry_header",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "07c05ba138600e46033086e3a26ddc3ca7d3be30d821d399609e985a67a1ceb1"
+}

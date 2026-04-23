@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, source_type, filename, total, pending, succeeded, failed, status\n           FROM context_ingest_batches\n           WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "source_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "filename",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "total",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "pending",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "succeeded",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "failed",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f1e2bf85ff8f933f6cfdb9c8db5c5aa4f669c621977f15be736398670ec72242"
+}

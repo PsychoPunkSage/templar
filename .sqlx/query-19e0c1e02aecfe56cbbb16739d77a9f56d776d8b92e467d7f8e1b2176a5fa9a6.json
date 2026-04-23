@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM context_ingest_batches WHERE expires_at < NOW()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "19e0c1e02aecfe56cbbb16739d77a9f56d776d8b92e467d7f8e1b2176a5fa9a6"
+}
