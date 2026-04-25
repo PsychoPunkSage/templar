@@ -294,7 +294,10 @@ async fn process_generation_job(
 
                     match proj_result {
                         Ok(Some(proj_id)) => {
-                            if let Err(e) = crate::interview_prep::job::enqueue_prep_job(&redis3, &db3, proj_id).await {
+                            if let Err(e) =
+                                crate::interview_prep::job::enqueue_prep_job(&redis3, &db3, proj_id)
+                                    .await
+                            {
                                 warn!(
                                     job_id = %job_id,
                                     project_id = %proj_id,

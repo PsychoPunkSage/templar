@@ -11,11 +11,11 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::context::versioning::get_current_entries;
-use crate::cover_letter::{
-    CoverLetterFocus, CoverLetterLlmOutput, CoverLetterParagraph, CoverLetterRow,
-    CoverLetterTone, GenerateCoverLetterRequest,
-};
 use crate::cover_letter::prompts::{COVER_LETTER_PROMPT_TEMPLATE, COVER_LETTER_SYSTEM};
+use crate::cover_letter::{
+    CoverLetterFocus, CoverLetterLlmOutput, CoverLetterParagraph, CoverLetterRow, CoverLetterTone,
+    GenerateCoverLetterRequest,
+};
 use crate::generation::content_selector::select_content;
 use crate::generation::generator::ResumeMode;
 use crate::generation::hash_utils::compute_jd_hash;
@@ -99,10 +99,22 @@ pub async fn generate_cover_letter(
 
     // Step 9: Convert to paragraphs
     let paragraphs = vec![
-        CoverLetterParagraph { role: "hook".into(), text: llm_output.hook },
-        CoverLetterParagraph { role: "fit".into(), text: llm_output.fit },
-        CoverLetterParagraph { role: "culture".into(), text: llm_output.culture },
-        CoverLetterParagraph { role: "close".into(), text: llm_output.close },
+        CoverLetterParagraph {
+            role: "hook".into(),
+            text: llm_output.hook,
+        },
+        CoverLetterParagraph {
+            role: "fit".into(),
+            text: llm_output.fit,
+        },
+        CoverLetterParagraph {
+            role: "culture".into(),
+            text: llm_output.culture,
+        },
+        CoverLetterParagraph {
+            role: "close".into(),
+            text: llm_output.close,
+        },
     ];
     let content_json = serde_json::to_value(&paragraphs)
         .map_err(|e| anyhow::anyhow!("Failed to serialize paragraphs: {e}"))?;
@@ -133,16 +145,14 @@ pub async fn generate_cover_letter(
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-fn build_candidate_summary(
-    entries: &[crate::generation::content_selector::RankedEntry],
-) -> String {
+fn build_candidate_summary(entries: &[crate::generation::content_selector::RankedEntry]) -> String {
     entries
         .iter()
         .enumerate()
         .map(|(i, ranked)| {
             let entry = &ranked.entry;
-            let data_preview = serde_json::to_string(&entry.data)
-                .unwrap_or_else(|_| "{}".to_string());
+            let data_preview =
+                serde_json::to_string(&entry.data).unwrap_or_else(|_| "{}".to_string());
             let raw_preview = entry
                 .raw_text
                 .as_deref()
@@ -177,7 +187,10 @@ fn build_prompt(
         .map(|p| {
             let mut parts = Vec::new();
             if !p.emphasized_tags.is_empty() {
-                parts.push(format!("Emphasize these areas: {}", p.emphasized_tags.join(", ")));
+                parts.push(format!(
+                    "Emphasize these areas: {}",
+                    p.emphasized_tags.join(", ")
+                ));
             }
             if !p.suppressed_tags.is_empty() {
                 parts.push(format!("De-emphasize: {}", p.suppressed_tags.join(", ")));
@@ -235,10 +248,22 @@ fn build_jd_context(parsed_jd: &crate::generation::jd_parser::ParsedJD) -> Strin
          Hard requirements:\n{hard_reqs}\n\
          Soft signals:\n{soft_signals}",
         seniority = seniority,
-        culture = if is_startup { "startup / fast-paced" } else { "enterprise / structured" },
+        culture = if is_startup {
+            "startup / fast-paced"
+        } else {
+            "enterprise / structured"
+        },
         detected_tone = detected_tone,
-        hard_reqs = if hard_reqs.is_empty() { "  (none specified)".to_string() } else { hard_reqs.join("\n") },
-        soft_signals = if soft_signals.is_empty() { "  (none)".to_string() } else { soft_signals.join("\n") },
+        hard_reqs = if hard_reqs.is_empty() {
+            "  (none specified)".to_string()
+        } else {
+            hard_reqs.join("\n")
+        },
+        soft_signals = if soft_signals.is_empty() {
+            "  (none)".to_string()
+        } else {
+            soft_signals.join("\n")
+        },
     )
 }
 

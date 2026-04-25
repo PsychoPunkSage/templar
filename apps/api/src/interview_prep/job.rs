@@ -38,7 +38,11 @@ pub const INTERVIEW_PREP_QUEUE_KEY: &str = "interview_prep:jobs";
 /// It:
 ///   1. Upserts interview_prep_meta with status=generating (so callers see "Updating prep..." immediately).
 ///   2. LPUSHes the project_id UUID to Redis.
-pub async fn enqueue_prep_job(redis: &redis::Client, db: &PgPool, project_id: Uuid) -> Result<(), anyhow::Error> {
+pub async fn enqueue_prep_job(
+    redis: &redis::Client,
+    db: &PgPool,
+    project_id: Uuid,
+) -> Result<(), anyhow::Error> {
     // Step 1: Upsert meta to generating BEFORE enqueuing
     sqlx::query(
         r#"INSERT INTO interview_prep_meta (project_id, status)
@@ -54,7 +58,12 @@ pub async fn enqueue_prep_job(redis: &redis::Client, db: &PgPool, project_id: Uu
 
     // Step 2: Enqueue to Redis
     let mut conn = redis.get_multiplexed_async_connection().await?;
-    redis::AsyncCommands::lpush::<_, _, ()>(&mut conn, INTERVIEW_PREP_QUEUE_KEY, project_id.to_string()).await?;
+    redis::AsyncCommands::lpush::<_, _, ()>(
+        &mut conn,
+        INTERVIEW_PREP_QUEUE_KEY,
+        project_id.to_string(),
+    )
+    .await?;
 
     info!(project_id = %project_id, "Interview prep job enqueued");
     Ok(())
@@ -67,7 +76,12 @@ pub async fn enqueue_prep_job(redis: &redis::Client, db: &PgPool, project_id: Uu
 /// Spawns N interview prep background workers as detached Tokio tasks.
 ///
 /// Returns immediately — workers run indefinitely.
-pub fn spawn_interview_prep_worker(redis: redis::Client, db: PgPool, llm: crate::llm_client::LlmClient, count: usize) {
+pub fn spawn_interview_prep_worker(
+    redis: redis::Client,
+    db: PgPool,
+    llm: crate::llm_client::LlmClient,
+    count: usize,
+) {
     for i in 0..count {
         let redis2 = redis.clone();
         let db2 = db.clone();

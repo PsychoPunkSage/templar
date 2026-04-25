@@ -21,8 +21,12 @@ pub enum CoverLetterTone {
 impl CoverLetterTone {
     pub fn as_instruction(&self) -> &'static str {
         match self {
-            CoverLetterTone::Formal => "formal business letter — precise, professional, third-person reserved",
-            CoverLetterTone::Conversational => "warm and conversational — personable, first-person, genuine enthusiasm",
+            CoverLetterTone::Formal => {
+                "formal business letter — precise, professional, third-person reserved"
+            }
+            CoverLetterTone::Conversational => {
+                "warm and conversational — personable, first-person, genuine enthusiasm"
+            }
         }
     }
 
@@ -45,9 +49,15 @@ pub enum CoverLetterFocus {
 impl CoverLetterFocus {
     pub fn as_instruction(&self) -> &'static str {
         match self {
-            CoverLetterFocus::Technical => "emphasize technical depth, system design, and engineering achievements",
-            CoverLetterFocus::Leadership => "emphasize leadership impact, team outcomes, and strategic influence",
-            CoverLetterFocus::CultureFit => "emphasize cultural alignment, collaboration, values, and growth mindset",
+            CoverLetterFocus::Technical => {
+                "emphasize technical depth, system design, and engineering achievements"
+            }
+            CoverLetterFocus::Leadership => {
+                "emphasize leadership impact, team outcomes, and strategic influence"
+            }
+            CoverLetterFocus::CultureFit => {
+                "emphasize cultural alignment, collaboration, values, and growth mindset"
+            }
         }
     }
 

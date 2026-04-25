@@ -73,10 +73,7 @@ pub fn diff_bullets(old: &[PrepBulletRow], new: &[(String, Option<Uuid>)]) -> Bu
     let old_map: HashMap<String, &PrepBulletRow> =
         old.iter().map(|r| (r.bullet_hash.clone(), r)).collect();
 
-    let new_hashes: HashSet<String> = new
-        .iter()
-        .map(|(text, _)| hash_bullet(text))
-        .collect();
+    let new_hashes: HashSet<String> = new.iter().map(|(text, _)| hash_bullet(text)).collect();
 
     let unchanged: HashSet<String> = old_map
         .keys()
@@ -106,7 +103,11 @@ pub fn diff_bullets(old: &[PrepBulletRow], new: &[(String, Option<Uuid>)]) -> Bu
         })
         .collect();
 
-    BulletDiff { unchanged, added, removed }
+    BulletDiff {
+        unchanged,
+        added,
+        removed,
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -208,27 +209,28 @@ pub async fn generate_prep(db: &PgPool, llm: &LlmClient, project_id: Uuid) -> Re
             &jd_keywords_from_fit_report(&fit_report_json),
         );
 
-        let llm_output: BulletPrepLlmOutput = match llm.call_json(&prompt, STAR_SCAFFOLD_SYSTEM).await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(
-                    project_id = %project_id,
-                    bullet_hash = %bullet.hash,
-                    error = %e,
-                    "STAR scaffold LLM call failed — using empty scaffold"
-                );
-                BulletPrepLlmOutput {
-                    star_scaffold: StarScaffold {
-                        situation: "Details to confirm.".into(),
-                        task: "Details to confirm.".into(),
-                        action: bullet.text.clone(),
-                        result: "Details to confirm.".into(),
-                        talking_points: vec![],
-                    },
-                    questions: vec![],
+        let llm_output: BulletPrepLlmOutput =
+            match llm.call_json(&prompt, STAR_SCAFFOLD_SYSTEM).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
+                        project_id = %project_id,
+                        bullet_hash = %bullet.hash,
+                        error = %e,
+                        "STAR scaffold LLM call failed — using empty scaffold"
+                    );
+                    BulletPrepLlmOutput {
+                        star_scaffold: StarScaffold {
+                            situation: "Details to confirm.".into(),
+                            task: "Details to confirm.".into(),
+                            action: bullet.text.clone(),
+                            result: "Details to confirm.".into(),
+                            talking_points: vec![],
+                        },
+                        questions: vec![],
+                    }
                 }
-            }
-        };
+            };
 
         let scaffold_json = serde_json::to_value(&llm_output.star_scaffold)?;
         let questions_json = serde_json::to_value(&llm_output.questions)?;
@@ -257,9 +259,7 @@ pub async fn generate_prep(db: &PgPool, llm: &LlmClient, project_id: Uuid) -> Re
 
     // Step 9: Gap questions + company extraction (single LLM call)
     let (gap_questions, company_context) = match &jd_text {
-        Some(jd) => {
-            generate_gap_questions_and_context(llm, &fit_report_json, jd).await
-        }
+        Some(jd) => generate_gap_questions_and_context(llm, &fit_report_json, jd).await,
         None => {
             warn!(project_id = %project_id, "No JD text — skipping gap questions");
             (vec![], None)
@@ -366,9 +366,7 @@ async fn fetch_fit_report_for_project(
     .fetch_optional(db)
     .await?;
 
-    Ok(result_value.and_then(|v| {
-        v.get("fit_report").cloned()
-    }))
+    Ok(result_value.and_then(|v| v.get("fit_report").cloned()))
 }
 
 /// Load a map of entry_id → (contribution_type_str, raw_text) for entries
@@ -378,27 +376,27 @@ async fn load_context_map(
     project_id: Uuid,
 ) -> Result<HashMap<Uuid, (String, String)>> {
     // Get user_id from the project
-    let user_id: Option<Uuid> = sqlx::query_scalar::<_, Uuid>(
-        "SELECT user_id FROM cv_projects WHERE id = $1",
-    )
-    .bind(project_id)
-    .fetch_optional(db)
-    .await?;
+    let user_id: Option<Uuid> =
+        sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM cv_projects WHERE id = $1")
+            .bind(project_id)
+            .fetch_optional(db)
+            .await?;
 
     let Some(uid) = user_id else {
         return Ok(HashMap::new());
     };
 
     // Fetch latest version of each context entry
-    let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
-        r#"SELECT DISTINCT ON (entry_id) entry_id, contribution_type, raw_text
+    let rows: Vec<(Uuid, String, Option<String>)> =
+        sqlx::query_as::<_, (Uuid, String, Option<String>)>(
+            r#"SELECT DISTINCT ON (entry_id) entry_id, contribution_type, raw_text
            FROM context_entries
            WHERE user_id = $1
            ORDER BY entry_id, created_at DESC"#,
-    )
-    .bind(uid)
-    .fetch_all(db)
-    .await?;
+        )
+        .bind(uid)
+        .fetch_all(db)
+        .await?;
 
     let map = rows
         .into_iter()
@@ -416,7 +414,10 @@ async fn generate_gap_questions_and_context(
     // Build gaps list
     let gaps_json = match fit_report_json {
         Some(v) => {
-            let gaps = v.get("gaps").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+            let gaps = v
+                .get("gaps")
+                .cloned()
+                .unwrap_or(serde_json::Value::Array(vec![]));
             // Remap to {area, description} shape for the prompt
             let remapped: Vec<serde_json::Value> = gaps
                 .as_array()
@@ -452,7 +453,12 @@ async fn generate_gap_questions_and_context(
     };
 
     let company_context = {
-        let name = output.company_name.as_deref().unwrap_or("").trim().to_string();
+        let name = output
+            .company_name
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if name.is_empty() {
             None
         } else {
@@ -603,10 +609,7 @@ mod tests {
             make_row(&hash_bullet(text1), text1),
             make_row(&hash_bullet(text2), text2),
         ];
-        let new = vec![
-            (text1.to_string(), None),
-            (text2.to_string(), None),
-        ];
+        let new = vec![(text1.to_string(), None), (text2.to_string(), None)];
         let diff = diff_bullets(&old, &new);
         assert_eq!(diff.unchanged.len(), 2);
         assert_eq!(diff.added.len(), 0);
@@ -622,10 +625,7 @@ mod tests {
             make_row(&hash_bullet(text_keep), text_keep),
             make_row(&hash_bullet(text_old), text_old),
         ];
-        let new = vec![
-            (text_keep.to_string(), None),
-            (text_new.to_string(), None),
-        ];
+        let new = vec![(text_keep.to_string(), None), (text_new.to_string(), None)];
         let diff = diff_bullets(&old, &new);
         assert_eq!(diff.unchanged.len(), 1);
         assert!(diff.unchanged.contains(&hash_bullet(text_keep)));

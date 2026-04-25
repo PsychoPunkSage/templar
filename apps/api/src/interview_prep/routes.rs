@@ -19,8 +19,8 @@ use crate::interview_prep::{
     generator::regenerate_gap_questions,
     job::enqueue_prep_job,
     models::{
-        CompanyContext, GapQuestion, PrepBullet, PrepBulletRow, PrepMeta, PrepMetaRow, PrepResponse,
-        PrepStatus, PrepStatusResponse, StarScaffold,
+        CompanyContext, GapQuestion, PrepBullet, PrepBulletRow, PrepMeta, PrepMetaRow,
+        PrepResponse, PrepStatus, PrepStatusResponse, StarScaffold,
     },
 };
 use crate::state::AppState;
@@ -36,16 +36,17 @@ pub async fn handle_get_prep(
     Path(project_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     // Verify project exists (also serves as access control for now)
-    let project_exists: bool = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM cv_projects WHERE id = $1)",
-    )
-    .bind(project_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {e}")))?;
+    let project_exists: bool =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM cv_projects WHERE id = $1)")
+            .bind(project_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {e}")))?;
 
     if !project_exists {
-        return Err(AppError::NotFound(format!("Project {project_id} not found")));
+        return Err(AppError::NotFound(format!(
+            "Project {project_id} not found"
+        )));
     }
 
     // Fetch meta row
@@ -143,7 +144,9 @@ pub async fn handle_update_company(
     Json(body): Json<UpdateCompanyRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if body.company_name.trim().is_empty() {
-        return Err(AppError::Validation("company_name cannot be empty".to_string()));
+        return Err(AppError::Validation(
+            "company_name cannot be empty".to_string(),
+        ));
     }
 
     let ctx = CompanyContext {
@@ -227,8 +230,8 @@ pub async fn handle_get_status(
 // ────────────────────────────────────────────────────────────────────────────
 
 fn row_to_prep_meta(row: PrepMetaRow, is_stale_override: bool) -> PrepMeta {
-    let gap_questions: Vec<GapQuestion> = serde_json::from_value(row.gap_questions)
-        .unwrap_or_default();
+    let gap_questions: Vec<GapQuestion> =
+        serde_json::from_value(row.gap_questions).unwrap_or_default();
     let company_context: Option<CompanyContext> = row
         .company_context
         .and_then(|v| serde_json::from_value(v).ok());
@@ -248,8 +251,7 @@ fn row_to_prep_meta(row: PrepMetaRow, is_stale_override: bool) -> PrepMeta {
 }
 
 fn row_to_prep_bullet(row: PrepBulletRow) -> PrepBullet {
-    let star_scaffold: StarScaffold = serde_json::from_value(row.star_scaffold)
-        .unwrap_or_default();
+    let star_scaffold: StarScaffold = serde_json::from_value(row.star_scaffold).unwrap_or_default();
     let questions: Vec<crate::interview_prep::models::PrepQuestion> =
         serde_json::from_value(row.questions).unwrap_or_default();
 
@@ -304,10 +306,13 @@ async fn compute_stale_flag(
     .await
     .unwrap_or_default();
 
-    use std::collections::HashSet;
     use crate::interview_prep::generator::hash_bullet;
+    use std::collections::HashSet;
 
-    let stored_hashes: HashSet<&str> = stored_bullets.iter().map(|r| r.bullet_hash.as_str()).collect();
+    let stored_hashes: HashSet<&str> = stored_bullets
+        .iter()
+        .map(|r| r.bullet_hash.as_str())
+        .collect();
     let current_hashes: HashSet<String> = current_texts.iter().map(|t| hash_bullet(t)).collect();
     let current_hash_refs: HashSet<&str> = current_hashes.iter().map(|s| s.as_str()).collect();
 
