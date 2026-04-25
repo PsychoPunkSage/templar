@@ -6,11 +6,14 @@ use axum::{
     Router,
 };
 
+use axum::routing::put;
+
 use crate::auth;
 use crate::context::handlers as ctx;
 use crate::cover_letter::handlers as cl;
 use crate::generation::handlers as gen;
 use crate::grounding::handlers as grounding;
+use crate::interview_prep::routes as interview_prep;
 use crate::personas::handlers as personas;
 use crate::profile::handlers as profile;
 use crate::projects::handlers as projects;
@@ -152,6 +155,24 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/cover-letters/:id",
             get(cl::handle_get_cover_letter),
+        )
+        // ── Interview Prep API (Phase 3 Power) ────────────────────────────
+        // Note: literal suffixes (/trigger, /company, /status) must be before /:project_id
+        .route(
+            "/api/v1/interview-prep/:project_id/trigger",
+            post(interview_prep::handle_trigger_prep),
+        )
+        .route(
+            "/api/v1/interview-prep/:project_id/company",
+            put(interview_prep::handle_update_company),
+        )
+        .route(
+            "/api/v1/interview-prep/:project_id/status",
+            get(interview_prep::handle_get_status),
+        )
+        .route(
+            "/api/v1/interview-prep/:project_id",
+            get(interview_prep::handle_get_prep),
         )
         .with_state(state)
         // 10 MB global body size limit — protects all endpoints, covers the

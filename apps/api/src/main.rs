@@ -6,6 +6,7 @@ mod db;
 mod errors;
 mod generation;
 mod grounding;
+mod interview_prep;
 mod layout;
 mod llm_client;
 mod models;
@@ -31,6 +32,7 @@ use std::sync::Arc;
 use crate::auth::{fetch_jwks, JwksCache};
 use crate::config::Config;
 use crate::context::worker::spawn_context_ingest_worker;
+use crate::interview_prep::job::spawn_interview_prep_worker;
 use crate::db::create_pool;
 use crate::generation::fit_scoring::LlmFitScorer;
 use crate::generation::worker::spawn_generation_worker;
@@ -206,6 +208,22 @@ async fn main() -> Result<()> {
     info!(
         "Context ingest workers: spawned {}",
         config.ingest_worker_count
+    );
+
+    // Spawn interview prep workers
+    let interview_prep_worker_count: usize = std::env::var("INTERVIEW_PREP_WORKER_COUNT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+    spawn_interview_prep_worker(
+        state.redis.clone(),
+        state.db.clone(),
+        state.llm.clone(),
+        interview_prep_worker_count,
+    );
+    info!(
+        interview_prep_workers = interview_prep_worker_count,
+        "Interview prep workers: spawned"
     );
 
     // Build router

@@ -534,3 +534,91 @@ export interface ContextEntriesResponse {
   entries: ContextEntryRow[]
   completeness: CompletenessReport
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interview Prep types
+// Mirrors: apps/api/src/interview_prep/models.rs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** STAR scaffold for a single resume bullet. */
+export interface StarScaffold {
+  situation: string
+  task: string
+  action: string
+  result: string
+  talking_points: string[]
+}
+
+/** Classification of an interview question. */
+export type QuestionType = 'behavioral' | 'technical' | 'role_fit'
+
+/** A single interview question linked to a resume bullet. */
+export interface PrepQuestion {
+  text: string
+  type: QuestionType
+}
+
+/** A gap question derived from FitReport.gaps. */
+export interface GapQuestion {
+  text: string
+  gap_area: string
+}
+
+/** Optional company context. */
+export interface CompanyContext {
+  company_name: string
+  company_stage?: string
+  role_title?: string
+}
+
+/** Lifecycle status for interview prep. */
+export type PrepStatus = 'pending' | 'generating' | 'ready' | 'failed'
+
+/** A fully-resolved prep bullet. */
+export interface PrepBullet {
+  id: string
+  project_id: string
+  bullet_hash: string
+  bullet_text: string
+  context_entry_id?: string
+  star_scaffold: StarScaffold
+  questions: PrepQuestion[]
+  created_at: string
+  updated_at: string
+}
+
+/** Metadata for a project's interview prep session. */
+export interface PrepMeta {
+  id: string
+  project_id: string
+  gap_questions: GapQuestion[]
+  company_context?: CompanyContext
+  status: PrepStatus
+  last_generated_at?: string
+  expires_at?: string
+  /** Server-computed: true when current resume bullets differ from stored prep bullets. */
+  is_stale: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** Full prep response from GET /api/v1/interview-prep/:project_id. */
+export interface PrepResponse {
+  meta: PrepMeta | null
+  bullets: PrepBullet[]
+}
+
+/** Status-only response from GET /api/v1/interview-prep/:project_id/status. */
+export interface PrepStatusResponse {
+  status: PrepStatus
+  last_generated_at?: string
+  expires_at?: string
+  is_stale: boolean
+}
+
+/** Request body for PUT /api/v1/interview-prep/:project_id/company. */
+export interface UpdateCompanyRequest {
+  company_name: string
+  company_stage?: string
+  role_title?: string
+}
