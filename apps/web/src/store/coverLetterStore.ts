@@ -33,6 +33,8 @@ interface CoverLetterStore {
     personaId: string | null
   ) => Promise<void>;
   loadCoverLetter: (id: string) => Promise<void>;
+  /** Auto-loads the most recent cover letter for a given resume. No-op if none exists. */
+  loadCoverLetterForResume: (userId: string, resumeId: string) => Promise<void>;
   setTone: (tone: CoverLetterTone) => void;
   setFocus: (focus: CoverLetterFocus) => void;
   reset: () => void;
@@ -110,6 +112,26 @@ export const useCoverLetterStore = create<CoverLetterStore>((set) => ({
       });
     } catch {
       // Non-fatal — if load fails, pane stays in idle state
+    }
+  },
+
+  loadCoverLetterForResume: async (userId, resumeId) => {
+    try {
+      const resp = await api.listCoverLetters(userId, resumeId);
+      if (resp.cover_letters.length === 0) return;
+      // listCoverLetters returns newest-first (ORDER BY created_at DESC)
+      const latest = resp.cover_letters[0];
+      set({
+        coverId: latest.id,
+        content: latest.content as CoverLetterParagraph[],
+        companyName: latest.company_name ?? null,
+        roleTitle: latest.role_title ?? null,
+        status: "done",
+        // generatedWithJdText stays null — original JD text not available here;
+        // staleness won't fire until the user edits the JD in this session.
+      });
+    } catch {
+      // Non-fatal — pane stays in idle/generation form state
     }
   },
 }));

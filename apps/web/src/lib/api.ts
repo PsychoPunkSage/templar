@@ -20,6 +20,10 @@ import type {
   UpdatePersonaRequest,
   PersonaSuggestion,
   SuggestPersonasResponse,
+  PrepResponse,
+  PrepStatusResponse,
+  PrepMeta,
+  UpdateCompanyRequest,
 } from "@templar/types";
 
 export interface CoverLetterResponse {
@@ -480,6 +484,43 @@ export const api = {
       `/api/v1/cover-letters?user_id=${userId}` +
         (resumeId ? `&resume_id=${resumeId}` : ""),
     ),
+
+  // ── Interview Prep API (Phase 3 Power) ────────────────────────────────────
+
+  /**
+   * GET /api/v1/interview-prep/:project_id
+   * Returns full prep package (meta + bullets). Returns {meta: null, bullets: []}
+   * if no prep has been generated yet.
+   */
+  getInterviewPrep: (projectId: string) =>
+    apiFetch<PrepResponse>(`/api/v1/interview-prep/${projectId}`),
+
+  /**
+   * POST /api/v1/interview-prep/:project_id/trigger
+   * Enqueues a prep generation job. Returns 202 Accepted.
+   * Returns 422 if project has no current resume.
+   */
+  triggerInterviewPrep: (projectId: string) =>
+    apiFetch<void>(`/api/v1/interview-prep/${projectId}/trigger`, {
+      method: "POST",
+    }),
+
+  /**
+   * GET /api/v1/interview-prep/:project_id/status
+   * Lightweight status poll — returns {status, last_generated_at, expires_at, is_stale}.
+   */
+  getInterviewPrepStatus: (projectId: string) =>
+    apiFetch<PrepStatusResponse>(`/api/v1/interview-prep/${projectId}/status`),
+
+  /**
+   * PUT /api/v1/interview-prep/:project_id/company
+   * Update company context and re-run gap questions (STAR scaffolds reused).
+   */
+  updateInterviewPrepCompany: (projectId: string, body: UpdateCompanyRequest) =>
+    apiFetch<PrepMeta | null>(`/api/v1/interview-prep/${projectId}/company`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
 };
 
 export type { UserProfileResponse, UpsertProfileRequest, ProfileLinkData };

@@ -25,7 +25,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { AlertCircle, X, Download, Loader2 } from "lucide-react";
+import { AlertCircle, X, Download, Loader2, Brain } from "lucide-react";
 import { JdInput } from "@/components/editor/JdInput";
 import { BulletList } from "@/components/editor/BulletList";
 import { FitReportPanel } from "@/components/editor/FitReportPanel";
@@ -40,9 +40,10 @@ import {
   TabsTrigger,
   TabsContent,
 } from "@/components/ui/tabs";
-import { useResumeStore } from "@/store/resumeStore";
+import { useResumeStore, MVP_USER_ID } from "@/store/resumeStore";
 import { useProjectStore } from "@/store/projectStore";
 import { useCoverLetterStore } from "@/store/coverLetterStore";
+import { useAuthStore } from "@/store/authStore";
 import { PersonaSelect } from "@/components/editor/PersonaSelect";
 import { BookOpen } from "lucide-react";
 import { api } from "@/lib/api";
@@ -114,9 +115,14 @@ export default function ProjectEditorPage() {
   // This prevents state bleed-through when switching between projects.
   // Also hydrates the refinement queue from localStorage for this project.
   useEffect(() => {
-    resetForProject(projectId);
+    // Only reset when switching to a different project.
+    // Returning to the same project (e.g. editor → interview → back) preserves state.
+    if (useResumeStore.getState().currentProjectId !== projectId) {
+      resetForProject(projectId);
+      useCoverLetterStore.getState().reset();
+    }
     hydrateQueue(projectId);
-  // resetForProject and hydrateQueue are stable Zustand actions — safe to omit from deps
+  // resetForProject, hydrateQueue, and coverLetterStore.reset are stable Zustand actions
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -146,15 +152,31 @@ export default function ProjectEditorPage() {
       api.getGenerationStatus(genJobId).then((status) => {
         if (status.status === "done" && status.entry_groups?.length) {
           // Full typed display headers available — populate directly, no loadResume needed
+          const resId = status.resume_id ?? null;
           useResumeStore.setState({
             generationJobId: genJobId,
-            resumeId: status.resume_id ?? null,
+            resumeId: resId,
             entryGroups: status.entry_groups,
             fitReport: status.fit_report ?? null,
             generationStatus: "done",
             isGenerating: false,
           });
           console.log("[Editor] Restored generation from job (full headers)", genJobId);
+          // Also restore render state — getGenerationStatus doesn't carry renderJobId
+          if (resId) {
+            api.getResumeRenderJob(resId).then((renderJob) => {
+              if (!renderJob) return;
+              if (renderJob.status === "done") {
+                useResumeStore.setState({ renderJobId: renderJob.job_id, renderStatus: "done" });
+              } else if (renderJob.status === "processing" || renderJob.status === "queued") {
+                useResumeStore.setState({
+                  renderJobId: renderJob.job_id,
+                  renderStatus: renderJob.status === "processing" ? "rendering" : "queued",
+                });
+                useResumeStore.getState().pollRenderStatus();
+              }
+            }).catch(() => {});
+          }
         } else if (status.status === "done" && savedResumeId) {
           // Status done but no entry_groups in result JSONB — fall back to loadResume.
           // loadResume uses resumes.entry_groups (post-migration 014) or entry_header labels.
@@ -188,6 +210,15 @@ export default function ProjectEditorPage() {
   useEffect(() => {
     if (hasBullets) setLeftTab("bullets");
   }, [hasBullets]);
+
+  // Effect 4: Auto-load the most recent cover letter once resumeId is available.
+  // Skips if a cover letter is already loaded in this session (coverId is set).
+  useEffect(() => {
+    if (!resumeId || coverId) return;
+    const userId = useAuthStore.getState().internalUserId ?? MVP_USER_ID;
+    useCoverLetterStore.getState().loadCoverLetterForResume(userId, resumeId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeId, coverId]);
 
   // We only need the template id slug to build the render-pdf URL.
   const templateId = currentProject?.template_id ?? null;
@@ -307,6 +338,18 @@ export default function ProjectEditorPage() {
                 ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 : <Download className="h-3.5 w-3.5" />}
               {isDownloading ? "Downloading..." : "Download PDF"}
+            </Button>
+          )}
+          {renderStatus === "done" && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => router.push(`/interview/${projectId}`)}
+              className="gap-1.5"
+              title="Prepare for interviews using your resume"
+            >
+              <Brain className="h-3.5 w-3.5" />
+              Prep Interview
             </Button>
           )}
           <Button
