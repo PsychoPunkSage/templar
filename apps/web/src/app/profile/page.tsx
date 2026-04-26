@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useProfileStore } from "@/store/profileStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import type { ProfileLinkData } from "@templar/types";
-import { X, Plus } from "lucide-react";
+import { X, Plus, Check } from "lucide-react";
 
 const LINK_TYPES = ["LinkedIn", "GitHub", "GitLab", "Twitter", "Portfolio", "Custom"] as const;
 
@@ -29,6 +29,19 @@ export default function ProfilePage() {
   const [phone, setPhone] = useState("");
   const [location, setLocation] = useState("");
   const [links, setLinks] = useState<ProfileLinkData[]>([]);
+
+  const [justSaved, setJustSaved] = useState(false);
+
+  const isDirty = useMemo(() => {
+    if (!profile) return !!(fullName || email || phone || location || links.length);
+    return (
+      fullName !== profile.full_name ||
+      email !== profile.email ||
+      phone !== profile.phone ||
+      location !== profile.location ||
+      JSON.stringify(links) !== JSON.stringify(profile.links ?? [])
+    );
+  }, [profile, fullName, email, phone, location, links]);
 
   // Add-link form state
   const [showAddLink, setShowAddLink] = useState(false);
@@ -55,6 +68,8 @@ export default function ProfilePage() {
 
   const handleSave = async () => {
     await saveProfile({ full_name: fullName, email, phone, location, links });
+    setJustSaved(true);
+    setTimeout(() => setJustSaved(false), 2000);
   };
 
   const handleAddLink = () => {
@@ -87,7 +102,14 @@ export default function ProfilePage() {
 
   return (
     <div className="max-w-xl mx-auto py-10 px-4">
-      <h1 className="text-2xl font-bold mb-1">Profile</h1>
+      <div className="flex items-center gap-2 mb-1">
+        <h1 className="text-2xl font-bold">Profile</h1>
+        {isDirty && !isSaving && (
+          <span className="text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full">
+            Unsaved changes
+          </span>
+        )}
+      </div>
       <p className="text-sm text-muted-foreground mb-6">
         Your contact information and links used in resume headers.
       </p>
@@ -214,8 +236,20 @@ export default function ProfilePage() {
 
         <Separator />
 
-        <Button onClick={handleSave} disabled={isSaving} className="w-full">
-          {isSaving ? "Saving..." : "Save Profile"}
+        <Button
+          onClick={handleSave}
+          disabled={isSaving || !isDirty || justSaved}
+          className={`w-full transition-colors ${justSaved ? "bg-green-600 hover:bg-green-600 text-white" : ""}`}
+        >
+          {isSaving ? (
+            "Saving..."
+          ) : justSaved ? (
+            <><Check className="h-4 w-4 mr-1.5" />Saved</>
+          ) : isDirty ? (
+            "Save Profile"
+          ) : (
+            "No unsaved changes"
+          )}
         </Button>
       </Card>
     </div>

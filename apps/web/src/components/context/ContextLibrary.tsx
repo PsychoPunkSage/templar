@@ -154,7 +154,7 @@ export default function ContextLibrary({ refreshKey }: ContextLibraryProps) {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [userId])
 
   // Fetch on mount and whenever refreshKey or userId changes.
   useEffect(() => {

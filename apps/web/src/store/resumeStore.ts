@@ -165,7 +165,7 @@ interface ResumeStore {
    * 3. Poll GET /api/v1/generation/jobs/:id/status every 3s until done/failed
    * 4. On done: fetch audit, trigger PDF render, start render polling, link resume
    */
-  generate: (projectId?: string) => Promise<void>;
+  generate: (projectId?: string, personaId?: string | null) => Promise<void>;
   /**
    * Polls GET /api/v1/generation/jobs/:id/status every 3 seconds.
    * On done: populates entryGroups, triggers render pipeline.
@@ -306,7 +306,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
     }
   },
 
-  generate: async (projectId?: string) => {
+  generate: async (projectId?: string, personaId?: string | null) => {
     const { jdText } = get();
     console.log("[store] generate() called", { jdText: jdText.slice(0, 60) });
     if (!jdText.trim()) {
@@ -337,7 +337,7 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
       const resumeMode: 'single_page' | 'cv' =
         project?.document_type === 'cv' ? 'cv' : 'single_page';
 
-      const { job_id } = await api.generateResume(getUserId(), jdText, resumeMode);
+      const { job_id } = await api.generateResume(getUserId(), jdText, resumeMode, personaId);
       console.log("[store] generation job enqueued", { job_id });
       set({ generationJobId: job_id });
 

@@ -12,6 +12,8 @@ struct TomlConfig {
     concurrency: TomlConcurrencyConfig,
     #[serde(default)]
     ingestion: TomlIngestionConfig,
+    #[serde(default)]
+    persona_suggestion: TomlPersonaSuggestionConfig,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -28,6 +30,15 @@ struct TomlConcurrencyConfig {
 #[derive(Debug, Default, serde::Deserialize)]
 struct TomlIngestionConfig {
     bullet_token_budget: Option<usize>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct TomlPersonaSuggestionConfig {
+    min_entries_required: Option<usize>,
+    max_count: Option<usize>,
+    top_tags: Option<usize>,
+    top_entries: Option<usize>,
+    dedup_jaccard_threshold: Option<f64>,
 }
 
 /// Attempts to load config.toml from several candidate paths.
@@ -124,6 +135,29 @@ pub struct Config {
     /// Env: BULLET_TOKEN_BUDGET  |  Default: 1200
     pub bullet_token_budget: usize,
 
+    // ── Persona suggestion tunables ──────────────────────────────────────────
+    /// Minimum context entries needed before the suggestion LLM call is attempted.
+    /// Below this threshold the handler returns [] immediately (no token spend).
+    /// Env: PERSONA_SUGGEST_MIN_ENTRIES  |  Default: 3
+    pub persona_suggest_min_entries: usize,
+
+    /// Max suggestions the LLM is asked to produce; also applied as a post-filter cap.
+    /// Env: PERSONA_SUGGEST_MAX_COUNT  |  Default: 3
+    pub persona_suggest_max_count: usize,
+
+    /// Top N tags by frequency included in the LLM prompt.
+    /// Env: PERSONA_SUGGEST_TOP_TAGS  |  Default: 20
+    pub persona_suggest_top_tags: usize,
+
+    /// Top N entries by recency×impact score included as labelled samples in the prompt.
+    /// Env: PERSONA_SUGGEST_TOP_ENTRIES  |  Default: 8
+    pub persona_suggest_top_entries: usize,
+
+    /// Jaccard tag-overlap threshold above which a suggestion is considered a duplicate
+    /// of an existing persona and filtered out. Range: 0.0 – 1.0.
+    /// Env: PERSONA_SUGGEST_DEDUP_THRESHOLD  |  Default: 0.6
+    pub persona_suggest_dedup_threshold: f64,
+
     // ── Auth (optional) ──────────────────────────────────────────────────────
     /// Clerk JWKS URL for JWT verification.
     /// Example: https://<instance>.clerk.accounts.dev/.well-known/jwks.json
@@ -204,6 +238,33 @@ impl Config {
                 "BULLET_TOKEN_BUDGET",
                 toml.ingestion.bullet_token_budget,
                 1200,
+            ),
+
+            // Persona suggestion tunables
+            persona_suggest_min_entries: env_or(
+                "PERSONA_SUGGEST_MIN_ENTRIES",
+                toml.persona_suggestion.min_entries_required,
+                3,
+            ),
+            persona_suggest_max_count: env_or(
+                "PERSONA_SUGGEST_MAX_COUNT",
+                toml.persona_suggestion.max_count,
+                3,
+            ),
+            persona_suggest_top_tags: env_or(
+                "PERSONA_SUGGEST_TOP_TAGS",
+                toml.persona_suggestion.top_tags,
+                20,
+            ),
+            persona_suggest_top_entries: env_or(
+                "PERSONA_SUGGEST_TOP_ENTRIES",
+                toml.persona_suggestion.top_entries,
+                8,
+            ),
+            persona_suggest_dedup_threshold: env_or(
+                "PERSONA_SUGGEST_DEDUP_THRESHOLD",
+                toml.persona_suggestion.dedup_jaccard_threshold,
+                0.6_f64,
             ),
 
             // Auth (optional)

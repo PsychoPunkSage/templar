@@ -38,6 +38,9 @@ pub struct CvProjectRow {
     /// Defaults to 'single_page' for backward compatibility.
     #[sqlx(default)]
     pub document_type: String,
+    /// Added in migration 019: the most recently generated cover letter for this project.
+    #[sqlx(default)]
+    pub current_cover_letter_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

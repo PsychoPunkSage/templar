@@ -87,3 +87,62 @@ render_worker_count = 4
 #   Recommended default: 1200 for free/build tiers, 2000 for scale tier.
 #   Never set above 3000 — approaches the MAX_TOKENS ceiling.
 bullet_token_budget = 1200
+
+[persona_suggestion]
+
+# min_entries_required: Minimum number of context entries the user must have before
+# the suggestion LLM call is attempted. Below this threshold the handler returns []
+# immediately with no LLM token spend.
+# Overridden by: PERSONA_SUGGEST_MIN_ENTRIES env var
+#
+# How to choose:
+#   3 (default): Minimum viable signal — enough for at least 2 distinct tag clusters.
+#   5+: Stricter signal before spending LLM tokens; better for rate-limited tiers.
+#   Never set to 0 — the LLM produces nonsense suggestions with no context.
+min_entries_required = 3
+
+# max_count: Maximum number of persona suggestions to request from the LLM.
+# Also applied as a hard cap post-response (LLM may return fewer).
+# Overridden by: PERSONA_SUGGEST_MAX_COUNT env var
+#
+# How to choose:
+#   3 (default): Enough variety without overwhelming the user.
+#   1–2: Conservative — only suggest if context clearly splits into distinct roles.
+#   Never set above 5 — degrades suggestion quality and increases prompt token cost.
+max_count = 3
+
+# top_tags: Number of highest-frequency tags sent to the LLM in the prompt.
+# These are the primary signal for role archetype detection.
+# Overridden by: PERSONA_SUGGEST_TOP_TAGS env var
+#
+# How to choose:
+#   20 (default): Covers the long tail of a typical 10–30 entry context.
+#   10–15: Smaller prompts, less context, potentially lower quality suggestions.
+#   25–30: Useful for users with very diverse 50+ entry contexts.
+top_tags = 20
+
+# top_entries: Number of highest-scoring context entries (recency × impact)
+# sent to the LLM as labelled context samples (type + name + tags only, no bullets).
+# Overridden by: PERSONA_SUGGEST_TOP_ENTRIES env var
+#
+# How to choose:
+#   8 (default): Captures the most relevant entries without bloating the prompt.
+#   5: More conservative. Fine for focused, homogeneous contexts.
+#   12: Better for users with varied career tracks (backend + ML + leadership).
+top_entries = 8
+
+# dedup_jaccard_threshold: Jaccard tag-overlap threshold for filtering suggestions
+# that are semantically equivalent to an existing persona.
+# Jaccard(A, B) = |A ∩ B| / |A ∪ B|. A value > threshold means "too similar, skip."
+# Overridden by: PERSONA_SUGGEST_DEDUP_THRESHOLD env var
+#
+# Examples at threshold = 0.6:
+#   "C++ Dev" {cpp, systems, perf}  vs  "Senior C++ Dev" {cpp, systems, perf, leadership}
+#   Jaccard = 3/4 = 0.75 → filtered out ✓
+#
+# How to choose:
+#   0.6 (default): Catches reworded duplicates while allowing genuinely distinct personas.
+#   0.4: Stricter — removes suggestions with moderate tag overlap.
+#   0.8: Permissive — only filters near-identical suggestions.
+#   0.0: Disables Jaccard dedup (only name-containment check remains active).
+dedup_jaccard_threshold = 0.6

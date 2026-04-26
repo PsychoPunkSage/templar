@@ -109,11 +109,7 @@ pub struct GenerateRequest {
     /// Maximum number of pages for CV mode (ignored in SinglePage mode).
     #[serde(default = "GenerateRequest::default_max_pages")]
     pub max_pages: u8,
-    // Reserved for Phase 7 persona-aware generation
-    #[allow(dead_code)]
     pub persona_id: Option<Uuid>,
-    // Reserved for Phase 7 tone override
-    #[allow(dead_code)]
     pub tone_override: Option<String>,
 }
 
@@ -263,8 +259,39 @@ pub async fn generate_resume(
         fit_report.overall_score, request.user_id
     );
 
+    // Step 3b: Fetch persona — non-fatal on miss; generation proceeds without it.
+    let persona: Option<crate::models::resume::PersonaRow> = if let Some(pid) = request.persona_id {
+        match sqlx::query_as::<_, crate::models::resume::PersonaRow>(
+            "SELECT * FROM personas WHERE id = $1 AND user_id = $2",
+        )
+        .bind(pid)
+        .bind(request.user_id)
+        .fetch_optional(pool)
+        .await
+        {
+            Ok(Some(p)) => {
+                info!("Persona '{}' loaded for generation", p.name);
+                Some(p)
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    "Persona {} not found for user {} — proceeding without persona",
+                    pid,
+                    request.user_id
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!("Persona fetch error: {} — proceeding without persona", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Step 4: Content selection (CV mode uses higher per-section limits)
-    let selection = select_content(entries, &parsed_jd, request.resume_mode);
+    let selection = select_content(entries, &parsed_jd, request.resume_mode, persona.as_ref());
     info!(
         "Selected {} entries for generation",
         selection.selected_entries.len()
@@ -276,8 +303,23 @@ pub async fn generate_resume(
         ));
     }
 
-    // Step 5: Tone calibration
-    let tone_examples = get_tone_examples(&parsed_jd.detected_tone);
+    // Step 5: Tone calibration (persona tone_preference or explicit request override)
+    let mut tone_examples = get_tone_examples(&parsed_jd.detected_tone);
+    let tone_override_str = request
+        .tone_override
+        .as_deref()
+        .or_else(|| persona.as_ref().and_then(|p| p.tone_preference.as_deref()));
+    if let Some(tone_str) = tone_override_str {
+        if let Some(overridden) = crate::generation::tone::parse_tone_preference(tone_str) {
+            info!(
+                "Tone overridden to {:?} via preference '{}'",
+                overridden, tone_str
+            );
+            tone_examples = get_tone_examples(&overridden);
+        } else {
+            tracing::warn!("Unknown tone preference '{}' — ignoring", tone_str);
+        }
+    }
 
     // Step 5b: Separate skill entries — they bypass LLM generation, simulation, and grounding.
     // Skill headers are built in a dedicated pure-Rust phase after bullet generation.

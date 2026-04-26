@@ -278,6 +278,54 @@ async fn process_generation_job(
             }
 
             info!(job_id = %job_id, resume_id = %resume_id, "Generation job completed successfully");
+
+            // Auto-trigger interview prep for the associated project.
+            // Fire-and-forget: if enqueue fails, we log a warning but do not fail the job.
+            {
+                let db3 = db.clone();
+                let redis3 = redis.clone();
+                tokio::spawn(async move {
+                    let proj_result = sqlx::query_scalar::<_, uuid::Uuid>(
+                        "SELECT id FROM cv_projects WHERE generation_job_id = $1 LIMIT 1",
+                    )
+                    .bind(job_id)
+                    .fetch_optional(&db3)
+                    .await;
+
+                    match proj_result {
+                        Ok(Some(proj_id)) => {
+                            if let Err(e) =
+                                crate::interview_prep::job::enqueue_prep_job(&redis3, &db3, proj_id)
+                                    .await
+                            {
+                                warn!(
+                                    job_id = %job_id,
+                                    project_id = %proj_id,
+                                    error = %e,
+                                    "Auto-trigger: failed to enqueue interview prep"
+                                );
+                            } else {
+                                info!(
+                                    job_id = %job_id,
+                                    project_id = %proj_id,
+                                    "Auto-trigger: interview prep enqueued"
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            // No project linked to this generation job — OK, not all
+                            // resumes go through cv_projects (e.g. direct API calls).
+                        }
+                        Err(e) => {
+                            warn!(
+                                job_id = %job_id,
+                                error = %e,
+                                "Auto-trigger: DB error looking up project for interview prep"
+                            );
+                        }
+                    }
+                });
+            }
         }
         Err(e) => {
             error!(job_id = %job_id, error = %e, "Generation pipeline failed — marking job failed");

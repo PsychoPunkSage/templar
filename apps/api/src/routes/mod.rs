@@ -6,10 +6,15 @@ use axum::{
     Router,
 };
 
+use axum::routing::put;
+
 use crate::auth;
 use crate::context::handlers as ctx;
+use crate::cover_letter::handlers as cl;
 use crate::generation::handlers as gen;
 use crate::grounding::handlers as grounding;
+use crate::interview_prep::routes as interview_prep;
+use crate::personas::handlers as personas;
 use crate::profile::handlers as profile;
 use crate::projects::handlers as projects;
 use crate::render::handlers as render;
@@ -119,10 +124,55 @@ pub fn build_router(state: AppState) -> Router {
                 .patch(projects::handle_update_project)
                 .delete(projects::handle_delete_project),
         )
+        // ── Personas API ──────────────────────────────────────────────────
+        .route(
+            "/api/v1/personas",
+            get(personas::handle_list_personas).post(personas::handle_create_persona),
+        )
+        // Note: literal /suggest must be registered before /:id (Axum resolves literals first)
+        .route(
+            "/api/v1/personas/suggest",
+            get(personas::handle_suggest_personas),
+        )
+        .route(
+            "/api/v1/personas/:id",
+            get(personas::handle_get_persona)
+                .patch(personas::handle_update_persona)
+                .delete(personas::handle_delete_persona),
+        )
         // ── Profile API (Issue 5) ──────────────────────────────────────────
         .route(
             "/api/v1/profile",
             axum::routing::get(profile::handle_get_profile).put(profile::handle_upsert_profile),
+        )
+        // ── Cover Letter API (Phase 3) ─────────────────────────────────────
+        // Note: literal /generate must be before /:id (Axum resolves literals first)
+        .route(
+            "/api/v1/cover-letters/generate",
+            post(cl::handle_generate_cover_letter),
+        )
+        .route("/api/v1/cover-letters", get(cl::handle_list_cover_letters))
+        .route(
+            "/api/v1/cover-letters/:id",
+            get(cl::handle_get_cover_letter),
+        )
+        // ── Interview Prep API (Phase 3 Power) ────────────────────────────
+        // Note: literal suffixes (/trigger, /company, /status) must be before /:project_id
+        .route(
+            "/api/v1/interview-prep/:project_id/trigger",
+            post(interview_prep::handle_trigger_prep),
+        )
+        .route(
+            "/api/v1/interview-prep/:project_id/company",
+            put(interview_prep::handle_update_company),
+        )
+        .route(
+            "/api/v1/interview-prep/:project_id/status",
+            get(interview_prep::handle_get_status),
+        )
+        .route(
+            "/api/v1/interview-prep/:project_id",
+            get(interview_prep::handle_get_prep),
         )
         .with_state(state)
         // 10 MB global body size limit — protects all endpoints, covers the

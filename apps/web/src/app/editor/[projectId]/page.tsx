@@ -25,12 +25,13 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { AlertCircle, X, Download, Loader2 } from "lucide-react";
+import { AlertCircle, X, Download, Loader2, Brain } from "lucide-react";
 import { JdInput } from "@/components/editor/JdInput";
 import { BulletList } from "@/components/editor/BulletList";
 import { FitReportPanel } from "@/components/editor/FitReportPanel";
 import { PdfPreview } from "@/components/pdf/PdfPreview";
 import { StaticPdfPreview } from "@/components/pdf/StaticPdfPreview";
+import { CoverLetterPane } from "@/components/editor/CoverLetterPane";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -39,8 +40,11 @@ import {
   TabsTrigger,
   TabsContent,
 } from "@/components/ui/tabs";
-import { useResumeStore } from "@/store/resumeStore";
+import { useResumeStore, MVP_USER_ID } from "@/store/resumeStore";
 import { useProjectStore } from "@/store/projectStore";
+import { useCoverLetterStore } from "@/store/coverLetterStore";
+import { useAuthStore } from "@/store/authStore";
+import { PersonaSelect } from "@/components/editor/PersonaSelect";
 import { BookOpen } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -83,7 +87,13 @@ export default function ProjectEditorPage() {
   const { currentProject, loadProject, loadTemplates } = useProjectStore();
 
   const [leftTab, setLeftTab] = useState<"jd" | "bullets">("jd");
+  const [rightPane, setRightPane] = useState<"resume" | "cover_letter">("resume");
   const [isDownloading, setIsDownloading] = useState(false);
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(null);
+
+  const { coverId, generatedWithJdText } = useCoverLetterStore();
+  const clIsStale =
+    !!generatedWithJdText && !!coverId && generatedWithJdText !== jdText;
 
   // Total bullet count across all entry groups
   const bulletCount = entryGroups.reduce((acc, g) => acc + g.bullets.length, 0);
@@ -105,9 +115,14 @@ export default function ProjectEditorPage() {
   // This prevents state bleed-through when switching between projects.
   // Also hydrates the refinement queue from localStorage for this project.
   useEffect(() => {
-    resetForProject(projectId);
+    // Only reset when switching to a different project.
+    // Returning to the same project (e.g. editor → interview → back) preserves state.
+    if (useResumeStore.getState().currentProjectId !== projectId) {
+      resetForProject(projectId);
+      useCoverLetterStore.getState().reset();
+    }
     hydrateQueue(projectId);
-  // resetForProject and hydrateQueue are stable Zustand actions — safe to omit from deps
+  // resetForProject, hydrateQueue, and coverLetterStore.reset are stable Zustand actions
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -137,15 +152,31 @@ export default function ProjectEditorPage() {
       api.getGenerationStatus(genJobId).then((status) => {
         if (status.status === "done" && status.entry_groups?.length) {
           // Full typed display headers available — populate directly, no loadResume needed
+          const resId = status.resume_id ?? null;
           useResumeStore.setState({
             generationJobId: genJobId,
-            resumeId: status.resume_id ?? null,
+            resumeId: resId,
             entryGroups: status.entry_groups,
             fitReport: status.fit_report ?? null,
             generationStatus: "done",
             isGenerating: false,
           });
           console.log("[Editor] Restored generation from job (full headers)", genJobId);
+          // Also restore render state — getGenerationStatus doesn't carry renderJobId
+          if (resId) {
+            api.getResumeRenderJob(resId).then((renderJob) => {
+              if (!renderJob) return;
+              if (renderJob.status === "done") {
+                useResumeStore.setState({ renderJobId: renderJob.job_id, renderStatus: "done" });
+              } else if (renderJob.status === "processing" || renderJob.status === "queued") {
+                useResumeStore.setState({
+                  renderJobId: renderJob.job_id,
+                  renderStatus: renderJob.status === "processing" ? "rendering" : "queued",
+                });
+                useResumeStore.getState().pollRenderStatus();
+              }
+            }).catch(() => {});
+          }
         } else if (status.status === "done" && savedResumeId) {
           // Status done but no entry_groups in result JSONB — fall back to loadResume.
           // loadResume uses resumes.entry_groups (post-migration 014) or entry_header labels.
@@ -179,6 +210,15 @@ export default function ProjectEditorPage() {
   useEffect(() => {
     if (hasBullets) setLeftTab("bullets");
   }, [hasBullets]);
+
+  // Effect 4: Auto-load the most recent cover letter once resumeId is available.
+  // Skips if a cover letter is already loaded in this session (coverId is set).
+  useEffect(() => {
+    if (!resumeId || coverId) return;
+    const userId = useAuthStore.getState().internalUserId ?? MVP_USER_ID;
+    useCoverLetterStore.getState().loadCoverLetterForResume(userId, resumeId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeId, coverId]);
 
   // We only need the template id slug to build the render-pdf URL.
   const templateId = currentProject?.template_id ?? null;
@@ -256,6 +296,7 @@ export default function ProjectEditorPage() {
 
         {/* Two-step action bar */}
         <div className="flex items-center gap-2">
+          <PersonaSelect value={selectedPersonaId} onChange={setSelectedPersonaId} />
           {hasBullets && (
             <span className="text-xs text-muted-foreground shrink-0">
               {bulletCount} bullets
@@ -299,9 +340,21 @@ export default function ProjectEditorPage() {
               {isDownloading ? "Downloading..." : "Download PDF"}
             </Button>
           )}
+          {renderStatus === "done" && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => router.push(`/interview/${projectId}`)}
+              className="gap-1.5"
+              title="Prepare for interviews using your resume"
+            >
+              <Brain className="h-3.5 w-3.5" />
+              Prep Interview
+            </Button>
+          )}
           <Button
             size="sm"
-            onClick={() => generate(projectId)}
+            onClick={() => generate(projectId, selectedPersonaId)}
             disabled={isGenerating || fitScoreLoading || !jdText.trim()}
           >
             {isGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
@@ -405,22 +458,57 @@ export default function ProjectEditorPage() {
           </Tabs>
         </div>
 
-        {/* Right: template PDF preview (pre-generation) or PDF.js live preview (post-generation) */}
-        <div className="w-1/2 bg-muted/30 relative overflow-hidden">
-          {hasBullets ? (
-            // Post-generation: PDF.js live preview (debounced at 300ms)
-            <PdfPreview />
-          ) : templateId ? (
-            // Pre-generation: compiled PDF preview of the selected template.
-            <StaticPdfPreview
-              pdfUrl={api.getTemplateRenderPdfUrl(templateId)}
-            />
-          ) : (
-            // Project not yet loaded — show neutral placeholder
-            <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-              PDF preview will appear here after generation.
+        {/* Right: toggle header + resume preview or cover letter pane */}
+        <div className="w-1/2 bg-muted/30 relative overflow-hidden flex flex-col">
+          {/* Toggle */}
+          <div className="flex items-center px-3 py-1.5 border-b bg-background/80 shrink-0">
+            <div className="flex rounded-md border overflow-hidden text-xs">
+              <button
+                onClick={() => setRightPane("resume")}
+                className={`px-3 py-1 transition-colors ${
+                  rightPane === "resume"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Resume
+              </button>
+              <button
+                onClick={() => setRightPane("cover_letter")}
+                className={`px-3 py-1 transition-colors flex items-center gap-1 ${
+                  rightPane === "cover_letter"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Cover Letter
+                {clIsStale && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400 inline-block" />
+                )}
+              </button>
             </div>
-          )}
+          </div>
+
+          {/* Pane content */}
+          <div className="flex-1 overflow-hidden">
+            {rightPane === "resume" ? (
+              hasBullets ? (
+                <PdfPreview />
+              ) : templateId ? (
+                <StaticPdfPreview pdfUrl={api.getTemplateRenderPdfUrl(templateId)} />
+              ) : (
+                <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+                  PDF preview will appear here after generation.
+                </div>
+              )
+            ) : (
+              <CoverLetterPane
+                jdText={jdText}
+                resumeId={resumeId}
+                personaId={selectedPersonaId}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
