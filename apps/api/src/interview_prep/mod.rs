@@ -12,5 +12,3 @@ pub mod job;
 pub mod models;
 pub mod prompts;
 pub mod routes;
-
-pub use models::{CompanyContext, GapQuestion, PrepBullet, PrepMeta, PrepQuestion, PrepStatus};

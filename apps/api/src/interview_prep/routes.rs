@@ -119,7 +119,7 @@ pub async fn handle_trigger_prep(
     // Enqueue (also upserts meta to generating)
     enqueue_prep_job(&state.redis, &state.db, project_id)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     Ok(StatusCode::ACCEPTED)
 }
@@ -174,7 +174,7 @@ pub async fn handle_update_company(
     // Re-run gap questions (does NOT regenerate STAR scaffolds)
     regenerate_gap_questions(&state.db, &state.llm, project_id)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     // Return updated meta
     let meta_row: Option<PrepMetaRow> = sqlx::query_as::<_, PrepMetaRow>(

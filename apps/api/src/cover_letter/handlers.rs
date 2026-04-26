@@ -31,7 +31,7 @@ pub async fn handle_generate_cover_letter(
 
     let cover_letter = generator::generate_cover_letter(&state, &request)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     // Link to project via resume_id if provided (fire-and-forget — non-fatal)
     if let Some(resume_id) = request.resume_id {
