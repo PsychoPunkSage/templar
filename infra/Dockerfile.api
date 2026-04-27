@@ -11,16 +11,16 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache dependencies
-COPY Cargo.toml Cargo.lock ./
-COPY apps/api/Cargo.toml apps/api/
-RUN mkdir -p apps/api/src && echo "fn main() {}" > apps/api/src/main.rs
+COPY apps/backend/Cargo.toml ./
+COPY apps/backend/api/Cargo.toml api/
+RUN mkdir -p api/src && echo "fn main() {}" > api/src/main.rs
 # [Below] Builds dummy binary + All dependencies ::> If Only src code changes -> Docker will not rebuild the depn
 RUN cargo build --release --bin api
-RUN rm -rf apps/api/src
+RUN rm -rf api/src
 
 # Build actual source
-COPY apps/api/src apps/api/src
-COPY apps/api/.sqlx apps/api/.sqlx
+COPY apps/backend/api/src api/src
+COPY apps/backend/api/.sqlx api/.sqlx
 ENV SQLX_OFFLINE=true
 # [Below] touch ::> changes timestamp -> build is forced
 RUN touch apps/api/src/main.rs && cargo build --release --bin api
@@ -43,7 +43,7 @@ COPY --from=builder /app/target/release/api /app/api
 # Templates are data, not code — they live in apps/api/templates/ in the repo.
 # Copying here (not in builder) keeps the builder stage clean and avoids
 # re-running the expensive Rust build when only template content changes.
-COPY apps/api/templates /app/templates
+COPY apps/backend/api/templates /app/templates
 
 # Pre-compile template preview PDFs at image build time using pdflatex.
 # The API handler (handle_template_render_pdf) will serve these from disk on
