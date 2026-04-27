@@ -1,4 +1,4 @@
-# ╔══════════════════════════════════════════════════════════════════╗
+#cargo install taplo-cli --locked ╔══════════════════════════════════════════════════════════════════╗
 # ║                   Templar Configuration                         ║
 # ║                                                                  ║
 # ║  This file provides defaults for all tunable parameters.        ║
