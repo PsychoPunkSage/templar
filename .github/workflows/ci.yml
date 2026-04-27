@@ -27,11 +27,20 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install taplo
+        uses: uncenter/setup-taplo@v1
+
+      - name: Check TOML formatting
+        run: taplo fmt --check
+
       - name: Check formatting
+        working-directory: apps/backend
         run: cargo fmt --check
 
       - name: Clippy
+        working-directory: apps/backend
         run: cargo clippy -- -D warnings
 
       - name: Run tests
+        working-directory: apps/backend
         run: cargo test
