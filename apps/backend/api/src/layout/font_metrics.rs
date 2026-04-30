@@ -36,6 +36,54 @@ pub enum FontFamily {
 // Page configuration
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Structural overhead constants for a template's page layout.
+///
+/// These values are subtracted from `usable_height_lines` before the fill-ratio
+/// is computed, so the simulator accounts for section headers, name/contact block,
+/// and inter-section spacing that consumes vertical space but isn't a bullet.
+///
+/// All values are in "line units" (multiples of the line-height at the template's
+/// base font size), except the `*_pt` fields which are raw LaTeX pt values used
+/// to derive line equivalents when the template's spacing commands are overridden.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayoutPhysicsConfig {
+    /// Lines consumed by the page header (name, contact, rule) — constant per page.
+    pub page_fixed_overhead_lines: f32,
+    /// Lines consumed by each section header (title + rule + spacing).
+    pub section_header_lines: f32,
+    /// LaTeX `\sectionspacing` before a section header (pt).
+    pub section_before_spacing_pt: f32,
+    /// LaTeX `\sectionspacing` after a section header (pt).
+    pub section_after_spacing_pt: f32,
+    /// LaTeX `\itemspacing` between bullet items (pt, usually negative).
+    pub item_spacing_pt: f32,
+    /// LaTeX `\beforeheaderskip` (pt, usually negative, pulls header up).
+    pub before_header_skip_pt: f32,
+}
+
+impl Default for LayoutPhysicsConfig {
+    fn default() -> Self {
+        Self {
+            page_fixed_overhead_lines: 3.5,
+            section_header_lines: 1.5,
+            section_before_spacing_pt: 1.0,
+            section_after_spacing_pt: 4.0,
+            item_spacing_pt: -2.0,
+            before_header_skip_pt: -15.0,
+        }
+    }
+}
+
+impl LayoutPhysicsConfig {
+    /// Returns the total overhead in line units for a page with `section_count` sections.
+    ///
+    /// Used by `analyze_page_fill` to subtract structural overhead before computing
+    /// fill ratio — prevents the simulator from treating header space as bullet space.
+    pub fn effective_overhead_lines(&self, section_count: usize) -> f32 {
+        self.page_fixed_overhead_lines + self.section_header_lines * section_count as f32
+    }
+}
+
 /// Layout parameters for a single resume page.
 ///
 /// `text_width_em` is the usable text width in em units at the given font size.
@@ -53,6 +101,8 @@ pub struct PageConfig {
     /// LaTeX microtype expansion tolerance (typically 0.03 = 3%).
     /// Acts as a safety margin that absorbs small approximation errors in the metric tables.
     pub microtype_margin: f32,
+    /// Structural overhead constants for this template's page layout.
+    pub physics: LayoutPhysicsConfig,
 }
 
 /// Returns the default page config for the given font family.
@@ -68,6 +118,7 @@ pub fn default_page_config(font: FontFamily) -> PageConfig {
         margin_right_in: 1.0,
         usable_height_lines: 45,
         microtype_margin: 0.03,
+        physics: LayoutPhysicsConfig::default(),
     }
 }
 
@@ -164,6 +215,7 @@ impl PageConfig {
             margin_right_in: layout.margin_right_in,
             usable_height_lines,
             microtype_margin: 0.03,
+            physics: LayoutPhysicsConfig::default(),
         }
     }
 }
@@ -194,6 +246,10 @@ pub struct FontMetricTable {
     /// Fallback width for non-ASCII characters (codepoints > 0x7E).
     pub average_char_width: f32,
     pub space_width: f32,
+    /// Multiplicative factor for bold text width relative to regular weight.
+    /// Bold glyphs are slightly wider due to heavier stroke weight.
+    /// Typical range: 1.08 (Garamond) – 1.12 (Inter).
+    pub bold_width_factor: f32,
 }
 
 impl FontMetricTable {
@@ -281,6 +337,7 @@ static INTER_TABLE: FontMetricTable = FontMetricTable {
     ],
     average_char_width: 0.52,
     space_width: 0.25,
+    bold_width_factor: 1.12,
 };
 
 /// EB Garamond — old-style serif (Researcher template). Approx. 85% of Inter.
@@ -309,6 +366,7 @@ static EB_GARAMOND_TABLE: FontMetricTable = FontMetricTable {
     ],
     average_char_width: 0.44,
     space_width: 0.21,
+    bold_width_factor: 1.08,
 };
 
 /// Lato — geometric humanist sans-serif (Operator template). Approx. 105% of Inter.
@@ -337,6 +395,7 @@ static LATO_TABLE: FontMetricTable = FontMetricTable {
     ],
     average_char_width: 0.55,
     space_width: 0.26,
+    bold_width_factor: 1.11,
 };
 
 /// Oswald — condensed display sans-serif (Founder template). Approx. 68% of Inter.
@@ -365,6 +424,7 @@ static OSWALD_TABLE: FontMetricTable = FontMetricTable {
     ],
     average_char_width: 0.35,
     space_width: 0.17,
+    bold_width_factor: 1.10,
 };
 
 /// Computer Modern — traditional TeX font (Classic/ATS-safe template). Approx. 90% of Inter.
@@ -393,6 +453,7 @@ static COMPUTER_MODERN_TABLE: FontMetricTable = FontMetricTable {
     ],
     average_char_width: 0.47,
     space_width: 0.23,
+    bold_width_factor: 1.09,
 };
 
 /// Returns the static metric table for a given font family.
