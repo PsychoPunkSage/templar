@@ -291,7 +291,7 @@ pub async fn generate_resume(
     };
 
     // Step 4: Content selection (CV mode uses higher per-section limits)
-    let selection = select_content(entries, &parsed_jd, request.resume_mode, persona.as_ref());
+    let selection = select_content(entries, &parsed_jd, request.resume_mode, persona.as_ref(), config);
     info!(
         "Selected {} entries for generation",
         selection.selected_entries.len()
@@ -392,12 +392,23 @@ pub async fn generate_resume(
 
     // Page fill remediation pass — runs after simulation loop to fix whitespace/overflow.
     // Single-page mode is always the "last page" for fill analysis purposes.
+    let section_count = {
+        use std::collections::HashSet;
+        simulation
+            .bullets
+            .iter()
+            .map(|b| b.section.as_str())
+            .collect::<HashSet<_>>()
+            .len()
+    };
     let mut simulation = crate::layout::page_fill::run_page_fill_pass(
         simulation,
         page_config,
         &parsed_jd,
         llm,
         true,
+        config.max_fill_passes,
+        section_count,
     )
     .await?;
 
@@ -439,12 +450,23 @@ pub async fn generate_resume(
                 page_fill_flagged: false,
                 page_count: 1,
             };
+            let last_page_section_count = {
+                use std::collections::HashSet;
+                last_page_sim
+                    .bullets
+                    .iter()
+                    .map(|b| b.section.as_str())
+                    .collect::<HashSet<_>>()
+                    .len()
+            };
             let last_page_result = crate::layout::page_fill::run_page_fill_pass(
                 last_page_sim,
                 page_config,
                 &parsed_jd,
                 llm,
                 true, // is_last_page
+                config.max_fill_passes,
+                last_page_section_count,
             )
             .await?;
             // Merge back the last-page bullets (they may have been compressed/promoted)

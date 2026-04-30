@@ -53,7 +53,7 @@ pub async fn generate_cover_letter(
     }
 
     // Step 3: Select and rank entries
-    let selection = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None);
+    let selection = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None, &state.config);
 
     // Step 4: Build candidate summary from top-N selected entries
     let top_entries: Vec<_> = selection
