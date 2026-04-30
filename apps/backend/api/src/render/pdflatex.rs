@@ -225,11 +225,15 @@ pub async fn compile_latex(
         w
     };
 
+    // Count pages before moving pdf_bytes into the struct.
+    let actual_page_count = count_pdf_pages(&pdf_bytes);
+
     // TempDir dropped here → all .tex, .pdf, .log, .aux files cleaned up automatically
     Ok(PdflatexResult {
         pdf_bytes,
         stderr: warnings,
         duration_ms,
+        actual_page_count,
     })
 }
 
@@ -254,6 +258,16 @@ pub async fn check_pdflatex_available() -> Result<(), RenderError> {
     }
 
     Ok(())
+}
+
+/// Counts the number of pages in a PDF byte slice using lopdf.
+///
+/// Returns `None` if lopdf cannot parse the bytes (corrupt PDF, etc.).
+/// The result is clamped to `u8::MAX` (255) for pathological documents.
+fn count_pdf_pages(bytes: &[u8]) -> Option<u8> {
+    lopdf::Document::load_mem(bytes)
+        .ok()
+        .map(|doc| doc.get_pages().len().min(255) as u8)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
