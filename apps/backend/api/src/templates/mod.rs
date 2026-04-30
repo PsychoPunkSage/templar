@@ -23,7 +23,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::layout::font_metrics::{PageConfig, TemplateLayoutConfig};
+use crate::layout::font_metrics::{LayoutPhysicsConfig, PageConfig, TemplateLayoutConfig};
 use crate::render::escape::escape_latex;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -88,6 +88,10 @@ pub struct TemplateMetadata {
     /// Defaults to Inter 11pt, Letter paper, 1" margins when not specified.
     #[serde(default)]
     pub layout: TemplateLayoutConfig,
+    /// Structural overhead constants used by the fill-ratio simulator.
+    /// Defaults match the values baked into the generic-cv template.
+    #[serde(default)]
+    pub layout_physics: LayoutPhysicsConfig,
 }
 
 impl TemplateMetadata {
@@ -318,6 +322,22 @@ fn load_single_template(dir: &Path) -> Result<LoadedTemplate> {
 // Template rendering
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Builds the `{{LAYOUT_PARAMS}}` value: `\renewcommand` overrides for the
+/// template spacing commands, derived from the template's `LayoutPhysicsConfig`.
+///
+/// These override the defaults declared in the template preamble so that the
+/// server can tune spacing without touching the .tex source file.
+fn build_layout_params_latex(physics: &LayoutPhysicsConfig) -> String {
+    format!(
+        "\\renewcommand{{\\sectionspacing}}{{{before}pt plus1pt minus1pt}}\n\
+         \\renewcommand{{\\itemspacing}}{{{item}pt}}\n\
+         \\renewcommand{{\\beforeheaderskip}}{{{header}pt}}",
+        before = physics.section_before_spacing_pt,
+        item = physics.item_spacing_pt,
+        header = physics.before_header_skip_pt,
+    )
+}
+
 /// Builds a complete LaTeX document by substituting profile + section content
 /// into the template's `{{PLACEHOLDER}}` tokens.
 ///
@@ -345,6 +365,8 @@ pub fn render_file_template(
         .unwrap_or_default();
     let sections_latex = build_sections_latex(sections, &fmt);
 
+    let layout_params = build_layout_params_latex(&template.metadata.layout_physics);
+
     // Apply all placeholder substitutions in a single chained replace.
     // Each value is already LaTeX-escaped before substitution.
     template
@@ -355,6 +377,8 @@ pub fn render_file_template(
         .replace("{{CONTACT_LINE}}", &contact_line)
         // Sections block is pre-built and pre-escaped; insert verbatim
         .replace("{{SECTIONS}}", &sections_latex)
+        // Layout params: \renewcommand overrides for spacing, derived from physics config
+        .replace("{{LAYOUT_PARAMS}}", &layout_params)
 }
 
 /// Renders the template with a pre-built sections LaTeX string.
@@ -369,11 +393,13 @@ pub fn render_file_template_with_sections(
     sections_latex: &str,
 ) -> String {
     let contact_line = build_contact_line(profile);
+    let layout_params = build_layout_params_latex(&template.metadata.layout_physics);
     template
         .latex_source
         .replace("{{FULL_NAME}}", &escape_latex(&profile.full_name))
         .replace("{{CONTACT_LINE}}", &contact_line)
         .replace("{{SECTIONS}}", sections_latex)
+        .replace("{{LAYOUT_PARAMS}}", &layout_params)
 }
 
 /// Renders the template with sample data for thumbnail generation.
@@ -460,9 +486,13 @@ fn build_sections_latex(sections: &[SampleSection], fmt: &SectionFormatting) -> 
 
         out.push_str(&format!("\\section*{{{}}}\n", escape_latex(&section.name)));
 
+        let is_skills_section = section.name.eq_ignore_ascii_case("skills");
+
         for sub in &section.sub_entries {
             // Skip sub-entries with a header but no bullets — they render as floating labels.
-            if sub.header_latex.is_some() && sub.bullets.is_empty() {
+            // Exception: skills sections use the header_latex (\skillcat{}) as the only content;
+            // they intentionally have no bullets, so we must NOT skip them.
+            if !is_skills_section && sub.header_latex.is_some() && sub.bullets.is_empty() {
                 continue;
             }
 
@@ -808,8 +838,9 @@ mod tests {
                 thumbnail_s3_key: "thumbnails/test.png".to_string(),
                 section_formatting: None,
                 layout: TemplateLayoutConfig::default(),
+                layout_physics: LayoutPhysicsConfig::default(),
             },
-            latex_source: "Name: {{FULL_NAME}}\n{{CONTACT_LINE}}\n{{SECTIONS}}".to_string(),
+            latex_source: "Name: {{FULL_NAME}}\n{{CONTACT_LINE}}\n{{SECTIONS}}{{LAYOUT_PARAMS}}".to_string(),
             sample_data: SampleData {
                 profile: ProfileData::default(),
                 sections: vec![],
