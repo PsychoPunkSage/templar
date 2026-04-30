@@ -14,6 +14,10 @@ struct TomlConfig {
     ingestion: TomlIngestionConfig,
     #[serde(default)]
     persona_suggestion: TomlPersonaSuggestionConfig,
+    #[serde(default)]
+    content_limits: TomlContentLimitsConfig,
+    #[serde(default)]
+    layout: TomlLayoutConfig,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -39,6 +43,22 @@ struct TomlPersonaSuggestionConfig {
     top_tags: Option<usize>,
     top_entries: Option<usize>,
     dedup_jaccard_threshold: Option<f64>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct TomlContentLimitsConfig {
+    experience_limit: Option<usize>,
+    project_limit: Option<usize>,
+    other_limit: Option<usize>,
+    cv_experience_limit: Option<usize>,
+    cv_project_limit: Option<usize>,
+    cv_other_limit: Option<usize>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct TomlLayoutConfig {
+    max_fill_passes: Option<u8>,
+    max_post_render_retries: Option<u8>,
 }
 
 /// Attempts to load config.toml from several candidate paths.
@@ -158,6 +178,40 @@ pub struct Config {
     /// Env: PERSONA_SUGGEST_DEDUP_THRESHOLD  |  Default: 0.6
     pub persona_suggest_dedup_threshold: f64,
 
+    // ── Content selection limits ──────────────────────────────────────────────
+    /// Max experience entries per single-page resume.
+    /// Env: EXPERIENCE_LIMIT  |  Default: 8
+    pub experience_limit: usize,
+
+    /// Max project entries per single-page resume.
+    /// Env: PROJECT_LIMIT  |  Default: 4
+    pub project_limit: usize,
+
+    /// Max entries for all other section types per single-page resume.
+    /// Env: OTHER_LIMIT  |  Default: 3
+    pub other_limit: usize,
+
+    /// Max experience entries per page in CV (multi-page) mode.
+    /// Env: CV_EXPERIENCE_LIMIT  |  Default: 12
+    pub cv_experience_limit: usize,
+
+    /// Max project entries per page in CV (multi-page) mode.
+    /// Env: CV_PROJECT_LIMIT  |  Default: 6
+    pub cv_project_limit: usize,
+
+    /// Max entries for other section types per page in CV mode.
+    /// Env: CV_OTHER_LIMIT  |  Default: 4
+    pub cv_other_limit: usize,
+
+    // ── Layout tunables ───────────────────────────────────────────────────────
+    /// Maximum page fill remediation passes before flagging for human review.
+    /// Env: MAX_FILL_PASSES  |  Default: 3
+    pub max_fill_passes: u8,
+
+    /// Maximum post-render retries when the PDF exceeds the target page count.
+    /// Env: MAX_POST_RENDER_RETRIES  |  Default: 2
+    pub max_post_render_retries: u8,
+
     // ── Auth (optional) ──────────────────────────────────────────────────────
     /// Clerk JWKS URL for JWT verification.
     /// Example: https://<instance>.clerk.accounts.dev/.well-known/jwks.json
@@ -265,6 +319,34 @@ impl Config {
                 "PERSONA_SUGGEST_DEDUP_THRESHOLD",
                 toml.persona_suggestion.dedup_jaccard_threshold,
                 0.6_f64,
+            ),
+
+            // Content selection limits
+            experience_limit: env_or(
+                "EXPERIENCE_LIMIT",
+                toml.content_limits.experience_limit,
+                8,
+            ),
+            project_limit: env_or("PROJECT_LIMIT", toml.content_limits.project_limit, 4),
+            other_limit: env_or("OTHER_LIMIT", toml.content_limits.other_limit, 3),
+            cv_experience_limit: env_or(
+                "CV_EXPERIENCE_LIMIT",
+                toml.content_limits.cv_experience_limit,
+                12,
+            ),
+            cv_project_limit: env_or(
+                "CV_PROJECT_LIMIT",
+                toml.content_limits.cv_project_limit,
+                6,
+            ),
+            cv_other_limit: env_or("CV_OTHER_LIMIT", toml.content_limits.cv_other_limit, 4),
+
+            // Layout tunables
+            max_fill_passes: env_or("MAX_FILL_PASSES", toml.layout.max_fill_passes, 3u8),
+            max_post_render_retries: env_or(
+                "MAX_POST_RENDER_RETRIES",
+                toml.layout.max_post_render_retries,
+                2u8,
             ),
 
             // Auth (optional)
