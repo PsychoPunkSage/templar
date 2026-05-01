@@ -1,0 +1,48 @@
+# Stage 1: Build
+FROM rust:1.91-bookworm AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cache workspace + all member Cargo.toml stubs before copying real source.
+# If only src/ changes, Docker reuses the dependency build layer.
+COPY apps/backend/Cargo.toml ./
+COPY apps/backend/Cargo.lock ./
+COPY apps/backend/api/Cargo.toml api/
+COPY apps/backend/analytics/Cargo.toml analytics/
+COPY apps/backend/packages/events-rs/Cargo.toml packages/events-rs/
+RUN mkdir -p api/src analytics/src packages/events-rs/src \
+    && echo "fn main() {}" > api/src/main.rs \
+    && echo "fn main() {}" > analytics/src/main.rs \
+    && echo "" > packages/events-rs/src/lib.rs
+RUN cargo build --release --bin analytics
+RUN rm -rf api/src analytics/src packages/events-rs/src
+
+# Build actual source
+COPY apps/backend/api/src api/src
+COPY apps/backend/analytics/src analytics/src
+COPY apps/backend/packages/events-rs/src packages/events-rs/src
+RUN touch analytics/src/main.rs && cargo build --release --bin analytics
+
+# Stage 2: Runtime — plain Debian slim, no TeX Live needed
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/target/release/analytics /app/analytics
+COPY apps/backend/analytics/events.toml /app/events.toml
+
+ENV RUST_LOG=info
+ENV EVENTS_TOML_PATH=/app/events.toml
+
+EXPOSE 8090
+CMD ["/app/analytics"]
