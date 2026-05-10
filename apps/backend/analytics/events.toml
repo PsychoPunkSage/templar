@@ -1,0 +1,202 @@
+# Templar Analytics Event Registry
+# Every valid event_type must be registered here before ingestion will accept it.
+# Ingestion rejects any event whose event_type is not present.
+# Schema versioning: bump schema_version to "1.1" when properties change — never mutate "1.0".
+# Deprecation: set deprecated_at to an ISO date string (e.g. "2026-06-01") to begin sunset.
+
+# ── Generation domain ────────────────────────────────────────────────────────
+
+[[events]]
+name           = "resume.generation.started"
+schema_version = "1.0"
+adapter        = "generation_api"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "jd_length",            type = "int",    required = true  },
+  { name = "persona_id",           type = "string", required = false },
+  { name = "template",             type = "string", required = true  },
+  { name = "fit_score_requested",  type = "bool",   required = true  },
+]
+
+[[events]]
+name           = "resume.generation.completed"
+schema_version = "1.0"
+adapter        = "generation_api"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "duration_ms",        type = "int",   required = true  },
+  { name = "bullet_count",       type = "int",   required = true  },
+  { name = "fit_score",          type = "float", required = false },
+  { name = "layout_pass_count",  type = "int",   required = true  },
+]
+
+[[events]]
+name           = "resume.generation.failed"
+schema_version = "1.0"
+adapter        = "generation_api"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "error_type",         type = "string", required = true  },
+  { name = "layout_pass_count",  type = "int",    required = false },
+]
+
+[[events]]
+name           = "resume.regenerated"
+schema_version = "1.0"
+adapter        = "resume_editor"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "reason",          type = "string", required = true  },
+  { name = "attempt_number",  type = "int",    required = true  },
+]
+
+# ── Editor domain ────────────────────────────────────────────────────────────
+
+[[events]]
+name           = "resume.bullet.edited"
+schema_version = "1.0"
+adapter        = "resume_editor"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "section",             type = "string", required = true  },
+  { name = "bullet_index",        type = "int",    required = true  },
+  { name = "change_type",         type = "string", required = true  },
+  { name = "verb_before",         type = "string", required = false },
+  { name = "verb_after",          type = "string", required = false },
+  { name = "tone_direction",      type = "string", required = false },
+  { name = "length_delta",        type = "int",    required = true  },
+  { name = "quantified_before",   type = "bool",   required = false },
+  { name = "quantified_after",    type = "bool",   required = false },
+  { name = "diff_fingerprint",    type = "string", required = true  },
+]
+
+[[events]]
+name           = "resume.bullet.deleted"
+schema_version = "1.0"
+adapter        = "resume_editor"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "section",          type = "string", required = true  },
+  { name = "bullet_index",     type = "int",    required = true  },
+  { name = "grounding_score",  type = "float",  required = false },
+]
+
+[[events]]
+name           = "resume.section.reordered"
+schema_version = "1.0"
+adapter        = "resume_editor"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "from_index",    type = "int",    required = true },
+  { name = "to_index",      type = "int",    required = true },
+  { name = "section_name",  type = "string", required = true },
+]
+
+[[events]]
+name           = "resume.template.changed"
+schema_version = "1.0"
+adapter        = "resume_editor"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "from_template",  type = "string", required = true },
+  { name = "to_template",    type = "string", required = true },
+]
+
+[[events]]
+name           = "resume.exported"
+schema_version = "1.0"
+adapter        = "resume_editor"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "format",      type = "string", required = true },
+  { name = "page_count",  type = "int",    required = true },
+]
+
+# ── Interview prep domain ────────────────────────────────────────────────────
+
+[[events]]
+name           = "interview.opened"
+schema_version = "1.0"
+adapter        = "interview_prep"
+owner          = "product"
+deprecated_at  = ""
+properties = [
+  { name = "resume_id",              type = "string", required = true  },
+  { name = "time_since_export_ms",   type = "int",    required = false },
+]
+
+[[events]]
+name           = "interview.question.expanded"
+schema_version = "1.0"
+adapter        = "interview_prep"
+owner          = "product"
+deprecated_at  = ""
+properties = [
+  { name = "question_type",  type = "string", required = true },
+  { name = "section",        type = "string", required = true },
+]
+
+[[events]]
+name           = "interview.session.duration"
+schema_version = "1.0"
+adapter        = "interview_prep"
+owner          = "product"
+deprecated_at  = ""
+properties = [
+  { name = "total_ms",          type = "int", required = true },
+  { name = "questions_viewed",  type = "int", required = true },
+]
+
+# ── Cover letter domain ──────────────────────────────────────────────────────
+
+[[events]]
+name           = "coverletter.generated"
+schema_version = "1.0"
+adapter        = "cover_letter"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "tone",        type = "string", required = true },
+  { name = "focus",       type = "string", required = true },
+  { name = "word_count",  type = "int",    required = true },
+]
+
+[[events]]
+name           = "coverletter.regenerated"
+schema_version = "1.0"
+adapter        = "cover_letter"
+owner          = "generation"
+deprecated_at  = ""
+properties = [
+  { name = "attempt_number",  type = "int", required = true },
+]
+
+[[events]]
+name           = "coverletter.exported"
+schema_version = "1.0"
+adapter        = "cover_letter"
+owner          = "generation"
+deprecated_at  = ""
+properties = []
+
+# ── Identity domain ──────────────────────────────────────────────────────────
+
+[[events]]
+name           = "user.identified"
+schema_version = "1.0"
+adapter        = "auth"
+owner          = "platform"
+deprecated_at  = ""
+properties = [
+  { name = "user_id",   type = "string", required = true },
+  { name = "anon_id",   type = "string", required = true },
+]
