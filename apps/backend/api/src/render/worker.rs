@@ -124,6 +124,15 @@ async fn worker_loop(
                 Ok(job_id) => {
                     info!("Render worker: dequeued job {}", job_id);
 
+                    // Record queue depth after dequeue (best-effort — never block on error)
+                    if let Ok(mut depth_conn) = redis.get_multiplexed_async_connection().await {
+                        if let Ok(depth) =
+                            depth_conn.llen::<_, i64>(RENDER_QUEUE_KEY).await
+                        {
+                            crate::metrics::set_render_queue_depth(depth);
+                        }
+                    }
+
                     // Clone the shared resources so the spawned task owns its own handles.
                     // These are all cheap reference-counted clones (Arc / connection pool).
                     let (db2, s3_2, bucket2, tc2) = (
@@ -138,7 +147,16 @@ async fn worker_loop(
                     // when process_render_job() returns, freeing the semaphore slot.
                     tokio::spawn(async move {
                         let _permit = permit; // Holds the slot for the lifetime of this job
-                        process_render_job(job_id, &db2, &s3_2, &bucket2, &tc2).await;
+                        let start = std::time::Instant::now();
+                        let label =
+                            match process_render_job(job_id, &db2, &s3_2, &bucket2, &tc2).await {
+                                Ok(()) => "success",
+                                Err(_) => "failed",
+                            };
+                        crate::metrics::observe_render_duration(
+                            start.elapsed().as_secs_f64(),
+                            label,
+                        );
                     });
                 }
                 Err(e) => {
@@ -187,7 +205,7 @@ async fn process_render_job(
     s3: &S3Client,
     s3_bucket: &str,
     template_cache: &Arc<TemplateCache>,
-) {
+) -> Result<(), RenderError> {
     info!(job_id = %job_id, "Render job dequeued — starting processing");
 
     // Step 1: Mark job as processing so the status endpoint shows progress.
@@ -222,7 +240,7 @@ async fn process_render_job(
                 Some("Render job row not found in database"),
             )
             .await;
-            return;
+            return Err(RenderError::ResumeNotFound(job_id));
         }
         Err(e) => {
             error!(job_id = %job_id, error = %e, "DB error fetching render job — marking failed");
@@ -233,7 +251,7 @@ async fn process_render_job(
                 Some(&format!("DB error fetching job: {e}")),
             )
             .await;
-            return;
+            return Err(RenderError::Database(e));
         }
     };
 
@@ -482,7 +500,7 @@ async fn process_render_job(
     }
     .await;
 
-    if let Err(e) = result {
+    if let Err(ref e) = result {
         error!(
             job_id = %job_id,
             resume_id = %resume_id,
@@ -491,6 +509,8 @@ async fn process_render_job(
         );
         let _ = update_job_status(db, job_id, "failed", Some(&e.to_string())).await;
     }
+
+    result
 }
 
 // ────────────────────────────────────────────────────────────────────────────
