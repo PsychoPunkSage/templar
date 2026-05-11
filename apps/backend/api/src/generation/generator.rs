@@ -390,6 +390,8 @@ pub async fn generate_resume(
     )
     .await?;
 
+    crate::metrics::observe_layout_pass_count(simulation.total_passes);
+
     // Page fill remediation pass — runs after simulation loop to fix whitespace/overflow.
     // Single-page mode is always the "last page" for fill analysis purposes.
     let section_count = {
@@ -2028,6 +2030,27 @@ fn build_entry_groups(
                 .unwrap_or_else(|| EntryDisplayHeader::Other {
                     label: entry_id.to_string(),
                 });
+
+            let principal_is_empty = match &display_header {
+                EntryDisplayHeader::Experience { company, role, .. } => {
+                    company.is_empty() && role.is_empty()
+                }
+                EntryDisplayHeader::Project { name, .. } => name.is_empty(),
+                EntryDisplayHeader::OpenSource { project_name, .. } => project_name.is_empty(),
+                EntryDisplayHeader::Education { institution, .. } => institution.is_empty(),
+                EntryDisplayHeader::Other { label } => label.is_empty(),
+                EntryDisplayHeader::Skills { .. } => false,
+            };
+            if principal_is_empty {
+                tracing::warn!(
+                    %entry_id,
+                    %section,
+                    bullet_count = bullets.len(),
+                    "build_entry_groups: skipping entry — principal identifier is empty; \
+                     bullets suppressed to prevent dangling output"
+                );
+                return None;
+            }
 
             Some(EntryGroup {
                 source_entry_id: entry_id,
