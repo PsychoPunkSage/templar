@@ -496,6 +496,20 @@ fn build_sections_latex(sections: &[SampleSection], fmt: &SectionFormatting) -> 
                 continue;
             }
 
+            // Safety-net: structured section has a sub-entry with bullets but no header.
+            // Only applies when the section has OTHER sub-entries that DO have headers (i.e.
+            // it's not a flat section — flat sections intentionally have no per-entry headers).
+            // build_entry_groups() should have caught this; guard here covers direct render paths.
+            if !is_skills_section && has_headers && sub.header_latex.is_none() && !sub.bullets.is_empty() {
+                tracing::warn!(
+                    section = %section.name,
+                    bullet_count = sub.bullets.len(),
+                    "build_sections_latex: sub-entry has bullets but no header — skipping \
+                     to prevent dangling output"
+                );
+                continue;
+            }
+
             // Emit header verbatim — it uses template macros, already valid LaTeX
             if let Some(h) = &sub.header_latex {
                 out.push_str(h);
