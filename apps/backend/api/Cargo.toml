@@ -35,6 +35,9 @@ hex.workspace = true
 toml.workspace = true
 jsonwebtoken.workspace = true
 lopdf.workspace = true
+axum-prometheus = "0.7"
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

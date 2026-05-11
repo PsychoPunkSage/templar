@@ -64,6 +64,9 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
+    networks:
+      - default
+      - monitoring
     restart: unless-stopped
 
   web:
@@ -201,8 +204,81 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ── Observability stack ───────────────────────────────────────────────────
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8888:8080"  # host:8080 taken by api — remap to 8888
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres_exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://templar:templar@postgres:5432/templar?sslmode=disable"
+    ports:
+      - "9187:9187"
+    networks:
+      - monitoring
+      - default
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.99.0
+    container_name: otel-collector
+    volumes:
+      - ./otel/otel-collector.yml:/etc/otel/config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: ["--config=/etc/otel/config.yaml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - monitoring
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   minio_data:
   redis_data:
   clickhouse_data:
+  prometheus_data:
+
+networks:
+  default:
+    driver: bridge
+  monitoring:
+    driver: bridge

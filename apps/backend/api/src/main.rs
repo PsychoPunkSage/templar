@@ -9,6 +9,7 @@ mod grounding;
 mod interview_prep;
 mod layout;
 mod llm_client;
+mod metrics;
 mod models;
 mod personas;
 mod profile;
@@ -21,6 +22,9 @@ mod templates;
 use anyhow::Result;
 use aws_config::Region;
 use aws_sdk_s3::config::Credentials;
+use axum::routing::get;
+use axum_prometheus::PrometheusMetricLayerBuilder;
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -59,8 +63,52 @@ async fn main() -> Result<()> {
 
     info!("Starting Templar API v{}", env!("CARGO_PKG_VERSION"));
 
+    // Install Prometheus metrics recorder with custom histogram bucket boundaries.
+    // Must happen before any metrics are recorded (before workers are spawned).
+    let (prometheus_layer, metric_handle) = PrometheusMetricLayerBuilder::new()
+        .with_metrics_from_fn(|| {
+            PrometheusBuilder::new()
+                .set_buckets_for_metric(
+                    Matcher::Full("generation_duration_seconds".to_string()),
+                    &[5.0, 10.0, 20.0, 30.0, 60.0, 90.0, 120.0, 180.0, 300.0, 600.0],
+                )
+                .expect("generation_duration_seconds buckets")
+                .set_buckets_for_metric(
+                    Matcher::Full("render_duration_seconds".to_string()),
+                    &[0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0],
+                )
+                .expect("render_duration_seconds buckets")
+                .set_buckets_for_metric(
+                    Matcher::Full("grounding_score".to_string()),
+                    &[0.5, 0.65, 0.70, 0.80, 0.85, 0.90, 1.0],
+                )
+                .expect("grounding_score buckets")
+                .set_buckets_for_metric(
+                    Matcher::Full("layout_pass_count".to_string()),
+                    &[1.0, 2.0, 3.0],
+                )
+                .expect("layout_pass_count buckets")
+                .build_recorder()
+                .handle()
+        })
+        .build_pair();
+    info!("Prometheus metrics recorder installed");
+
     // Initialize PostgreSQL
     let db = create_pool(&config.database_url).await?;
+
+    // Background task: sample sqlx pool gauges every 10 seconds.
+    {
+        let pool_clone = db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                crate::metrics::set_db_pool_active(pool_clone.size());
+                crate::metrics::set_db_pool_idle(pool_clone.num_idle() as u32);
+            }
+        });
+    }
 
     // Initialize Redis
     let redis = redis::Client::open(config.redis_url.clone())?;
@@ -226,8 +274,11 @@ async fn main() -> Result<()> {
         "Interview prep workers: spawned"
     );
 
-    // Build router
+    // Build router — /metrics served on the same port as the API.
+    // Prometheus scrapes this endpoint from within the Docker monitoring network.
     let app = build_router(state)
+        .route("/metrics", get(move || async move { metric_handle.render() }))
+        .layer(prometheus_layer)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive()); // TODO: tighten CORS in production
 

@@ -1,0 +1,33 @@
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: "prometheus-federation"
+          static_configs:
+            - targets: ["prometheus:9090"]
+  filelog:
+    include: [/var/lib/docker/containers/*/*.log]
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout: "%Y-%m-%dT%H:%M:%S.%LZ"
+
+exporters:
+  prometheusremotewrite:
+    endpoint: "${GRAFANA_CLOUD_METRICS_URL}"
+    headers:
+      Authorization: "Bearer ${GRAFANA_CLOUD_TOKEN}"
+  loki:
+    endpoint: "${GRAFANA_CLOUD_LOKI_URL}"
+    headers:
+      Authorization: "Bearer ${GRAFANA_CLOUD_TOKEN}"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [filelog]
+      exporters: [loki]
