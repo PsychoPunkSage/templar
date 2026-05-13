@@ -270,12 +270,47 @@ services:
       - monitoring
     restart: unless-stopped
 
+  # ── Product analytics (PostHog — self-hosted) ────────────────────────────
+
+  posthog:
+    image: posthog/posthog:latest
+    container_name: posthog
+    environment:
+      DATABASE_URL: "postgres://posthog:${POSTHOG_DB_PASSWORD}@posthog_db:5432/posthog"
+      REDIS_URL: "redis://posthog_redis:6379"
+      SECRET_KEY: "${POSTHOG_SECRET_KEY}"
+      SITE_URL: "http://${POSTHOG_HOST}:8000"
+      DISABLE_SECURE_COOKIES: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - posthog_db
+      - posthog_redis
+    restart: unless-stopped
+
+  posthog_db:
+    image: postgres:15-alpine
+    container_name: posthog_db
+    environment:
+      POSTGRES_DB: posthog
+      POSTGRES_USER: posthog
+      POSTGRES_PASSWORD: "${POSTHOG_DB_PASSWORD}"
+    volumes:
+      - posthog_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  posthog_redis:
+    image: redis:7-alpine
+    container_name: posthog_redis
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   minio_data:
   redis_data:
   clickhouse_data:
   prometheus_data:
+  posthog_db_data:
 
 networks:
   default:
