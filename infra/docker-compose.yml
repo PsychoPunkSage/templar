@@ -259,6 +259,8 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.99.0
     container_name: otel-collector
+    env_file:
+      - ../.env
     volumes:
       - ./otel/otel-collector.yml:/etc/otel/config.yaml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
