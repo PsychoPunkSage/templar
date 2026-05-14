@@ -88,8 +88,8 @@ async fn main() -> Result<()> {
                     &[1.0, 2.0, 3.0],
                 )
                 .expect("layout_pass_count buckets")
-                .build_recorder()
-                .handle()
+                .install_recorder()
+                .expect("failed to install Prometheus recorder")
         })
         .build_pair();
     info!("Prometheus metrics recorder installed");
