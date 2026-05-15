@@ -93,6 +93,8 @@ async fn main() -> Result<()> {
         })
         .build_pair();
     info!("Prometheus metrics recorder installed");
+    crate::metrics::set_generation_queue_depth(0);
+    crate::metrics::set_render_queue_depth(0);
 
     // Initialize PostgreSQL
     let db = create_pool(&config.database_url).await?;
