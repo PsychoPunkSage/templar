@@ -1,5 +1,5 @@
 [package]
-name    = "analytics"
+name = "analytics"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,22 +8,22 @@ name = "analytics"
 path = "src/main.rs"
 
 [dependencies]
-templar-events     = { path = "../packages/events-rs" }
-async-nats         = "0.35"
-clickhouse         = { version = "0.11", features = ["uuid"] }
+templar-events = { path = "../packages/events-rs" }
+async-nats = "0.35"
+clickhouse = { version = "0.11", features = ["uuid"] }
 
 # From workspace
-axum               = { workspace = true }
-tokio              = { workspace = true }
-serde              = { workspace = true }
-serde_json         = { workspace = true }
-sqlx               = { workspace = true }
-uuid               = { workspace = true }
-chrono             = { workspace = true }
-redis              = { workspace = true }
-tracing            = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+redis = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-anyhow             = { workspace = true }
-toml               = { workspace = true }
-tower-http         = { workspace = true }
-dotenvy            = { workspace = true }
+anyhow = { workspace = true }
+toml = { workspace = true }
+tower-http = { workspace = true }
+dotenvy = { workspace = true }
