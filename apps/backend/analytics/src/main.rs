@@ -13,11 +13,16 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
 
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.rust_log)))
+        .with(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.rust_log)),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    info!("Starting Templar Analytics Service v{}", env!("CARGO_PKG_VERSION"));
+    info!(
+        "Starting Templar Analytics Service v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     info!(
         nats_url = %config.nats_url,
         clickhouse_url = %config.clickhouse_url,
