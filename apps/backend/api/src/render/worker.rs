@@ -126,9 +126,7 @@ async fn worker_loop(
 
                     // Record queue depth after dequeue (best-effort — never block on error)
                     if let Ok(mut depth_conn) = redis.get_multiplexed_async_connection().await {
-                        if let Ok(depth) =
-                            depth_conn.llen::<_, i64>(RENDER_QUEUE_KEY).await
-                        {
+                        if let Ok(depth) = depth_conn.llen::<_, i64>(RENDER_QUEUE_KEY).await {
                             crate::metrics::set_render_queue_depth(depth);
                         }
                     }
@@ -359,30 +357,32 @@ async fn process_render_job(
                 resume_id = %resume_id,
                 "Render job: spawning pdflatex compiler"
             );
-            let compiled = compile_latex(&this_latex_source, job_id).await.map_err(|e| {
-                // Log failure with FULL stderr before propagating the error.
-                if let RenderError::CompilationFailed {
-                    exit_code,
-                    ref stderr,
-                } = e
-                {
-                    error!(
-                        job_id = %job_id,
-                        resume_id = %resume_id,
-                        exit_code = exit_code,
-                        stderr = %stderr,
-                        "LaTeX compilation FAILED"
-                    );
-                } else {
-                    error!(
-                        job_id = %job_id,
-                        resume_id = %resume_id,
-                        error = %e,
-                        "LaTeX invocation error"
-                    );
-                }
-                e
-            })?;
+            let compiled = compile_latex(&this_latex_source, job_id)
+                .await
+                .map_err(|e| {
+                    // Log failure with FULL stderr before propagating the error.
+                    if let RenderError::CompilationFailed {
+                        exit_code,
+                        ref stderr,
+                    } = e
+                    {
+                        error!(
+                            job_id = %job_id,
+                            resume_id = %resume_id,
+                            exit_code = exit_code,
+                            stderr = %stderr,
+                            "LaTeX compilation FAILED"
+                        );
+                    } else {
+                        error!(
+                            job_id = %job_id,
+                            resume_id = %resume_id,
+                            error = %e,
+                            "LaTeX invocation error"
+                        );
+                    }
+                    e
+                })?;
 
             info!(
                 job_id = %job_id,

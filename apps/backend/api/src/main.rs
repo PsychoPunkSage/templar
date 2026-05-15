@@ -70,7 +70,9 @@ async fn main() -> Result<()> {
             PrometheusBuilder::new()
                 .set_buckets_for_metric(
                     Matcher::Full("generation_duration_seconds".to_string()),
-                    &[5.0, 10.0, 20.0, 30.0, 60.0, 90.0, 120.0, 180.0, 300.0, 600.0],
+                    &[
+                        5.0, 10.0, 20.0, 30.0, 60.0, 90.0, 120.0, 180.0, 300.0, 600.0,
+                    ],
                 )
                 .expect("generation_duration_seconds buckets")
                 .set_buckets_for_metric(
@@ -279,7 +281,10 @@ async fn main() -> Result<()> {
     // Build router — /metrics served on the same port as the API.
     // Prometheus scrapes this endpoint from within the Docker monitoring network.
     let app = build_router(state)
-        .route("/metrics", get(move || async move { metric_handle.render() }))
+        .route(
+            "/metrics",
+            get(move || async move { metric_handle.render() }),
+        )
         .layer(prometheus_layer)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive()); // TODO: tighten CORS in production

@@ -500,7 +500,11 @@ fn build_sections_latex(sections: &[SampleSection], fmt: &SectionFormatting) -> 
             // Only applies when the section has OTHER sub-entries that DO have headers (i.e.
             // it's not a flat section — flat sections intentionally have no per-entry headers).
             // build_entry_groups() should have caught this; guard here covers direct render paths.
-            if !is_skills_section && has_headers && sub.header_latex.is_none() && !sub.bullets.is_empty() {
+            if !is_skills_section
+                && has_headers
+                && sub.header_latex.is_none()
+                && !sub.bullets.is_empty()
+            {
                 tracing::warn!(
                     section = %section.name,
                     bullet_count = sub.bullets.len(),
@@ -854,7 +858,8 @@ mod tests {
                 layout: TemplateLayoutConfig::default(),
                 layout_physics: LayoutPhysicsConfig::default(),
             },
-            latex_source: "Name: {{FULL_NAME}}\n{{CONTACT_LINE}}\n{{SECTIONS}}{{LAYOUT_PARAMS}}".to_string(),
+            latex_source: "Name: {{FULL_NAME}}\n{{CONTACT_LINE}}\n{{SECTIONS}}{{LAYOUT_PARAMS}}"
+                .to_string(),
             sample_data: SampleData {
                 profile: ProfileData::default(),
                 sections: vec![],

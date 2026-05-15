@@ -11,7 +11,9 @@ use crate::context::prompts::{
     CONTEXT_PARSE_PROMPT, CONTEXT_PARSE_SYSTEM,
 };
 use crate::context::scoring::compute_recency_score;
-use crate::context::validation::{validate_bullets, validate_impact, validate_required_fields, ImpactQuality};
+use crate::context::validation::{
+    validate_bullets, validate_impact, validate_required_fields, ImpactQuality,
+};
 use crate::context::versioning::{commit_context_update, get_current_entries, CommitParams};
 use crate::errors::AppError;
 use crate::llm_client::LlmClient;

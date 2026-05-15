@@ -135,13 +135,14 @@ async fn worker_loop(
                     tokio::spawn(async move {
                         let _permit = permit; // holds the slot for this job's lifetime
                         let start = std::time::Instant::now();
-                        let label =
-                            match process_generation_job(job_id, &db2, &llm2, fs2, &pc2, &cfg2, &redis2)
-                                .await
-                            {
-                                Ok(()) => "success",
-                                Err(_) => "failed",
-                            };
+                        let label = match process_generation_job(
+                            job_id, &db2, &llm2, fs2, &pc2, &cfg2, &redis2,
+                        )
+                        .await
+                        {
+                            Ok(()) => "success",
+                            Err(_) => "failed",
+                        };
                         crate::metrics::observe_generation_duration(
                             start.elapsed().as_secs_f64(),
                             label,

@@ -291,7 +291,13 @@ pub async fn generate_resume(
     };
 
     // Step 4: Content selection (CV mode uses higher per-section limits)
-    let selection = select_content(entries, &parsed_jd, request.resume_mode, persona.as_ref(), config);
+    let selection = select_content(
+        entries,
+        &parsed_jd,
+        request.resume_mode,
+        persona.as_ref(),
+        config,
+    );
     info!(
         "Selected {} entries for generation",
         selection.selected_entries.len()

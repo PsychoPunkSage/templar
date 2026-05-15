@@ -180,7 +180,13 @@ pub fn validate_required_fields(entry_type: &str, data: &serde_json::Value) -> I
             "missing_institution",
             "This education entry is missing an institution name.",
         ),
-        _ => return ImpactQuality { quality_score: 1.0, flags: vec![], suggestions: vec![] },
+        _ => {
+            return ImpactQuality {
+                quality_score: 1.0,
+                flags: vec![],
+                suggestions: vec![],
+            }
+        }
     };
 
     let has_any = required_fields.iter().any(|&f| {
@@ -191,7 +197,11 @@ pub fn validate_required_fields(entry_type: &str, data: &serde_json::Value) -> I
     });
 
     if has_any {
-        ImpactQuality { quality_score: 1.0, flags: vec![], suggestions: vec![] }
+        ImpactQuality {
+            quality_score: 1.0,
+            flags: vec![],
+            suggestions: vec![],
+        }
     } else {
         ImpactQuality {
             quality_score: 0.0,

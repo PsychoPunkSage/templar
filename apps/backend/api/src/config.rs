@@ -322,11 +322,7 @@ impl Config {
             ),
 
             // Content selection limits
-            experience_limit: env_or(
-                "EXPERIENCE_LIMIT",
-                toml.content_limits.experience_limit,
-                8,
-            ),
+            experience_limit: env_or("EXPERIENCE_LIMIT", toml.content_limits.experience_limit, 8),
             project_limit: env_or("PROJECT_LIMIT", toml.content_limits.project_limit, 4),
             other_limit: env_or("OTHER_LIMIT", toml.content_limits.other_limit, 3),
             cv_experience_limit: env_or(
@@ -334,11 +330,7 @@ impl Config {
                 toml.content_limits.cv_experience_limit,
                 12,
             ),
-            cv_project_limit: env_or(
-                "CV_PROJECT_LIMIT",
-                toml.content_limits.cv_project_limit,
-                6,
-            ),
+            cv_project_limit: env_or("CV_PROJECT_LIMIT", toml.content_limits.cv_project_limit, 6),
             cv_other_limit: env_or("CV_OTHER_LIMIT", toml.content_limits.cv_other_limit, 4),
 
             // Layout tunables

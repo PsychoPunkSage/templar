@@ -360,7 +360,13 @@ mod tests {
             make_entry("experience", vec![], 0.1, 0.1),
         ];
         let parsed_jd = make_parsed_jd(&["rust"], JDTone::AggressiveStartup);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None, &test_config());
+        let result = select_content(
+            entries,
+            &parsed_jd,
+            ResumeMode::SinglePage,
+            None,
+            &test_config(),
+        );
 
         assert!(
             result.selected_entries[0].combined_score > result.selected_entries[1].combined_score,
@@ -374,7 +380,13 @@ mod tests {
             .map(|_| make_entry("experience", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::CollaborativeEnterprise);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None, &test_config());
+        let result = select_content(
+            entries,
+            &parsed_jd,
+            ResumeMode::SinglePage,
+            None,
+            &test_config(),
+        );
 
         let selected_exp = result
             .selected_entries
@@ -397,7 +409,13 @@ mod tests {
             .map(|_| make_entry("project", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::CollaborativeEnterprise);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None, &test_config());
+        let result = select_content(
+            entries,
+            &parsed_jd,
+            ResumeMode::SinglePage,
+            None,
+            &test_config(),
+        );
 
         let selected = result
             .selected_entries
@@ -414,7 +432,13 @@ mod tests {
             .map(|_| make_entry("open_source", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::AggressiveStartup);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None, &test_config());
+        let result = select_content(
+            entries,
+            &parsed_jd,
+            ResumeMode::SinglePage,
+            None,
+            &test_config(),
+        );
 
         let selected = result
             .selected_entries
