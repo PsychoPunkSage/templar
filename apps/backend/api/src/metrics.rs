@@ -1,10 +1,10 @@
-/// Observability helpers — thin wrappers around the `metrics` crate macros.
-///
-/// All metrics land in the same registry that `PrometheusMetricLayer` installs,
-/// so they appear alongside the HTTP request metrics at GET /metrics.
-///
-/// Histogram bucket boundaries are configured at recorder-installation time in
-/// main.rs via `metrics_exporter_prometheus::PrometheusBuilder`.
+//! Observability helpers — thin wrappers around the `metrics` crate macros.
+//!
+//! All metrics land in the same registry that `PrometheusMetricLayer` installs,
+//! so they appear alongside the HTTP request metrics at GET /metrics.
+//!
+//! Histogram bucket boundaries are configured at recorder-installation time in
+//! main.rs via `metrics_exporter_prometheus::PrometheusBuilder`.
 
 // ── Gauge recording ───────────────────────────────────────────────────────────
 

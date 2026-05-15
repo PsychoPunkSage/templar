@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 /// Required vars will cause startup to fail if missing.
 /// Optional vars fall back to the listed defaults.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Config {
     // ── Required ─────────────────────────────────────────────────────────────
     pub nats_url: String,

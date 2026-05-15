@@ -210,6 +210,7 @@ pub struct Config {
 
     /// Maximum post-render retries when the PDF exceeds the target page count.
     /// Env: MAX_POST_RENDER_RETRIES  |  Default: 2
+    #[allow(dead_code)]
     pub max_post_render_retries: u8,
 
     // ── Auth (optional) ──────────────────────────────────────────────────────
