@@ -52,6 +52,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      nats:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
       minio-init:
@@ -62,12 +64,25 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
+    networks:
+      - default
+      - monitoring
     restart: unless-stopped
 
   web:
     build:
       context: ..
       dockerfile: infra/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8080
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+        NEXT_PUBLIC_CLERK_SIGN_IN_URL: /sign-in
+        NEXT_PUBLIC_CLERK_SIGN_UP_URL: /sign-up
+        NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL: /projects
+        NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL: /projects
+        NEXT_PUBLIC_CLERK_AFTER_SIGN_OUT_URL: /sign-in
+        NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY}
+        NEXT_PUBLIC_POSTHOG_HOST: https://us.i.posthog.com
     container_name: templar-web
     ports:
       - "3001:3001"
@@ -131,7 +146,160 @@ services:
       timeout: 5s
       retries: 5
 
+  nats:
+    image: nats:2.10-alpine
+    container_name: templar-nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: templar-clickhouse
+    ports:
+      - "8123:8123"   # HTTP only — native TCP (9000) conflicts with MinIO host port
+    environment:
+      CLICKHOUSE_DB: templar_analytics
+      CLICKHOUSE_USER: templar
+      CLICKHOUSE_PASSWORD: templar
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CLICKHOUSE_LISTEN_HOST: "0.0.0.0"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  analytics:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.analytics
+    container_name: templar-analytics
+    ports:
+      - "8090:8090"
+    env_file:
+      - ../.env
+    environment:
+      ANALYTICS_PORT: "8090"
+      NATS_URL: nats://nats:4222
+      CLICKHOUSE_URL: http://clickhouse:8123
+      DATABASE_URL: postgres://templar:templar@postgres:5432/templar
+      REDIS_URL: redis://redis:6379
+      RUST_LOG: info
+    depends_on:
+      nats:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8090/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Observability stack ───────────────────────────────────────────────────
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service
+    ports:
+      - "8888:8080"  # host:8080 taken by api — remap to 8888
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres_exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://templar:templar@postgres:5432/templar?sslmode=disable"
+    ports:
+      - "9187:9187"
+    networks:
+      - monitoring
+      - default
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.99.0
+    container_name: otel-collector
+    env_file:
+      - ../.env
+    volumes:
+      - ./otel/otel-collector.yml:/etc/otel/config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: ["--config=/etc/otel/config.yaml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  # ── Product analytics (PostHog Cloud — self-hosted deferred) ─────────────
+  # PostHog self-hosted requires a full cluster ClickHouse + ZooKeeper setup.
+  # Using PostHog Cloud free tier (1M events/month) instead.
+  # Frontend env vars: NEXT_PUBLIC_POSTHOG_KEY and NEXT_PUBLIC_POSTHOG_HOST in .env
+
 volumes:
   postgres_data:
   minio_data:
   redis_data:
+  clickhouse_data:
+  prometheus_data:
+
+networks:
+  default:
+    driver: bridge
+  monitoring:
+    driver: bridge

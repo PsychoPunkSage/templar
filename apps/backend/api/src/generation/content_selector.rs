@@ -45,16 +45,6 @@ pub struct SelectionResult {
 // Selection algorithm
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Section-level limits for single-page resume entry selection.
-const EXPERIENCE_LIMIT: usize = 8;
-const PROJECT_LIMIT: usize = 4;
-const OTHER_LIMIT: usize = 3;
-
-/// Section-level limits for multi-page CV entry selection (lifted significantly).
-const CV_EXPERIENCE_LIMIT: usize = 20;
-const CV_PROJECT_LIMIT: usize = 10;
-const CV_OTHER_LIMIT: usize = 8;
-
 /// Selects, ranks, and filters context entries for resume generation.
 ///
 /// Algorithm:
@@ -63,11 +53,14 @@ const CV_OTHER_LIMIT: usize = 8;
 /// 3. Sort descending by combined_score
 /// 4. Apply per-section selection limits (higher for CV mode)
 /// 5. Adjust section_weights based on JD tone signals
+///
+/// Section limits come from `config` so they can be tuned without redeployment.
 pub fn select_content(
     entries: Vec<ContextEntryRow>,
     parsed_jd: &ParsedJD,
     resume_mode: ResumeMode,
     persona: Option<&crate::models::resume::PersonaRow>,
+    config: &crate::config::Config,
 ) -> SelectionResult {
     let weights = ScoringWeights::default();
 
@@ -99,7 +92,7 @@ pub fn select_content(
     });
 
     // Apply section-aware selection limits (CV mode uses higher limits)
-    let (selected_entries, excluded_entries) = apply_section_limits(ranked, resume_mode);
+    let (selected_entries, excluded_entries) = apply_section_limits(ranked, resume_mode, config);
 
     // Adjust section weights per JD tone
     let section_weights = compute_section_weights(&parsed_jd.detected_tone);
@@ -176,17 +169,29 @@ fn persona_multiplier(
 }
 
 /// Applies per-section limits and separates selected from excluded entries.
+///
+/// Limits are read from `config` so they can be tuned via env var / config.toml
+/// without changing this code.
 fn apply_section_limits(
     ranked: Vec<RankedEntry>,
     resume_mode: ResumeMode,
+    config: &crate::config::Config,
 ) -> (Vec<RankedEntry>, Vec<(Uuid, String)>) {
     let mut experience_count = 0usize;
     let mut project_count = 0usize;
     let mut other_count = 0usize;
 
     let (exp_limit, proj_limit, other_limit) = match resume_mode {
-        ResumeMode::SinglePage => (EXPERIENCE_LIMIT, PROJECT_LIMIT, OTHER_LIMIT),
-        ResumeMode::Cv => (CV_EXPERIENCE_LIMIT, CV_PROJECT_LIMIT, CV_OTHER_LIMIT),
+        ResumeMode::SinglePage => (
+            config.experience_limit,
+            config.project_limit,
+            config.other_limit,
+        ),
+        ResumeMode::Cv => (
+            config.cv_experience_limit,
+            config.cv_project_limit,
+            config.cv_other_limit,
+        ),
     };
 
     let mut selected = Vec::new();
@@ -262,6 +267,44 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
 
+    /// Returns a Config with the legacy hardcoded limits so that existing test
+    /// assertions (capped at 8 / 4 / 3) continue to pass without modification.
+    fn test_config() -> crate::config::Config {
+        crate::config::Config {
+            database_url: String::new(),
+            redis_url: String::new(),
+            s3_bucket: String::new(),
+            s3_endpoint: String::new(),
+            aws_access_key_id: String::new(),
+            aws_secret_access_key: String::new(),
+            anthropic_api_key: String::new(),
+            api_port: 8080,
+            rust_log: "info".to_string(),
+            ingest_worker_count: 2,
+            ingest_llm_concurrency: 2,
+            generation_llm_concurrency: 3,
+            layout_llm_concurrency: 4,
+            grounding_llm_concurrency: 4,
+            render_worker_count: 4,
+            generation_worker_count: 2,
+            bullet_token_budget: 1200,
+            persona_suggest_min_entries: 3,
+            persona_suggest_max_count: 3,
+            persona_suggest_top_tags: 20,
+            persona_suggest_top_entries: 8,
+            persona_suggest_dedup_threshold: 0.6,
+            experience_limit: 8,
+            project_limit: 4,
+            other_limit: 3,
+            cv_experience_limit: 12,
+            cv_project_limit: 6,
+            cv_other_limit: 4,
+            max_fill_passes: 3,
+            max_post_render_retries: 2,
+            clerk_jwks_url: None,
+        }
+    }
+
     fn make_entry(
         entry_type: &str,
         tags: Vec<String>,
@@ -317,7 +360,13 @@ mod tests {
             make_entry("experience", vec![], 0.1, 0.1),
         ];
         let parsed_jd = make_parsed_jd(&["rust"], JDTone::AggressiveStartup);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None);
+        let result = select_content(
+            entries,
+            &parsed_jd,
+            ResumeMode::SinglePage,
+            None,
+            &test_config(),
+        );
 
         assert!(
             result.selected_entries[0].combined_score > result.selected_entries[1].combined_score,
@@ -331,7 +380,13 @@ mod tests {
             .map(|_| make_entry("experience", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::CollaborativeEnterprise);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None);
+        let result = select_content(
+            entries,
+            &parsed_jd,
+            ResumeMode::SinglePage,
+            None,
+            &test_config(),
+        );
 
         let selected_exp = result
             .selected_entries
@@ -354,7 +409,13 @@ mod tests {
             .map(|_| make_entry("project", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::CollaborativeEnterprise);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None);
+        let result = select_content(
+            entries,
+            &parsed_jd,
+            ResumeMode::SinglePage,
+            None,
+            &test_config(),
+        );
 
         let selected = result
             .selected_entries
@@ -371,7 +432,13 @@ mod tests {
             .map(|_| make_entry("open_source", vec![], 0.5, 0.5))
             .collect();
         let parsed_jd = make_parsed_jd(&[], JDTone::AggressiveStartup);
-        let result = select_content(entries, &parsed_jd, ResumeMode::SinglePage, None);
+        let result = select_content(
+            entries,
+            &parsed_jd,
+            ResumeMode::SinglePage,
+            None,
+            &test_config(),
+        );
 
         let selected = result
             .selected_entries
@@ -445,6 +512,7 @@ mod tests {
             &make_parsed_jd(&[], JDTone::ProductOriented),
             ResumeMode::SinglePage,
             None,
+            &test_config(),
         );
         assert!(result.reframe_hints.is_empty());
     }

@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "api"
+    static_configs:
+      - targets: ["api:8080"]  # /metrics served on main port
+
+  - job_name: "cadvisor"
+    static_configs:
+      - targets: ["cadvisor:8080"]  # container port (host port remapped to 8888)
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: "container_blkio_device_usage_total|container_tasks_state|container_memory_failures_total"
+        action: drop
+      - source_labels: [id]
+        regex: "|/|/system\\.slice/docker-.+\\.scope"
+        action: keep
+
+  - job_name: "postgres"
+    static_configs:
+      - targets: ["postgres_exporter:9187"]
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

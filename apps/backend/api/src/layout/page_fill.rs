@@ -65,7 +65,11 @@ pub enum FillAction {
 /// Analyzes the overall page fill given the simulated bullets and page configuration.
 ///
 /// `total_lines_used` is the sum of `verified_line_count` across all bullets.
-/// `usable_height_lines` from `PageConfig` is the denominator.
+/// `usable_height_lines` from `PageConfig` minus structural overhead is the denominator.
+///
+/// `section_count` — number of distinct sections on this page; used with
+/// `config.physics` to compute header + spacing overhead that is subtracted
+/// from `usable_height_lines` before the fill ratio is calculated.
 ///
 /// `is_last_page` — when false (intermediate CV pages), `TooMuchWhitespace` is never
 /// reported: partial pages between entries are acceptable in multi-page documents.
@@ -73,10 +77,12 @@ pub fn analyze_page_fill(
     bullets: &[SimulatedBullet],
     config: &PageConfig,
     is_last_page: bool,
+    section_count: usize,
 ) -> PageFillAnalysis {
     let total_lines_used: u16 = bullets.iter().map(|b| b.verified_line_count as u16).sum();
 
-    let available = config.usable_height_lines;
+    let overhead = config.physics.effective_overhead_lines(section_count);
+    let available = (config.usable_height_lines as f32 - overhead).max(1.0) as u16;
     let fill_ratio = total_lines_used as f32 / available as f32;
 
     let whitespace_fraction = (1.0_f32 - fill_ratio).max(0.0);
@@ -217,10 +223,7 @@ fn keyword_match_score(
 // Page fill remediation pass
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Maximum number of page fill remediation passes before flagging for human review.
-const MAX_FILL_PASSES: u8 = 3;
-
-/// Runs iterative page fill remediation after the simulation loop (up to MAX_FILL_PASSES).
+/// Runs iterative page fill remediation after the simulation loop (up to `max_passes`).
 ///
 /// Each pass analyzes overall whitespace/overflow and executes the recommended action:
 /// - TooMuchWhitespace → promote best 1-line bullet to 2-line (LLM expand)
@@ -228,13 +231,18 @@ const MAX_FILL_PASSES: u8 = 3;
 /// - MajorOverflow     → remove lowest-scoring bullet (no LLM)
 ///
 /// Loops until Acceptable or no further action is possible.
-/// After MAX_FILL_PASSES, sets `result.page_fill_flagged = true` for human review.
+/// After `max_passes`, sets `result.page_fill_flagged = true` for human review.
+///
+/// `section_count` is the number of distinct sections on this page, used to
+/// subtract structural overhead from `usable_height_lines` in the fill analysis.
 pub async fn run_page_fill_pass(
     mut result: crate::layout::simulator::SimulationResult,
     config: &crate::layout::font_metrics::PageConfig,
     parsed_jd: &crate::generation::jd_parser::ParsedJD,
     llm: &crate::llm_client::LlmClient,
     is_last_page: bool,
+    max_passes: u8,
+    section_count: usize,
 ) -> Result<crate::layout::simulator::SimulationResult, crate::errors::AppError> {
     use crate::layout::contract::simulate_lines;
     use crate::layout::font_metrics::get_metrics;
@@ -245,16 +253,16 @@ pub async fn run_page_fill_pass(
     let mut fill_passes = 0u8;
 
     loop {
-        let analysis = analyze_page_fill(&result.bullets, config, is_last_page);
+        let analysis = analyze_page_fill(&result.bullets, config, is_last_page, section_count);
 
         if matches!(analysis.verdict, PageFillVerdict::Acceptable) {
             break;
         }
 
-        if fill_passes >= MAX_FILL_PASSES {
+        if fill_passes >= max_passes {
             result.page_fill_flagged = true;
             tracing::warn!(
-                passes = MAX_FILL_PASSES,
+                passes = max_passes,
                 verdict = ?analysis.verdict,
                 whitespace_pct = analysis.whitespace_fraction * 100.0,
                 overflow_pct = analysis.overflow_fraction * 100.0,
@@ -350,11 +358,22 @@ pub async fn run_page_fill_pass(
 mod tests {
     use super::*;
     use crate::generation::jd_parser::{JDTone, KeywordEntry, ParsedJD, Requirement, RoleSignals};
-    use crate::layout::font_metrics::{default_page_config, FontFamily};
+    use crate::layout::font_metrics::{default_page_config, FontFamily, LayoutPhysicsConfig};
     use uuid::Uuid;
 
     fn make_config() -> PageConfig {
-        default_page_config(FontFamily::Inter)
+        // Use zero overhead so existing test bullet-count assertions are not disturbed
+        // by the structural overhead subtraction added in analyze_page_fill.
+        let mut cfg = default_page_config(FontFamily::Inter);
+        cfg.physics = LayoutPhysicsConfig {
+            page_fixed_overhead_lines: 0.0,
+            section_header_lines: 0.0,
+            section_before_spacing_pt: 0.0,
+            section_after_spacing_pt: 0.0,
+            item_spacing_pt: 0.0,
+            before_header_skip_pt: 0.0,
+        };
+        cfg
     }
 
     fn make_parsed_jd() -> ParsedJD {
@@ -410,7 +429,7 @@ mod tests {
                                     // 43 lines used = 95.6% fill → Acceptable (whitespace = 4.4% < 8%)
         let bullets: Vec<SimulatedBullet> =
             (0..43).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config, true);
+        let analysis = analyze_page_fill(&bullets, &config, true, 0);
         assert_eq!(analysis.verdict, PageFillVerdict::Acceptable);
         assert_eq!(analysis.total_lines_used, 43);
         assert!(analysis.whitespace_fraction < 0.08);
@@ -422,7 +441,7 @@ mod tests {
                                     // 35 lines used = 77.8% fill → TooMuchWhitespace (whitespace = 22.2% > 8%)
         let bullets: Vec<SimulatedBullet> =
             (0..35).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config, true);
+        let analysis = analyze_page_fill(&bullets, &config, true, 0);
         assert_eq!(analysis.verdict, PageFillVerdict::TooMuchWhitespace);
         assert!(analysis.whitespace_fraction > 0.08);
     }
@@ -433,7 +452,7 @@ mod tests {
                                     // 47 lines used = 104.4% fill → MinorOverflow (1–5%)
         let bullets: Vec<SimulatedBullet> =
             (0..47).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config, true);
+        let analysis = analyze_page_fill(&bullets, &config, true, 0);
         assert_eq!(analysis.verdict, PageFillVerdict::MinorOverflow);
         assert!(analysis.overflow_fraction > 0.0 && analysis.overflow_fraction <= 0.05);
     }
@@ -444,7 +463,7 @@ mod tests {
                                     // 50 lines used = 111.1% fill → MajorOverflow (> 5%)
         let bullets: Vec<SimulatedBullet> =
             (0..50).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config, true);
+        let analysis = analyze_page_fill(&bullets, &config, true, 0);
         assert_eq!(analysis.verdict, PageFillVerdict::MajorOverflow);
         assert!(analysis.overflow_fraction > 0.05);
     }
@@ -452,7 +471,7 @@ mod tests {
     #[test]
     fn test_empty_bullets_is_whitespace() {
         let config = make_config();
-        let analysis = analyze_page_fill(&[], &config, true);
+        let analysis = analyze_page_fill(&[], &config, true, 0);
         assert_eq!(analysis.verdict, PageFillVerdict::TooMuchWhitespace);
         assert_eq!(analysis.total_lines_used, 0);
         assert!((analysis.whitespace_fraction - 1.0).abs() < 1e-3);
@@ -466,7 +485,7 @@ mod tests {
         // 43/45 = 95.6% fill → Acceptable → NoAction
         let bullets: Vec<SimulatedBullet> =
             (0..43).map(|_| make_bullet(1, vec![], false)).collect();
-        let analysis = analyze_page_fill(&bullets, &config, true);
+        let analysis = analyze_page_fill(&bullets, &config, true, 0);
         let action = recommend_fill_action(&analysis, &bullets, &make_parsed_jd());
         assert_eq!(action, FillAction::NoAction);
     }
@@ -554,33 +573,23 @@ mod tests {
         );
     }
 
-    // ── MAX_FILL_PASSES constant ─────────────────────────────────────────────
-
-    #[test]
-    fn test_max_fill_passes_is_three() {
-        assert_eq!(
-            MAX_FILL_PASSES, 3,
-            "spec requires exactly 3 max fill passes"
-        );
-    }
-
     #[test]
     fn test_major_overflow_removes_bullets_iteratively() {
         let config = make_config(); // 45 usable lines
                                     // Create 50 bullets (111% fill — MajorOverflow)
-                                    // After 3 removals (MAX_FILL_PASSES), still 47 bullets (104% fill — MinorOverflow).
+                                    // After 3 removals (max_passes=3), still 47 bullets (104% fill — MinorOverflow).
                                     // page_fill_flagged should be true since 47 > 45.
                                     // Note: only page fill logic tested here (no LLM), so bullets have 0 jd_keywords.
         let bullets: Vec<SimulatedBullet> =
             (0..50).map(|_| make_bullet(1, vec![], false)).collect();
 
-        let analysis = analyze_page_fill(&bullets, &config, true);
+        let analysis = analyze_page_fill(&bullets, &config, true, 0);
         assert_eq!(analysis.verdict, PageFillVerdict::MajorOverflow);
         // Removing 3 bullets leaves 47 — still overflowing (104.4%), so page_fill_flagged
         // would be set after MAX_FILL_PASSES. This test validates the analysis side only
         // (the async run_page_fill_pass requires tokio runtime — covered by e2e test).
         let after_3 = &bullets[..47];
-        let after_analysis = analyze_page_fill(after_3, &config, true);
+        let after_analysis = analyze_page_fill(after_3, &config, true, 0);
         assert_eq!(
             after_analysis.verdict,
             PageFillVerdict::MinorOverflow,

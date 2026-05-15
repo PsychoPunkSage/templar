@@ -291,7 +291,13 @@ pub async fn generate_resume(
     };
 
     // Step 4: Content selection (CV mode uses higher per-section limits)
-    let selection = select_content(entries, &parsed_jd, request.resume_mode, persona.as_ref());
+    let selection = select_content(
+        entries,
+        &parsed_jd,
+        request.resume_mode,
+        persona.as_ref(),
+        config,
+    );
     info!(
         "Selected {} entries for generation",
         selection.selected_entries.len()
@@ -390,14 +396,27 @@ pub async fn generate_resume(
     )
     .await?;
 
+    crate::metrics::observe_layout_pass_count(simulation.total_passes);
+
     // Page fill remediation pass — runs after simulation loop to fix whitespace/overflow.
     // Single-page mode is always the "last page" for fill analysis purposes.
+    let section_count = {
+        use std::collections::HashSet;
+        simulation
+            .bullets
+            .iter()
+            .map(|b| b.section.as_str())
+            .collect::<HashSet<_>>()
+            .len()
+    };
     let mut simulation = crate::layout::page_fill::run_page_fill_pass(
         simulation,
         page_config,
         &parsed_jd,
         llm,
         true,
+        config.max_fill_passes,
+        section_count,
     )
     .await?;
 
@@ -439,12 +458,23 @@ pub async fn generate_resume(
                 page_fill_flagged: false,
                 page_count: 1,
             };
+            let last_page_section_count = {
+                use std::collections::HashSet;
+                last_page_sim
+                    .bullets
+                    .iter()
+                    .map(|b| b.section.as_str())
+                    .collect::<HashSet<_>>()
+                    .len()
+            };
             let last_page_result = crate::layout::page_fill::run_page_fill_pass(
                 last_page_sim,
                 page_config,
                 &parsed_jd,
                 llm,
                 true, // is_last_page
+                config.max_fill_passes,
+                last_page_section_count,
             )
             .await?;
             // Merge back the last-page bullets (they may have been compressed/promoted)
@@ -2006,6 +2036,27 @@ fn build_entry_groups(
                 .unwrap_or_else(|| EntryDisplayHeader::Other {
                     label: entry_id.to_string(),
                 });
+
+            let principal_is_empty = match &display_header {
+                EntryDisplayHeader::Experience { company, role, .. } => {
+                    company.is_empty() && role.is_empty()
+                }
+                EntryDisplayHeader::Project { name, .. } => name.is_empty(),
+                EntryDisplayHeader::OpenSource { project_name, .. } => project_name.is_empty(),
+                EntryDisplayHeader::Education { institution, .. } => institution.is_empty(),
+                EntryDisplayHeader::Other { label } => label.is_empty(),
+                EntryDisplayHeader::Skills { .. } => false,
+            };
+            if principal_is_empty {
+                tracing::warn!(
+                    %entry_id,
+                    %section,
+                    bullet_count = bullets.len(),
+                    "build_entry_groups: skipping entry — principal identifier is empty; \
+                     bullets suppressed to prevent dangling output"
+                );
+                return None;
+            }
 
             Some(EntryGroup {
                 source_entry_id: entry_id,

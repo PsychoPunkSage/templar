@@ -127,6 +127,9 @@ pub struct PdflatexResult {
     pub stderr: String,
     /// Wall-clock time for the compilation.
     pub duration_ms: u64,
+    /// Number of pages in the produced PDF, if determinable via lopdf.
+    /// None if lopdf could not parse the output (should not happen in practice).
+    pub actual_page_count: Option<u8>,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -183,6 +186,25 @@ mod tests {
         assert_eq!(RenderStatus::Processing.to_string(), "processing");
         assert_eq!(RenderStatus::Done.to_string(), "done");
         assert_eq!(RenderStatus::Failed.to_string(), "failed");
+    }
+
+    #[test]
+    fn test_pdflatex_result_has_page_count_field() {
+        let r = PdflatexResult {
+            pdf_bytes: vec![1, 2, 3],
+            stderr: String::new(),
+            duration_ms: 100,
+            actual_page_count: Some(1),
+        };
+        assert_eq!(r.actual_page_count, Some(1));
+
+        let r2 = PdflatexResult {
+            pdf_bytes: vec![],
+            stderr: String::new(),
+            duration_ms: 0,
+            actual_page_count: None,
+        };
+        assert!(r2.actual_page_count.is_none());
     }
 
     #[test]

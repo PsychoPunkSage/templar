@@ -124,6 +124,13 @@ async fn worker_loop(
                 Ok(job_id) => {
                     info!("Render worker: dequeued job {}", job_id);
 
+                    // Record queue depth after dequeue (best-effort — never block on error)
+                    if let Ok(mut depth_conn) = redis.get_multiplexed_async_connection().await {
+                        if let Ok(depth) = depth_conn.llen::<_, i64>(RENDER_QUEUE_KEY).await {
+                            crate::metrics::set_render_queue_depth(depth);
+                        }
+                    }
+
                     // Clone the shared resources so the spawned task owns its own handles.
                     // These are all cheap reference-counted clones (Arc / connection pool).
                     let (db2, s3_2, bucket2, tc2) = (
@@ -138,7 +145,16 @@ async fn worker_loop(
                     // when process_render_job() returns, freeing the semaphore slot.
                     tokio::spawn(async move {
                         let _permit = permit; // Holds the slot for the lifetime of this job
-                        process_render_job(job_id, &db2, &s3_2, &bucket2, &tc2).await;
+                        let start = std::time::Instant::now();
+                        let label =
+                            match process_render_job(job_id, &db2, &s3_2, &bucket2, &tc2).await {
+                                Ok(()) => "success",
+                                Err(_) => "failed",
+                            };
+                        crate::metrics::observe_render_duration(
+                            start.elapsed().as_secs_f64(),
+                            label,
+                        );
                     });
                 }
                 Err(e) => {
@@ -187,7 +203,7 @@ async fn process_render_job(
     s3: &S3Client,
     s3_bucket: &str,
     template_cache: &Arc<TemplateCache>,
-) {
+) -> Result<(), RenderError> {
     info!(job_id = %job_id, "Render job dequeued — starting processing");
 
     // Step 1: Mark job as processing so the status endpoint shows progress.
@@ -222,7 +238,7 @@ async fn process_render_job(
                 Some("Render job row not found in database"),
             )
             .await;
-            return;
+            return Err(RenderError::ResumeNotFound(job_id));
         }
         Err(e) => {
             error!(job_id = %job_id, error = %e, "DB error fetching render job — marking failed");
@@ -233,7 +249,7 @@ async fn process_render_job(
                 Some(&format!("DB error fetching job: {e}")),
             )
             .await;
-            return;
+            return Err(RenderError::Database(e));
         }
     };
 
@@ -242,7 +258,7 @@ async fn process_render_job(
     let result: Result<(), RenderError> = async {
         // Step 3: Fetch render data from DB (resume row + bullets grouped by section)
         info!(job_id = %job_id, resume_id = %resume_id, "Render job: fetching render data from DB");
-        let (params, resume_template_id, resume_type) =
+        let (mut params, resume_template_id, resume_type) =
             fetch_render_data(db, resume_id, template_cache).await?;
         info!(
             job_id = %job_id,
@@ -293,76 +309,136 @@ async fn process_render_job(
             }
         }
 
-        // Step 4: Build LaTeX document.
-        // Unified path: always pdflatex via file-based template.
-        //   a) template_id set + in cache → render_file_template()
-        //   b) template_id set but not in cache → warn, try generic-cv
-        //   c) generic-cv in cache → render_file_template() with generic-cv
-        //   d) nothing in cache → build_minimal_pdflatex_document()
-        let latex_source = build_latex_for_job(
-            &params,
-            resume_template_id.as_deref(),
-            template_cache,
-            profile,
-            &resume_type,
-        )
-        .await;
-        info!(
-            job_id = %job_id,
-            resume_id = %resume_id,
-            latex_bytes = latex_source.len(),
-            "Render job: LaTeX source built"
-        );
+        // Step 4 + 5: Build LaTeX and compile to PDF.
+        // For single-page resumes, add a post-render overflow guard: if pdflatex produces
+        // more than 1 page, drop the lowest-scoring sub-entry and retry (up to
+        // MAX_POST_RENDER_RETRIES times). CV mode trusts the paginator and is skipped.
+        //
+        // build_latex_for_job consumes `profile` by value, so we pre-clone it.
+        let max_post_render_retries: u8 = std::env::var("MAX_POST_RENDER_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2);
+        let target_pages: u8 = if resume_type == "cv" { 0 } else { 1 }; // 0 = skip check for CV
 
-        // Step 5: Compile LaTeX → PDF via pdflatex (unified; no xelatex path).
-        info!(
-            job_id = %job_id,
-            resume_id = %resume_id,
-            "Render job: spawning pdflatex compiler"
-        );
-        let pdflatex_result = compile_latex(&latex_source, job_id).await.map_err(|e| {
-            // Log failure with FULL stderr before propagating the error.
-            if let RenderError::CompilationFailed {
-                exit_code,
-                ref stderr,
-            } = e
-            {
-                error!(
-                    job_id = %job_id,
-                    resume_id = %resume_id,
-                    exit_code = exit_code,
-                    stderr = %stderr,
-                    "LaTeX compilation FAILED"
-                );
-            } else {
-                error!(
-                    job_id = %job_id,
-                    resume_id = %resume_id,
-                    error = %e,
-                    "LaTeX invocation error"
-                );
-            }
-            e
-        })?;
-
-        info!(
-            job_id = %job_id,
-            resume_id = %resume_id,
-            duration_ms = pdflatex_result.duration_ms,
-            pdf_bytes = pdflatex_result.pdf_bytes.len(),
-            stderr_bytes = pdflatex_result.stderr.len(),
-            "pdflatex compilation succeeded"
-        );
-        // pdflatex writes warnings (e.g. overfull hbox, underfull hbox) to stderr
-        // even on success. Log them at DEBUG (not WARN — they are routine and not
-        // actionable unless the operator is actively tuning LaTeX spacing).
-        if !pdflatex_result.stderr.is_empty() {
-            tracing::debug!(
+        // Step 4 + 5: Build LaTeX and compile to PDF (with post-render overflow retry).
+        // For single-page resumes, if pdflatex produces > 1 page, drop the last sub-entry
+        // from `params` and retry (up to max_post_render_retries times).
+        // CV mode trusts the paginator and skips the page-count check.
+        let mut post_render_attempt: u8 = 0;
+        let pdflatex_result;
+        let latex_source; // declared outside loop so Step 7 can bind it to DB
+        loop {
+            // Step 4: Build LaTeX document.
+            // Unified path: always pdflatex via file-based template.
+            //   a) template_id set + in cache → render_file_template()
+            //   b) template_id set but not in cache → warn, try generic-cv
+            //   c) generic-cv in cache → render_file_template() with generic-cv
+            //   d) nothing in cache → build_minimal_pdflatex_document()
+            // build_latex_for_job consumes `profile` by value — clone for each attempt.
+            let this_latex_source = build_latex_for_job(
+                &params,
+                resume_template_id.as_deref(),
+                template_cache,
+                profile.clone(),
+                &resume_type,
+            )
+            .await;
+            info!(
                 job_id = %job_id,
                 resume_id = %resume_id,
-                stderr = %pdflatex_result.stderr,
-                "pdflatex stderr (warnings)"
+                latex_bytes = this_latex_source.len(),
+                "Render job: LaTeX source built"
             );
+
+            // Step 5: Compile LaTeX → PDF via pdflatex (unified; no xelatex path).
+            info!(
+                job_id = %job_id,
+                resume_id = %resume_id,
+                "Render job: spawning pdflatex compiler"
+            );
+            let compiled = compile_latex(&this_latex_source, job_id)
+                .await
+                .map_err(|e| {
+                    // Log failure with FULL stderr before propagating the error.
+                    if let RenderError::CompilationFailed {
+                        exit_code,
+                        ref stderr,
+                    } = e
+                    {
+                        error!(
+                            job_id = %job_id,
+                            resume_id = %resume_id,
+                            exit_code = exit_code,
+                            stderr = %stderr,
+                            "LaTeX compilation FAILED"
+                        );
+                    } else {
+                        error!(
+                            job_id = %job_id,
+                            resume_id = %resume_id,
+                            error = %e,
+                            "LaTeX invocation error"
+                        );
+                    }
+                    e
+                })?;
+
+            info!(
+                job_id = %job_id,
+                resume_id = %resume_id,
+                duration_ms = compiled.duration_ms,
+                pdf_bytes = compiled.pdf_bytes.len(),
+                stderr_bytes = compiled.stderr.len(),
+                actual_page_count = ?compiled.actual_page_count,
+                "pdflatex compilation succeeded"
+            );
+            // pdflatex writes warnings (e.g. overfull hbox, underfull hbox) to stderr
+            // even on success. Log them at DEBUG (not WARN — they are routine and not
+            // actionable unless the operator is actively tuning LaTeX spacing).
+            if !compiled.stderr.is_empty() {
+                tracing::debug!(
+                    job_id = %job_id,
+                    resume_id = %resume_id,
+                    stderr = %compiled.stderr,
+                    "pdflatex stderr (warnings)"
+                );
+            }
+
+            // Post-render overflow check (single-page only).
+            // If lopdf reports > 1 page AND we have retries left, drop the last
+            // sub-entry and compile again. This is a final safety net — the layout
+            // simulator should have caught this, but font-metric approximation means
+            // edge cases can slip through.
+            if target_pages > 0 {
+                if let Some(page_count) = compiled.actual_page_count {
+                    if page_count > target_pages && post_render_attempt < max_post_render_retries {
+                        post_render_attempt += 1;
+                        warn!(
+                            job_id = %job_id,
+                            resume_id = %resume_id,
+                            page_count = page_count,
+                            target_pages = target_pages,
+                            attempt = post_render_attempt,
+                            "PDF exceeds target page count — dropping last sub-entry and retrying"
+                        );
+                        drop_last_sub_entry(&mut params);
+                        continue; // Re-run build_latex_for_job + compile_latex
+                    } else if page_count > target_pages {
+                        warn!(
+                            job_id = %job_id,
+                            resume_id = %resume_id,
+                            page_count = page_count,
+                            attempts = post_render_attempt,
+                            "PDF still exceeds target after max retries — accepting as-is"
+                        );
+                    }
+                }
+            }
+
+            pdflatex_result = compiled;
+            latex_source = this_latex_source;
+            break;
         }
 
         // Step 6: Upload PDF bytes to S3 (key: pdfs/{resume_id}.pdf)
@@ -424,7 +500,7 @@ async fn process_render_job(
     }
     .await;
 
-    if let Err(e) = result {
+    if let Err(ref e) = result {
         error!(
             job_id = %job_id,
             resume_id = %resume_id,
@@ -433,6 +509,8 @@ async fn process_render_job(
         );
         let _ = update_job_status(db, job_id, "failed", Some(&e.to_string())).await;
     }
+
+    result
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -934,6 +1012,25 @@ pub fn enqueue_render_job_sync(redis: &redis::Client, job_id: Uuid) -> Result<()
     let mut conn = redis.get_connection()?;
     conn.lpush::<_, _, ()>(RENDER_QUEUE_KEY, job_id.to_string())?;
     Ok(())
+}
+
+/// Drops the last (lowest-scoring) sub-entry from the last non-empty section in `params`.
+///
+/// Called by the post-render overflow guard when pdflatex produces more pages than expected.
+/// Removes at most one sub-entry per call; the caller loops up to `max_post_render_retries`.
+///
+/// Sections are visited in reverse order so that appended sections (skills, etc.) are
+/// trimmed before core experience entries. Within a section, the last sub-entry (lowest
+/// relevance-ranked) is removed. Empty sections are cleaned up after removal.
+fn drop_last_sub_entry(params: &mut RenderParams) {
+    // Walk sections in reverse order; find the first one with sub-entries.
+    for section in params.sections.iter_mut().rev() {
+        if !section.sub_entries.is_empty() {
+            section.sub_entries.pop();
+            return; // Only one sub-entry per call
+        }
+    }
+    // If all sections are already empty, nothing to drop.
 }
 
 // ────────────────────────────────────────────────────────────────────────────

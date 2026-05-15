@@ -11,7 +11,9 @@ use crate::context::prompts::{
     CONTEXT_PARSE_PROMPT, CONTEXT_PARSE_SYSTEM,
 };
 use crate::context::scoring::compute_recency_score;
-use crate::context::validation::{validate_bullets, validate_impact, ImpactQuality};
+use crate::context::validation::{
+    validate_bullets, validate_impact, validate_required_fields, ImpactQuality,
+};
 use crate::context::versioning::{commit_context_update, get_current_entries, CommitParams};
 use crate::errors::AppError;
 use crate::llm_client::LlmClient;
@@ -100,6 +102,8 @@ pub async fn parse_and_validate(
         .and_then(|v| v.as_str())
         .unwrap_or("experience");
     let data = parsed.get("data").cloned().unwrap_or_default();
+    let field_quality = validate_required_fields(entry_type, &data);
+    let quality = ImpactQuality::aggregate(&[quality, field_quality]);
     let conflict_warnings = check_for_conflicts(&existing, entry_type, &data);
 
     tracing::info!(
@@ -161,7 +165,9 @@ pub async fn confirm_ingest(
     let tags = extract_tags(&data, &entry_type);
 
     // Phase 5.5: compute quality for storage
-    let quality = validate_bullets(&bullets);
+    let bullet_quality = validate_bullets(&bullets);
+    let field_quality = validate_required_fields(&entry_type, &data);
+    let quality = ImpactQuality::aggregate(&[bullet_quality, field_quality]);
     let quality_flags = quality.flags.clone();
 
     // Completeness before insert

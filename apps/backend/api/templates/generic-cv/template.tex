@@ -29,6 +29,9 @@
 \newcommand{\sectionspacing}{1pt}
 \newcommand{\itemspacing}{-2pt}
 \newcommand{\beforeheaderskip}{-15pt}
+% Server-injected spacing overrides (from LayoutPhysicsConfig via \renewcommand).
+% Placed here so \renewcommand can override the defaults declared above.
+{{LAYOUT_PARAMS}}
 
 % Font sizes
 \newcommand{\namefontsize}{\LARGE}
@@ -75,8 +78,10 @@
 }
 
 % Project entry: \project{Title}{Subtitle}{Duration}
+% NOTE: #2 (tech_stack / subtitle) is accepted for signature compatibility but NOT rendered.
+% The caller may pass an empty string or the tech stack; neither is shown in the heading.
 \newcommand{\project}[3]{
-  \textbf{#1 | #2} \hfill \textbf{#3}
+  \textbf{#1} \hfill \textbf{#3}
 }
 
 % Competition entry: \competition{Name}{Achievement}

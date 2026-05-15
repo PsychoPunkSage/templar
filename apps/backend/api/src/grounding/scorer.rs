@@ -69,6 +69,7 @@ pub async fn score_bullet(
             contribution_type = %source_entry.contribution_type,
             "Scope inflation detected — returning synthetic Fail without LLM call"
         );
+        crate::metrics::observe_grounding_score(0.0, "fail");
         return Ok(GroundingResult::scope_inflation_fail(
             bullet.text.clone(),
             bullet.source_entry_id,
@@ -120,6 +121,8 @@ pub async fn score_bullet(
         llm_response.interpolation_risk.clamp(0.0, 1.0),
     );
     let verdict = score.verdict();
+
+    crate::metrics::observe_grounding_score(score.composite, verdict.as_str());
 
     Ok(GroundingResult {
         bullet_text: bullet.text.clone(),

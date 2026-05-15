@@ -146,3 +146,45 @@ top_entries = 8
 #   0.8: Permissive — only filters near-identical suggestions.
 #   0.0: Disables Jaccard dedup (only name-containment check remains active).
 dedup_jaccard_threshold = 0.6
+
+[content_limits]
+
+# experience_limit: Maximum number of experience entries selected for a single-page resume.
+# Higher values risk page overflow; lower values may omit relevant history.
+# Overridden by: EXPERIENCE_LIMIT env var
+experience_limit = 8
+
+# project_limit: Maximum number of project entries selected for a single-page resume.
+# Overridden by: PROJECT_LIMIT env var
+project_limit = 4
+
+# other_limit: Maximum entries for all other section types (skills, publications, etc.)
+# per single-page resume.
+# Overridden by: OTHER_LIMIT env var
+other_limit = 3
+
+# cv_experience_limit: Maximum experience entries per page in CV (multi-page) mode.
+# Overridden by: CV_EXPERIENCE_LIMIT env var
+cv_experience_limit = 12
+
+# cv_project_limit: Maximum project entries per page in CV (multi-page) mode.
+# Overridden by: CV_PROJECT_LIMIT env var
+cv_project_limit = 6
+
+# cv_other_limit: Maximum other section entries per page in CV mode.
+# Overridden by: CV_OTHER_LIMIT env var
+cv_other_limit = 4
+
+[layout]
+
+# max_fill_passes: Maximum page fill remediation passes (expand/compress/remove)
+# before flagging the resume for human review. After this many passes, the output
+# is returned as-is with page_fill_flagged = true.
+# Overridden by: MAX_FILL_PASSES env var
+max_fill_passes = 3
+
+# max_post_render_retries: Maximum number of times the render worker will drop the
+# lowest-scoring sub-entry and re-render when the PDF exceeds the target page count.
+# Each retry calls pdflatex again (expensive); keep this low.
+# Overridden by: MAX_POST_RENDER_RETRIES env var
+max_post_render_retries = 2

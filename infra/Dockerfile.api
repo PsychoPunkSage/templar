@@ -12,18 +12,25 @@ RUN apt-get update && apt-get install -y \
 
 # Cache dependencies
 COPY apps/backend/Cargo.toml ./
+COPY apps/backend/Cargo.lock ./
 COPY apps/backend/api/Cargo.toml api/
-RUN mkdir -p api/src && echo "fn main() {}" > api/src/main.rs
+COPY apps/backend/analytics/Cargo.toml analytics/
+COPY apps/backend/packages/events-rs/Cargo.toml packages/events-rs/
+RUN mkdir -p api/src && echo "fn main() {}" > api/src/main.rs \
+ && mkdir -p analytics/src && echo "fn main() {}" > analytics/src/main.rs \
+ && mkdir -p packages/events-rs/src && echo "" > packages/events-rs/src/lib.rs
 # [Below] Builds dummy binary + All dependencies ::> If Only src code changes -> Docker will not rebuild the depn
 RUN cargo build --release --bin api
-RUN rm -rf api/src
+RUN rm -rf api/src analytics/src packages/events-rs/src
 
 # Build actual source
 COPY apps/backend/api/src api/src
 COPY apps/backend/api/.sqlx api/.sqlx
+COPY apps/backend/analytics/src analytics/src
+COPY apps/backend/packages/events-rs/src packages/events-rs/src
 ENV SQLX_OFFLINE=true
-# [Below] touch ::> changes timestamp -> build is forced
-RUN touch apps/api/src/main.rs && cargo build --release --bin api
+# [Below] touch ::> changes timestamp -> build is forced (path is relative to WORKDIR /app)
+RUN touch api/src/main.rs && cargo build --release --bin api
 
 # Stage 2: Runtime
 # TeX Live, fonts, and pdflatex warmup are pre-baked into the base image.

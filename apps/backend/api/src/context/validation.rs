@@ -157,6 +157,60 @@ pub fn validate_impact(text: &str) -> ImpactQuality {
     }
 }
 
+/// Checks that the principal identifying field is present for the given entry_type.
+///
+/// Non-blocking — returns score 0.0 + flag if the field is missing so the caller
+/// can surface it as an improvement hint. Never blocks the commit.
+pub fn validate_required_fields(entry_type: &str, data: &serde_json::Value) -> ImpactQuality {
+    let (required_fields, flag, suggestion): (&[&str], &str, &str) = match entry_type {
+        "experience" => (
+            &["company", "role"],
+            "missing_company_or_role",
+            "This experience entry is missing a company name and role. \
+             Add at least one so it renders with a heading on your resume.",
+        ),
+        "project" | "open_source" => (
+            &["name", "project_name"],
+            "missing_project_name",
+            "This project entry is missing a name. \
+             Add a project name so it renders correctly on your resume.",
+        ),
+        "education" => (
+            &["institution"],
+            "missing_institution",
+            "This education entry is missing an institution name.",
+        ),
+        _ => {
+            return ImpactQuality {
+                quality_score: 1.0,
+                flags: vec![],
+                suggestions: vec![],
+            }
+        }
+    };
+
+    let has_any = required_fields.iter().any(|&f| {
+        data.get(f)
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    });
+
+    if has_any {
+        ImpactQuality {
+            quality_score: 1.0,
+            flags: vec![],
+            suggestions: vec![],
+        }
+    } else {
+        ImpactQuality {
+            quality_score: 0.0,
+            flags: vec![flag.to_string()],
+            suggestions: vec![suggestion.to_string()],
+        }
+    }
+}
+
 /// Assesses quality across a batch of bullets, returning an aggregate.
 pub fn validate_bullets(bullets: &[String]) -> ImpactQuality {
     let qualities: Vec<_> = bullets.iter().map(|b| validate_impact(b)).collect();

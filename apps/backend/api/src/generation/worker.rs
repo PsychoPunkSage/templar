@@ -111,6 +111,18 @@ async fn worker_loop(
                 Ok(job_id) => {
                     info!("Generation worker: dequeued job {}", job_id);
 
+                    // Record queue depth after dequeue (best-effort — never block on error)
+                    if let Ok(mut depth_conn) = redis.get_multiplexed_async_connection().await {
+                        if let Ok(depth) = redis::AsyncCommands::llen::<_, i64>(
+                            &mut depth_conn,
+                            GENERATION_QUEUE_KEY,
+                        )
+                        .await
+                        {
+                            crate::metrics::set_generation_queue_depth(depth);
+                        }
+                    }
+
                     let (db2, llm2, fs2, pc2, cfg2, redis2) = (
                         db.clone(),
                         llm.clone(),
@@ -122,8 +134,19 @@ async fn worker_loop(
 
                     tokio::spawn(async move {
                         let _permit = permit; // holds the slot for this job's lifetime
-                        process_generation_job(job_id, &db2, &llm2, fs2, &pc2, &cfg2, &redis2)
-                            .await;
+                        let start = std::time::Instant::now();
+                        let label = match process_generation_job(
+                            job_id, &db2, &llm2, fs2, &pc2, &cfg2, &redis2,
+                        )
+                        .await
+                        {
+                            Ok(()) => "success",
+                            Err(_) => "failed",
+                        };
+                        crate::metrics::observe_generation_duration(
+                            start.elapsed().as_secs_f64(),
+                            label,
+                        );
                     });
                 }
                 Err(e) => {
@@ -165,7 +188,7 @@ async fn process_generation_job(
     page_config: &PageConfig,
     config: &Config,
     redis: &redis::Client,
-) {
+) -> Result<(), AppError> {
     info!(job_id = %job_id, "Generation job dequeued — starting processing");
 
     // Step 1: Mark as processing
@@ -193,7 +216,7 @@ async fn process_generation_job(
                 Some("Generation job row not found in database"),
             )
             .await;
-            return;
+            return Err(AppError::NotFound(format!("generation job {job_id}")));
         }
         Err(e) => {
             error!(job_id = %job_id, error = %e, "DB error fetching generation job — marking failed");
@@ -205,7 +228,7 @@ async fn process_generation_job(
                 Some(&format!("DB error fetching job: {e}")),
             )
             .await;
-            return;
+            return Err(AppError::Database(e));
         }
     };
 
@@ -222,7 +245,9 @@ async fn process_generation_job(
                 Some(&format!("Failed to deserialize request: {e}")),
             )
             .await;
-            return;
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Deserialize GenerateRequest: {e}"
+            )));
         }
     };
 
@@ -257,7 +282,9 @@ async fn process_generation_job(
                         Some(&format!("Failed to serialize result: {e}")),
                     )
                     .await;
-                    return;
+                    return Err(AppError::Internal(anyhow::anyhow!(
+                        "Serialize GenerateResponse: {e}"
+                    )));
                 }
             };
 
@@ -337,8 +364,11 @@ async fn process_generation_job(
                 Some(&format!("Generation failed: {e}")),
             )
             .await;
+            return Err(e);
         }
     }
+
+    Ok(())
 }
 
 // ────────────────────────────────────────────────────────────────────────────

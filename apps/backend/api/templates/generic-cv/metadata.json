@@ -24,5 +24,13 @@
     "margin_top_in": 0.5,
     "margin_bottom_in": 0.5,
     "paper": "a4"
+  },
+  "layout_physics": {
+    "page_fixed_overhead_lines": 3.5,
+    "section_header_lines": 1.5,
+    "section_before_spacing_pt": 1.0,
+    "section_after_spacing_pt": 4.0,
+    "item_spacing_pt": -2.0,
+    "before_header_skip_pt": -15.0
   }
 }
