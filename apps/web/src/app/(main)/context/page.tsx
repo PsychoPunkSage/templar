@@ -9,6 +9,7 @@
 // Mobile: normal stacked page scroll (no dual-scroll UX on small screens).
 
 import { useState } from 'react'
+import { ShaderBackground } from '@/components/ui/shader-background'
 import { ContextPanel } from '@/components/editor/ContextPanel'
 import ContextLibrary from '@/components/context/ContextLibrary'
 import { useResumeStore } from '@/store/resumeStore'
@@ -22,7 +23,8 @@ export default function ContextPage() {
   return (
     // lg+: locked to viewport height (53px = global nav, matches layout.tsx)
     // mobile: normal flex-col, page-level scroll
-    <div className="flex flex-col lg:h-[calc(100vh-53px)]">
+    <div className="relative flex flex-col lg:h-[calc(100vh-69px)]">
+      <ShaderBackground className="fixed inset-0 -z-10" intensity={0.15} />
 
       {/* Page header — always visible, never scrolls */}
       <div className="shrink-0 px-6 pt-8 pb-4 max-w-6xl mx-auto w-full">

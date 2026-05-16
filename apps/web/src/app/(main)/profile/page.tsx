@@ -1,8 +1,11 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
+import { ShaderBackground } from "@/components/ui/shader-background";
 import { useProfileStore } from "@/store/profileStore";
 import { Button } from "@/components/ui/button";
+import { HoverButton } from "@/components/ui/hover-button";
+import { Md3Button } from "@/components/ui/material-design-3-button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -101,18 +104,24 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className="max-w-xl mx-auto py-10 px-4">
-      <div className="flex items-center gap-2 mb-1">
-        <h1 className="text-2xl font-bold">Profile</h1>
-        {isDirty && !isSaving && (
-          <span className="text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full">
-            Unsaved changes
-          </span>
-        )}
+    <div className="relative max-w-xl mx-auto py-10 px-4">
+      <ShaderBackground className="fixed inset-0 -z-10" intensity={0.15} />
+      <div className="mb-6">
+        <p className="text-xs font-mono tracking-[0.2em] uppercase text-primary mb-1">
+          — Identity
+        </p>
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight">Profile</h1>
+          {isDirty && !isSaving && (
+            <span className="text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full">
+              Unsaved changes
+            </span>
+          )}
+        </div>
+        <p className="text-sm text-muted-foreground mt-1">
+          Your contact information and links used in resume headers.
+        </p>
       </div>
-      <p className="text-sm text-muted-foreground mb-6">
-        Your contact information and links used in resume headers.
-      </p>
 
       {error && (
         <div className="mb-4 px-3 py-2 bg-destructive/10 text-destructive text-sm rounded-md flex items-center justify-between">
@@ -213,33 +222,33 @@ export default function ProfilePage() {
                 placeholder="Alias — shown in header (e.g. PsychoPunkSage)"
               />
               <div className="flex gap-2">
-                <Button size="sm" onClick={handleAddLink} disabled={!newLinkUrl.trim()}>
+                <HoverButton onClick={handleAddLink} disabled={!newLinkUrl.trim()}>
                   Add
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => setShowAddLink(false)}>
+                </HoverButton>
+                <Md3Button size="sm" variant="text" onClick={() => setShowAddLink(false)}>
                   Cancel
-                </Button>
+                </Md3Button>
               </div>
             </div>
           ) : (
-            <Button
-              variant="outline"
+            <Md3Button
+              variant="outlined"
               size="sm"
               className="self-start"
               onClick={() => setShowAddLink(true)}
             >
-              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              <Plus className="h-3.5 w-3.5" />
               Add Link
-            </Button>
+            </Md3Button>
           )}
         </div>
 
         <Separator />
 
-        <Button
+        <HoverButton
           onClick={handleSave}
           disabled={isSaving || !isDirty || justSaved}
-          className={`w-full transition-colors ${justSaved ? "bg-green-600 hover:bg-green-600 text-white" : ""}`}
+          className={`w-full justify-center ${justSaved ? "!bg-emerald-600" : ""}`}
         >
           {isSaving ? (
             "Saving..."
@@ -250,7 +259,7 @@ export default function ProfilePage() {
           ) : (
             "No unsaved changes"
           )}
-        </Button>
+        </HoverButton>
       </Card>
     </div>
   );
