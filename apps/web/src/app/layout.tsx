@@ -1,13 +1,17 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, IBM_Plex_Mono } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import { ClerkProvider } from "@clerk/nextjs";
-import { Header } from "@/components/Header";
 import { AuthSync } from "@/components/AuthSync";
 import { PHProvider } from "@/components/PHProvider";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"] });
+const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
+const ibmPlexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-mono",
+});
 
 export const metadata: Metadata = {
   title: "Templar — AI Resume Engine",
@@ -23,17 +27,11 @@ export default function RootLayout({
   return (
     <ClerkProvider>
       <html lang="en" suppressHydrationWarning>
-        <body className={inter.className}>
+        <body className={`${inter.variable} ${ibmPlexMono.variable} font-sans`}>
           <PHProvider>
-            <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+            <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
               <AuthSync />
-              {/* Header is sticky and rendered globally — individual pages do NOT
-                  render their own header anymore. The editor page still has an
-                  action bar (project name + Generate button), but not the nav. */}
-              <Header />
-              <main className="flex flex-col min-h-[calc(100vh-53px)]">
-                {children}
-              </main>
+              {children}
             </ThemeProvider>
           </PHProvider>
         </body>
