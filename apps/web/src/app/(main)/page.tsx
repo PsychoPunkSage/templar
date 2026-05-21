@@ -2,15 +2,15 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Plus, Trash2, FileText, Clock, Shield, Cpu, Layers } from "lucide-react";
+import { Plus, Shield, Cpu, Layers } from "lucide-react";
 import { useProjectStore } from "@/store/projectStore";
 import { useAuthStore } from "@/store/authStore";
 import { MVP_USER_ID } from "@/store/resumeStore";
 import { ShaderBackground } from "@/components/ui/shader-background";
 import { HoverButton } from "@/components/ui/hover-button";
 import { Md3Button } from "@/components/ui/material-design-3-button";
+import { ProjectCard } from "@/components/ui/project-card";
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", {
@@ -73,17 +73,20 @@ function ProjectSkeleton() {
       {[0, 1, 2].map((i) => (
         <div
           key={i}
-          className="rounded-xl border border-border p-5 animate-pulse bg-card"
+          className="rounded-2xl border border-border overflow-hidden animate-pulse bg-card"
           style={{ animationDelay: `${i * 120}ms` }}
         >
-          <div className="flex items-start justify-between gap-3 mb-3">
-            <div className="flex-1 space-y-2">
-              <div className="h-4 bg-muted rounded w-3/4" />
-              <div className="h-3 bg-muted rounded w-1/2" />
+          {/* Preview area */}
+          <div className="h-48 bg-muted/30" />
+          {/* Content area */}
+          <div className="p-4 space-y-3">
+            <div className="h-4 bg-muted rounded w-3/4" />
+            <div className="h-3 bg-muted rounded w-1/3" />
+            <div className="flex justify-between">
+              <div className="h-3 bg-muted rounded w-1/4" />
+              <div className="h-3 bg-muted rounded w-1/6" />
             </div>
-            <div className="h-5 w-16 bg-muted rounded-full shrink-0" />
           </div>
-          <div className="h-3 bg-muted rounded w-1/3" />
         </div>
       ))}
     </div>
@@ -93,7 +96,6 @@ function ProjectSkeleton() {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function HomePage() {
-  const router = useRouter();
   const userId = useAuthStore((s) => s.internalUserId) ?? MVP_USER_ID;
   const { projects, isLoadingProjects, loadProjects, deleteProject } = useProjectStore();
 
@@ -248,54 +250,12 @@ export default function HomePage() {
               className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
             >
               {projects.map((project) => (
-                <motion.div
+                <ProjectCard
                   key={project.id}
+                  project={project}
+                  onDelete={deleteProject}
                   variants={cardVariant}
-                  whileHover={{ y: -4, scale: 1.015 }}
-                  transition={{ type: "spring", stiffness: 380, damping: 28 }}
-                  onClick={() => router.push(`/editor/${project.id}`)}
-                  className="group relative rounded-xl border border-border/60 p-5 bg-black/40 backdrop-blur-sm hover:border-primary/40 hover:bg-black/50 cursor-pointer"
-                >
-                  <div className="flex items-start justify-between gap-3 mb-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                        <h2 className="font-medium text-sm truncate group-hover:text-primary transition-colors duration-200">
-                          {project.name}
-                        </h2>
-                      </div>
-                      <p className="text-xs text-muted-foreground pl-5">{project.template_id}</p>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (window.confirm(`Delete "${project.name}"? This cannot be undone.`)) {
-                          deleteProject(project.id);
-                        }
-                      }}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-muted-foreground hover:text-destructive"
-                      aria-label="Delete project"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <span
-                      className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
-                        project.current_resume_id
-                          ? "bg-emerald-500/10 text-emerald-500 dark:bg-emerald-400/10 dark:text-emerald-400"
-                          : "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {project.current_resume_id ? "Generated" : "Draft"}
-                    </span>
-                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                      <Clock className="h-3 w-3" />
-                      {formatDate(project.updated_at)}
-                    </span>
-                  </div>
-                </motion.div>
+                />
               ))}
             </motion.div>
           )}
