@@ -5,9 +5,11 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { ShaderBackground } from "@/components/ui/shader-background";
 import { useRouter } from "next/navigation";
 import { useProjectStore } from "@/store/projectStore";
 import { Button } from "@/components/ui/button";
+import { HoverButton } from "@/components/ui/hover-button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { TemplateThumbnailPdf } from "@/components/pdf/TemplateThumbnailPdf";
@@ -144,9 +146,9 @@ function TemplatePreviewModal({
           </div>
 
           <div className="mt-auto">
-            <Button onClick={onSelect} className="w-full">
+            <HoverButton onClick={onSelect} className="w-full justify-center">
               Use this template
-            </Button>
+            </HoverButton>
           </div>
         </div>
       </div>
@@ -196,8 +198,12 @@ export default function NewProjectPage() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-10">
+    <div className="relative max-w-3xl mx-auto px-6 py-10">
+      <ShaderBackground className="fixed inset-0 -z-10" intensity={0.15} />
       <div className="mb-8">
+        <p className="text-xs font-mono tracking-[0.2em] uppercase text-primary mb-1">
+          — Create
+        </p>
         <h1 className="text-2xl font-bold tracking-tight">New Project</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Choose a template and name your project.
@@ -315,12 +321,13 @@ export default function NewProjectPage() {
           <p className="text-xs text-destructive">{error}</p>
         )}
 
-        <Button
+        <HoverButton
           onClick={handleCreate}
           disabled={isCreating || !selectedTemplateId || !projectName.trim()}
+          className="w-full justify-center"
         >
           {isCreating ? "Creating..." : "Create Project"}
-        </Button>
+        </HoverButton>
       </div>
 
       {/* Full-screen template preview modal */}

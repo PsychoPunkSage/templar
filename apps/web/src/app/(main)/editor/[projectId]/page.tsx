@@ -33,6 +33,8 @@ import { PdfPreview } from "@/components/pdf/PdfPreview";
 import { StaticPdfPreview } from "@/components/pdf/StaticPdfPreview";
 import { CoverLetterPane } from "@/components/editor/CoverLetterPane";
 import { Button } from "@/components/ui/button";
+import { HoverButton } from "@/components/ui/hover-button";
+import { Md3Button } from "@/components/ui/material-design-3-button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tabs,
@@ -260,22 +262,22 @@ export default function ProjectEditorPage() {
   return (
     <div className="flex flex-col h-[calc(100vh-53px)] bg-background">
       {/* Action bar — project context + two-button workflow */}
-      <div className="flex items-center justify-between px-6 py-2.5 border-b bg-background/90 backdrop-blur-sm shrink-0">
+      <div className="flex items-center justify-between px-6 py-2 border-b border-border/60 bg-background/95 backdrop-blur-md shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           {/* Back to projects */}
           <button
             onClick={() => router.push("/")}
-            className="text-muted-foreground hover:text-foreground transition-colors text-sm"
+            className="text-muted-foreground hover:text-foreground transition-colors text-xs font-mono tracking-wide"
             aria-label="Back to projects"
           >
             Projects
           </button>
-          <span className="text-muted-foreground">/</span>
+          <span className="text-muted-foreground/50 text-xs">/</span>
           <span className="font-medium text-sm truncate">
             {currentProject?.name ?? "Loading..."}
           </span>
           {currentProject && (
-            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+            <span className="shrink-0 rounded-full bg-primary/10 text-primary px-2 py-0.5 text-[10px] font-mono font-medium">
               {currentProject.template_id}
             </span>
           )}
@@ -302,17 +304,17 @@ export default function ProjectEditorPage() {
               {bulletCount} bullets
             </span>
           )}
-          <Button
-            variant="outline"
+          <Md3Button
+            variant="outlined"
             size="sm"
             onClick={() => analyzeFit(false)}
             disabled={fitScoreLoading || isGenerating || !jdText.trim()}
           >
             {analyzeFitLabel}
-          </Button>
+          </Md3Button>
           {hasBullets && (
-            <Button
-              variant="outline"
+            <Md3Button
+              variant="tonal"
               size="sm"
               onClick={() => rerender()}
               disabled={
@@ -324,42 +326,40 @@ export default function ProjectEditorPage() {
               {renderStatus === "queued" || renderStatus === "rendering"
                 ? "Rendering..."
                 : "Render PDF"}
-            </Button>
+            </Md3Button>
           )}
           {renderStatus === "done" && renderJobId && (
-            <Button
+            <Md3Button
               size="sm"
-              variant="outline"
+              variant="outlined"
               onClick={handleDownload}
               disabled={isDownloading}
-              className="gap-1.5"
             >
               {isDownloading
                 ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 : <Download className="h-3.5 w-3.5" />}
               {isDownloading ? "Downloading..." : "Download PDF"}
-            </Button>
+            </Md3Button>
           )}
           {renderStatus === "done" && (
-            <Button
+            <Md3Button
               size="sm"
-              variant="outline"
+              variant="outlined"
               onClick={() => router.push(`/interview/${projectId}`)}
-              className="gap-1.5"
               title="Prepare for interviews using your resume"
             >
               <Brain className="h-3.5 w-3.5" />
               Prep Interview
-            </Button>
+            </Md3Button>
           )}
-          <Button
-            size="sm"
+          <HoverButton
             onClick={() => generate(projectId, selectedPersonaId)}
             disabled={isGenerating || fitScoreLoading || !jdText.trim()}
+            className="text-sm py-2 px-4"
           >
-            {isGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+            {isGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {generateLabel}
-          </Button>
+          </HoverButton>
         </div>
       </div>
 

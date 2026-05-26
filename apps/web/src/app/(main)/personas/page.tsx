@@ -1,8 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
+import { ShaderBackground } from "@/components/ui/shader-background";
 import { usePersonaStore } from "@/store/personaStore";
 import { Button } from "@/components/ui/button";
+import { HoverButton } from "@/components/ui/hover-button";
+import { Md3Button } from "@/components/ui/material-design-3-button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -46,7 +50,19 @@ const TONE_OPTIONS = [
   { value: "product", label: "Product" },
 ];
 
-// ── Tag chip input ─────────────────────────────────────────────────────────
+// ── Animation variants ──────────────────────────────────────────────────────
+
+const staggerContainer = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.08 } },
+};
+
+const cardVariant = {
+  hidden: { opacity: 0, y: 20 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" as const } },
+};
+
+// ── Tag chip input ──────────────────────────────────────────────────────────
 
 interface TagChipsProps {
   tags: string[];
@@ -95,7 +111,7 @@ function TagChips({ tags, onAdd, onRemove, placeholder, chipClass }: TagChipsPro
   );
 }
 
-// ── Persona form ───────────────────────────────────────────────────────────
+// ── Persona form ────────────────────────────────────────────────────────────
 
 interface PersonaFormProps {
   initialName?: string;
@@ -183,18 +199,18 @@ function PersonaForm({
       </div>
 
       <div className="flex items-center gap-2 pt-1">
-        <Button size="sm" onClick={handleSave} disabled={!name.trim() || isSaving}>
+        <HoverButton onClick={handleSave} disabled={!name.trim() || isSaving}>
           {isSaving ? "Saving…" : "Save"}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={onCancel} disabled={isSaving}>
+        </HoverButton>
+        <Md3Button size="sm" variant="text" onClick={onCancel} disabled={isSaving}>
           Cancel
-        </Button>
+        </Md3Button>
       </div>
     </div>
   );
 }
 
-// ── Persona card ───────────────────────────────────────────────────────────
+// ── Persona card ────────────────────────────────────────────────────────────
 
 interface PersonaCardProps {
   persona: Persona;
@@ -222,107 +238,115 @@ function PersonaCard({ persona, onEdit, onDelete, isSaving }: PersonaCardProps) 
     setIsEditing(false);
   }
 
-  const toneLabel = TONE_OPTIONS.find((o) => o.value === (persona.tone_preference ?? ""))?.label;
+  const toneLabel = TONE_OPTIONS.find(
+    (o) => o.value === (persona.tone_preference ?? "")
+  )?.label;
 
   return (
-    <Card className="border border-border">
-      <CardContent className="p-4 flex flex-col gap-3">
-        {isEditing ? (
-          <PersonaForm
-            initialName={persona.name}
-            initialEmphasized={persona.emphasized_tags}
-            initialSuppressed={persona.suppressed_tags}
-            initialTone={persona.tone_preference ?? ""}
-            onSave={handleSave}
-            onCancel={() => setIsEditing(false)}
-            isSaving={isSaving}
-          />
-        ) : (
-          <>
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-medium text-sm truncate">{persona.name}</span>
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  onClick={() => setIsEditing(true)}
-                  className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                  title="Edit"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </button>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <button
-                      className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
-                      title="Delete"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete persona?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        &ldquo;{persona.name}&rdquo; will be permanently removed.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction
-                        onClick={() => onDelete(persona.id)}
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+    <motion.div
+      variants={cardVariant}
+      whileHover={{ y: -4, scale: 1.015 }}
+      transition={{ type: "spring", stiffness: 380, damping: 28 }}
+    >
+      <Card className="border border-border h-full">
+        <CardContent className="p-4 flex flex-col gap-3">
+          {isEditing ? (
+            <PersonaForm
+              initialName={persona.name}
+              initialEmphasized={persona.emphasized_tags}
+              initialSuppressed={persona.suppressed_tags}
+              initialTone={persona.tone_preference ?? ""}
+              onSave={handleSave}
+              onCancel={() => setIsEditing(false)}
+              isSaving={isSaving}
+            />
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-sm truncate">{persona.name}</span>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() => setIsEditing(true)}
+                    className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                    title="Edit"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <button
+                        className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                        title="Delete"
                       >
-                        Delete
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Delete persona?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          &ldquo;{persona.name}&rdquo; will be permanently removed.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => onDelete(persona.id)}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          Delete
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
               </div>
-            </div>
 
-            {persona.emphasized_tags.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {persona.emphasized_tags.map((t) => (
-                  <span
-                    key={t}
-                    className="rounded-full bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:text-indigo-300"
-                  >
-                    {t}
-                  </span>
-                ))}
-              </div>
-            )}
-            {persona.suppressed_tags.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {persona.suppressed_tags.map((t) => (
-                  <span
-                    key={t}
-                    className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground line-through"
-                  >
-                    {t}
-                  </span>
-                ))}
-              </div>
-            )}
+              {persona.emphasized_tags.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {persona.emphasized_tags.map((t) => (
+                    <span
+                      key={t}
+                      className="rounded-full bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:text-indigo-300"
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {persona.suppressed_tags.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {persona.suppressed_tags.map((t) => (
+                    <span
+                      key={t}
+                      className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground line-through"
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              )}
 
-            {persona.tone_preference && (
-              <span className="self-start rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
-                {toneLabel}
-              </span>
-            )}
+              {persona.tone_preference && (
+                <span className="self-start rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                  {toneLabel}
+                </span>
+              )}
 
-            {persona.emphasized_tags.length === 0 && persona.suppressed_tags.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                No tags set — edit to add boosts or suppressions.
-              </p>
-            )}
-          </>
-        )}
-      </CardContent>
-    </Card>
+              {persona.emphasized_tags.length === 0 && persona.suppressed_tags.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  No tags set — edit to add boosts or suppressions.
+                </p>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </motion.div>
   );
 }
 
-// ── Suggestion mini-card ───────────────────────────────────────────────────
+// ── Suggestion mini-card ────────────────────────────────────────────────────
 
 interface SuggestionMiniCardProps {
   suggestion: PersonaSuggestion;
@@ -333,9 +357,14 @@ interface SuggestionMiniCardProps {
 
 function SuggestionMiniCard({ suggestion, isAdded, onAdd, onDismiss }: SuggestionMiniCardProps) {
   return (
-    <div className={`relative rounded-lg border p-3 flex flex-col gap-2 bg-background transition-opacity ${isAdded ? "opacity-40" : ""}`}>
+    <motion.div
+      variants={cardVariant}
+      whileHover={{ y: -3 }}
+      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+      className={`relative rounded-xl border p-3 flex flex-col gap-2 bg-background transition-opacity ${isAdded ? "opacity-40" : ""}`}
+    >
       {isAdded && (
-        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/60 backdrop-blur-[1px] z-10 pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-background/60 backdrop-blur-[1px] z-10 pointer-events-none">
           <span className="flex items-center gap-1 text-xs font-medium text-green-600 dark:text-green-400">
             <Check className="h-3.5 w-3.5" />
             Added
@@ -381,11 +410,11 @@ function SuggestionMiniCard({ suggestion, isAdded, onAdd, onDismiss }: Suggestio
       <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
         {suggestion.reasoning}
       </p>
-    </div>
+    </motion.div>
   );
 }
 
-// ── Page ───────────────────────────────────────────────────────────────────
+// ── Page ────────────────────────────────────────────────────────────────────
 
 export default function PersonasPage() {
   const {
@@ -401,22 +430,14 @@ export default function PersonasPage() {
   const userId = useAuthStore((s) => s.internalUserId) ?? MVP_USER_ID;
   const isAuthReady = useAuthStore((s) => s.isAuthReady);
 
-  // pageReady gates the skeleton: false until BOTH loadPersonas AND prefetchSuggestions
-  // have settled for the first time. Initialized to true when navigating back to this
-  // page with the store already warm (stale-while-revalidate — no skeleton on tab switch).
   const [pageReady, setPageReady] = useState(() => personas.length > 0);
   const [showCreate, setShowCreate] = useState(false);
   const [suggestions, setSuggestions] = useState<PersonaSuggestion[]>([]);
   const [suggestionsOpen, setSuggestionsOpen] = useState(true);
   const [prefillData, setPrefillData] = useState<PersonaSuggestion | null>(null);
-  // Tracks which suggestion names the user has accepted (optimistic visual state)
   const [addedNames, setAddedNames] = useState<Set<string>>(new Set());
-  // Forces re-render when a per-card dismiss fires (dismissed Set is module-level, not React state)
   const [dismissRevision, setDismissRevision] = useState(0);
 
-  // On mount: wait for BOTH persona list and suggestions to settle before showing content.
-  // This prevents the half-loaded state where personas appear without suggestions (or vice versa).
-  // On tab-switch the store is warm → pageReady starts true → no skeleton, grid shows immediately.
   useEffect(() => {
     if (!isAuthReady) return;
     Promise.all([
@@ -426,7 +447,6 @@ export default function PersonasPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthReady]);
 
-  // Pre-populate addedNames when either list resolves (handles the load-order race).
   useEffect(() => {
     if (suggestions.length === 0 || personas.length === 0) return;
     const existingNames = new Set(personas.map((p) => p.name.toLowerCase()));
@@ -439,20 +459,22 @@ export default function PersonasPage() {
     );
   }, [suggestions, personas]);
 
-  // visibleSuggestions excludes accepted + dismissed entries
   const visibleSuggestions = suggestions.filter(
     (s) => !addedNames.has(s.name) && !isDismissed(s.name),
   );
 
+  // dismissRevision is intentionally used to force re-render; eslint can be suppressed
+  void dismissRevision;
+
   function handleAddSuggestion(s: PersonaSuggestion) {
-    setAddedNames((prev) => new Set([...prev, s.name])); // optimistic
+    setAddedNames((prev) => new Set([...prev, s.name]));
     setPrefillData(s);
     setShowCreate(true);
   }
 
   function handleDismissSuggestion(name: string) {
     dismissSuggestion(name);
-    setDismissRevision((v) => v + 1); // force re-render
+    setDismissRevision((v) => v + 1);
   }
 
   function handleDismissAll() {
@@ -469,7 +491,7 @@ export default function PersonasPage() {
     await createPersona(name, emphasized, suppressed, tone || undefined);
     setShowCreate(false);
     setPrefillData(null);
-    invalidateCache(); // next page visit will re-check hashes
+    invalidateCache();
   }
 
   async function handleEdit(
@@ -488,26 +510,30 @@ export default function PersonasPage() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-8 flex flex-col gap-6">
+    <div className="relative max-w-4xl mx-auto px-6 py-8 flex flex-col gap-6">
+      <ShaderBackground className="fixed inset-0 -z-10" intensity={0.18} />
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Personas</h1>
+          <p className="text-xs font-mono tracking-[0.2em] uppercase text-primary mb-1">
+            — Career Tracks
+          </p>
+          <h1 className="text-xl font-semibold tracking-tight">Personas</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Bias content selection for different career tracks without changing your context.
           </p>
         </div>
         {!showCreate && (
-          <Button size="sm" onClick={() => setShowCreate(true)}>
-            <Plus className="h-4 w-4 mr-1.5" />
-            New persona
-          </Button>
+          <HoverButton onClick={() => setShowCreate(true)}>
+            <Plus className="h-4 w-4" />
+            New Persona
+          </HoverButton>
         )}
       </div>
 
       {/* Error banner */}
       {error && (
-        <div className="px-3 py-2 bg-destructive/10 text-destructive text-sm rounded-md flex items-center justify-between">
+        <div className="px-3 py-2 bg-destructive/10 text-destructive text-sm rounded-lg flex items-center justify-between">
           <span>{error}</span>
           <button onClick={clearError}>
             <X className="h-4 w-4" />
@@ -517,31 +543,37 @@ export default function PersonasPage() {
 
       {/* Inline create form */}
       {showCreate && (
-        <Card className="border border-indigo-200 dark:border-indigo-800">
-          <CardContent className="p-4">
-            <p className="text-sm font-medium mb-3">
-              {prefillData ? `Add persona: ${prefillData.name}` : "New persona"}
-            </p>
-            <PersonaForm
-              key={prefillData ? `prefill-${prefillData.name}` : "blank"}
-              initialName={prefillData?.name ?? ""}
-              initialEmphasized={prefillData?.emphasized_tags ?? []}
-              initialSuppressed={prefillData?.suppressed_tags ?? []}
-              initialTone={prefillData?.tone_preference ?? ""}
-              onSave={handleCreate}
-              onCancel={() => {
-                setShowCreate(false);
-                setPrefillData(null);
-              }}
-              isSaving={isSaving}
-            />
-          </CardContent>
-        </Card>
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+        >
+          <Card className="border border-indigo-200 dark:border-indigo-800">
+            <CardContent className="p-4">
+              <p className="text-sm font-medium mb-3">
+                {prefillData ? `Add persona: ${prefillData.name}` : "New persona"}
+              </p>
+              <PersonaForm
+                key={prefillData ? `prefill-${prefillData.name}` : "blank"}
+                initialName={prefillData?.name ?? ""}
+                initialEmphasized={prefillData?.emphasized_tags ?? []}
+                initialSuppressed={prefillData?.suppressed_tags ?? []}
+                initialTone={prefillData?.tone_preference ?? ""}
+                onSave={handleCreate}
+                onCancel={() => {
+                  setShowCreate(false);
+                  setPrefillData(null);
+                }}
+                isSaving={isSaving}
+              />
+            </CardContent>
+          </Card>
+        </motion.div>
       )}
 
-      {/* Suggestion strip — shown when the user already has personas + there are visible suggestions */}
+      {/* Suggestion strip */}
       {personas.length > 0 && visibleSuggestions.length > 0 && (
-        <div className="rounded-lg border bg-yellow-50 dark:bg-yellow-950/20 border-yellow-200 dark:border-yellow-800">
+        <div className="rounded-xl border bg-yellow-50 dark:bg-yellow-950/20 border-yellow-200 dark:border-yellow-800">
           <div className="flex items-center justify-between px-4 py-2.5">
             <button
               className="flex items-center gap-2 text-sm font-medium text-yellow-800 dark:text-yellow-200"
@@ -549,11 +581,7 @@ export default function PersonasPage() {
             >
               <Lightbulb className="h-4 w-4" />
               Suggested personas based on your context
-              {suggestionsOpen ? (
-                <ChevronUp className="h-4 w-4" />
-              ) : (
-                <ChevronDown className="h-4 w-4" />
-              )}
+              {suggestionsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </button>
             <button
               onClick={handleDismissAll}
@@ -564,7 +592,12 @@ export default function PersonasPage() {
             </button>
           </div>
           {suggestionsOpen && (
-            <div className="px-4 pb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <motion.div
+              variants={staggerContainer}
+              initial="hidden"
+              animate="show"
+              className="px-4 pb-4 grid grid-cols-1 md:grid-cols-3 gap-3"
+            >
               {visibleSuggestions.map((s) => (
                 <SuggestionMiniCard
                   key={s.name}
@@ -574,52 +607,40 @@ export default function PersonasPage() {
                   onDismiss={handleDismissSuggestion}
                 />
               ))}
-            </div>
+            </motion.div>
           )}
         </div>
       )}
 
-      {/* ── Persona list / empty state ────────────────────────────────── */}
+      {/* Persona list / empty state */}
       {!pageReady ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="h-32 rounded-lg bg-muted animate-pulse" />
+            <div key={i} className="h-32 rounded-xl bg-muted animate-pulse" style={{ animationDelay: `${i * 100}ms` }} />
           ))}
         </div>
       ) : personas.length === 0 && !showCreate ? (
         <>
-          {/*
-           * Section A — always visible, zero latency.
-           * No dependency on suggestions. User can create manually right away.
-           */}
           <div className="flex flex-col items-center justify-center py-16 text-center gap-3">
             <div className="rounded-full bg-muted p-4">
               <User2 className="h-6 w-6 text-muted-foreground" />
             </div>
             <p className="text-sm font-medium">No personas yet</p>
             <p className="text-xs text-muted-foreground max-w-xs">
-              Create a persona to bias resume content selection for ML Engineer, PM, or any other
-              track.
+              Create a persona to bias resume content selection for ML Engineer, PM, or any other track.
             </p>
-            <Button size="sm" variant="outline" onClick={() => setShowCreate(true)}>
-              <Plus className="h-4 w-4 mr-1.5" />
+            <Md3Button size="sm" variant="outlined" onClick={() => setShowCreate(true)}>
+              <Plus className="h-4 w-4" />
               Create manually
-            </Button>
+            </Md3Button>
           </div>
 
-          {/*
-           * Section B — appears only when the background prefetch resolves with suggestions.
-           * No skeleton, no loading spinner. Appears silently when data is ready.
-           * Fully independent of Section A — neither blocks the other.
-           */}
           {suggestions.length > 0 && visibleSuggestions.length > 0 && (
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Lightbulb className="h-4 w-4" />
-                  <span>
-                    Based on your context — review and add to get started
-                  </span>
+                  <span>Based on your context — review and add to get started</span>
                 </div>
                 <button
                   onClick={handleDismissAll}
@@ -630,7 +651,12 @@ export default function PersonasPage() {
                   Dismiss
                 </button>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <motion.div
+                variants={staggerContainer}
+                initial="hidden"
+                animate="show"
+                className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+              >
                 {visibleSuggestions.map((s) => (
                   <SuggestionMiniCard
                     key={s.name}
@@ -640,12 +666,17 @@ export default function PersonasPage() {
                     onDismiss={handleDismissSuggestion}
                   />
                 ))}
-              </div>
+              </motion.div>
             </div>
           )}
         </>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <motion.div
+          variants={staggerContainer}
+          initial="hidden"
+          animate="show"
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+        >
           {personas.map((p) => (
             <PersonaCard
               key={p.id}
@@ -655,7 +686,7 @@ export default function PersonasPage() {
               isSaving={isSaving}
             />
           ))}
-        </div>
+        </motion.div>
       )}
     </div>
   );
